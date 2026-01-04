@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShadowMesh Node Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .glow {
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen text-white">
+    <div class="container mx-auto p-8">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-8">
+            <div>
+                <h1 class="text-4xl font-bold flex items-center gap-3">
+                    <span class="text-5xl">🌐</span>
+                    ShadowMesh Node
+                </h1>
+                <p class="text-gray-400 mt-2">Decentralized Content Delivery Network</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <span class="flex items-center gap-2">
+                    <span class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
+                    <span class="text-green-400">Online</span>
+                </span>
+                <span id="peerId" class="text-gray-500 text-sm font-mono">Loading...</span>
+            </div>
+        </div>
+        
+        <!-- Stats Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            <div class="card p-6 rounded-xl">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Uptime</h3>
+                        <p class="text-3xl font-bold mt-2" id="uptime">--</p>
+                    </div>
+                    <div class="text-4xl opacity-50">⏱️</div>
+                </div>
+            </div>
+            
+            <div class="card p-6 rounded-xl">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Bandwidth Served</h3>
+                        <p class="text-3xl font-bold mt-2" id="bandwidth">--</p>
+                    </div>
+                    <div class="text-4xl opacity-50">📡</div>
+                </div>
+            </div>
+            
+            <div class="card p-6 rounded-xl">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Fragments Stored</h3>
+                        <p class="text-3xl font-bold mt-2" id="fragments">--</p>
+                    </div>
+                    <div class="text-4xl opacity-50">📦</div>
+                </div>
+            </div>
+            
+            <div class="card p-6 rounded-xl glow">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Earnings</h3>
+                        <p class="text-3xl font-bold mt-2 text-blue-400" id="earnings">--</p>
+                    </div>
+                    <div class="text-4xl opacity-50">💰</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Charts Row -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <div class="card p-6 rounded-xl">
+                <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                    📊 Bandwidth Over Time
+                </h2>
+                <canvas id="bandwidthChart" height="200"></canvas>
+            </div>
+            
+            <div class="card p-6 rounded-xl">
+                <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                    🌍 Network Activity
+                </h2>
+                <canvas id="activityChart" height="200"></canvas>
+            </div>
+        </div>
+        
+        <!-- Configuration -->
+        <div class="card p-6 rounded-xl">
+            <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                ⚙️ Node Configuration
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label class="block text-gray-400 text-sm mb-2">Max Storage (GB)</label>
+                    <input type="number" id="maxStorage" 
+                        class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500"
+                        value="10">
+                </div>
+                <div>
+                    <label class="block text-gray-400 text-sm mb-2">Max Bandwidth (MB/s)</label>
+                    <input type="number" id="maxBandwidth" 
+                        class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500"
+                        value="100">
+                </div>
+            </div>
+            <button onclick="saveConfig()" 
+                class="mt-4 bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-semibold transition-colors">
+                Save Configuration
+            </button>
+        </div>
+        
+        <!-- Footer -->
+        <div class="mt-8 text-center text-gray-500 text-sm">
+            <p>ShadowMesh Protocol v0.1.0 | 
+                <a href="https://github.com/Antismart/shadowmesh" class="text-blue-400 hover:underline">GitHub</a>
+            </p>
+        </div>
+    </div>
+    
+    <script>
+        // Bandwidth history for chart
+        const bandwidthHistory = [];
+        const activityHistory = [];
+        const maxDataPoints = 20;
+        
+        // Initialize charts
+        const bandwidthCtx = document.getElementById('bandwidthChart').getContext('2d');
+        const bandwidthChart = new Chart(bandwidthCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Bandwidth (MB/s)',
+                    data: [],
+                    borderColor: 'rgb(59, 130, 246)',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    x: {
+                        grid: { color: 'rgba(255,255,255,0.1)' },
+                        ticks: { color: 'rgba(255,255,255,0.5)' }
+                    },
+                    y: { 
+                        beginAtZero: true,
+                        grid: { color: 'rgba(255,255,255,0.1)' },
+                        ticks: { color: 'rgba(255,255,255,0.5)' }
+                    }
+                }
+            }
+        });
+        
+        const activityCtx = document.getElementById('activityChart').getContext('2d');
+        const activityChart = new Chart(activityCtx, {
+            type: 'bar',
+            data: {
+                labels: ['Requests', 'Fragments', 'Peers', 'Uploads'],
+                datasets: [{
+                    label: 'Activity',
+                    data: [0, 0, 0, 0],
+                    backgroundColor: [
+                        'rgba(59, 130, 246, 0.8)',
+                        'rgba(16, 185, 129, 0.8)',
+                        'rgba(245, 158, 11, 0.8)',
+                        'rgba(239, 68, 68, 0.8)'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    x: {
+                        grid: { color: 'rgba(255,255,255,0.1)' },
+                        ticks: { color: 'rgba(255,255,255,0.5)' }
+                    },
+                    y: { 
+                        beginAtZero: true,
+                        grid: { color: 'rgba(255,255,255,0.1)' },
+                        ticks: { color: 'rgba(255,255,255,0.5)' }
+                    }
+                }
+            }
+        });
+        
+        async function updateStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                
+                // Update stats
+                document.getElementById('uptime').textContent = formatUptime(data.uptime);
+                document.getElementById('bandwidth').textContent = formatBytes(data.bandwidth_served);
+                document.getElementById('fragments').textContent = data.fragments_stored.toLocaleString();
+                document.getElementById('earnings').textContent = `${data.earnings.toFixed(4)} SMT`;
+                document.getElementById('peerId').textContent = data.peer_id;
+                
+                // Update bandwidth chart
+                const now = new Date();
+                const timeLabel = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+                
+                if (bandwidthChart.data.labels.length >= maxDataPoints) {
+                    bandwidthChart.data.labels.shift();
+                    bandwidthChart.data.datasets[0].data.shift();
+                }
+                
+                bandwidthChart.data.labels.push(timeLabel);
+                bandwidthChart.data.datasets[0].data.push(
+                    (data.bandwidth_served / (1024 * 1024)).toFixed(2)
+                );
+                bandwidthChart.update('none');
+                
+                // Update activity chart with random data for demo
+                activityChart.data.datasets[0].data = [
+                    Math.floor(Math.random() * 100),
+                    data.fragments_stored,
+                    Math.floor(Math.random() * 20),
+                    Math.floor(Math.random() * 50)
+                ];
+                activityChart.update('none');
+                
+            } catch (error) {
+                console.error('Failed to fetch status:', error);
+            }
+        }
+        
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            
+            if (days > 0) {
+                return `${days}d ${hours}h ${minutes}m`;
+            } else if (hours > 0) {
+                return `${hours}h ${minutes}m`;
+            } else {
+                return `${minutes}m ${seconds % 60}s`;
+            }
+        }
+        
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        async function saveConfig() {
+            const maxStorage = parseInt(document.getElementById('maxStorage').value) * 1024 * 1024 * 1024;
+            const maxBandwidth = parseInt(document.getElementById('maxBandwidth').value) * 1024 * 1024;
+            
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        max_storage: maxStorage,
+                        max_bandwidth: maxBandwidth
+                    })
+                });
+                
+                if (response.ok) {
+                    alert('Configuration saved successfully!');
+                } else {
+                    alert('Failed to save configuration');
+                }
+            } catch (error) {
+                console.error('Failed to save config:', error);
+                alert('Failed to save configuration');
+            }
+        }
+        
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const data = await response.json();
+                
+                document.getElementById('maxStorage').value = Math.floor(data.max_storage / (1024 * 1024 * 1024));
+                document.getElementById('maxBandwidth').value = Math.floor(data.max_bandwidth / (1024 * 1024));
+            } catch (error) {
+                console.error('Failed to load config:', error);
+            }
+        }
+        
+        // Initialize
+        loadConfig();
+        updateStatus();
+        
+        // Update every 5 seconds
+        setInterval(updateStatus, 5000);
+    </script>
+</body>
+</html>
