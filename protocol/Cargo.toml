@@ -1,0 +1,23 @@
+[package]
+name = "protocol"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "shadowmesh_protocol"
+path = "src/lib.rs"
+
+[[bin]]
+name = "protocol"
+path = "src/main.rs"
+
+[dependencies]
+libp2p = { workspace = true, features = ["tcp", "noise", "yamux", "kad", "gossipsub", "tokio", "macros"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+blake3 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+rand = "0.8"
+futures = "0.3"
+ipfs-api-backend-hyper = "0.6"
+http = "0.2"
