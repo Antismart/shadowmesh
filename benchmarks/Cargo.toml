@@ -1,0 +1,14 @@
+[package]
+name = "benchmarks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+protocol = { path = "../protocol" }
+
+[[bench]]
+name = "benchmark"
+harness = false
+path = "src/benchmark.rs"
