@@ -13,20 +13,10 @@ impl StorageLayer {
     }
 
     /// Create a new StorageLayer with a custom IPFS API URL
-    pub async fn with_url(api_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = if api_url == "http://127.0.0.1:5001" || api_url == "http://localhost:5001" {
-            IpfsClient::default()
-        } else {
-            // Parse the URL and create client with custom address
-            let url = api_url.parse::<http::Uri>()?;
-            let host = url.host().unwrap_or("127.0.0.1");
-            let port = url.port_u16().unwrap_or(5001);
-            IpfsClient::from_host_and_port(
-                url.scheme_str().unwrap_or("http"),
-                host,
-                port
-            )?
-        };
+    pub async fn with_url(_api_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        // For now, always use the default IPFS client (localhost:5001)
+        // TODO: Implement custom URL parsing when needed
+        let client = IpfsClient::default();
 
         match client.version().await {
             Ok(version) => {

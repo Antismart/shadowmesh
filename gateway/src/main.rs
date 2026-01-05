@@ -1,9 +1,13 @@
 //! ShadowMesh Gateway
 
 mod config;
+mod error;
+mod middleware;
+mod rate_limit;
 
 use axum::{
     extract::{Path, State},
+    middleware as axum_middleware,
     response::{AppendHeaders, Html, IntoResponse},
     routing::get,
     Router,
@@ -11,12 +15,12 @@ use axum::{
 use std::sync::Arc;
 use protocol::StorageLayer;
 use tower_http::cors::CorsLayer;
-use config::GatewayConfig;
+use config::Config;
 
 #[derive(Clone)]
 struct AppState {
     storage: Option<Arc<StorageLayer>>,
-    config: Arc<GatewayConfig>,
+    config: Arc<Config>,
 }
 
 #[tokio::main]
@@ -24,15 +28,15 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     // Load configuration
-    let config = match GatewayConfig::from_file("gateway/config.toml") {
+    let config = match Config::load() {
         Ok(c) => {
-            println!("✓ Loaded configuration from gateway/config.toml");
+            println!("✓ Loaded configuration");
             Arc::new(c)
         }
         Err(e) => {
-            eprintln!("✗ Failed to load configuration: {}", e);
-            eprintln!("  Please ensure gateway/config.toml exists and is valid");
-            std::process::exit(1);
+            println!("⚠️  Failed to load configuration: {}", e);
+            println!("   Using default configuration");
+            Arc::new(Config::default())
         }
     };
 
@@ -53,14 +57,41 @@ async fn main() {
         config: config.clone(),
     };
 
-    let app = Router::new()
+    // Create rate limiter
+    let rate_limiter = if config.rate_limit.enabled {
+        Some(rate_limit::RateLimiter::new(
+            config.rate_limit.requests_per_second,
+        ))
+    } else {
+        None
+    };
+
+    let mut app = Router::new()
         .route("/", get(index_handler))
         .route("/:cid", get(content_handler))
         .route("/:cid/*path", get(content_path_handler))
-        .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let bind_addr = config.server_address();
+    // Add middleware layers
+    if config.security.cors_enabled {
+        app = app.layer(CorsLayer::permissive());
+    }
+
+    app = app
+        .layer(axum_middleware::from_fn(middleware::security_headers))
+        .layer(axum_middleware::from_fn(middleware::request_id));
+
+    if let Some(limiter) = rate_limiter {
+        let limiter_clone = limiter.clone();
+        app = app.layer(axum_middleware::from_fn(
+            move |req, next| {
+                let limiter = limiter_clone.clone();
+                async move { limiter.check_rate_limit(req, next).await }
+            },
+        ));
+    }
+
+    let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .unwrap_or_else(|e| {
@@ -71,7 +102,11 @@ async fn main() {
     println!("🌐 Gateway running at http://localhost:{}", config.server.port);
     println!("   Workers: {}", config.server.workers);
     println!("   Cache: {} MB (TTL: {}s)", config.cache.max_size_mb, config.cache.ttl_seconds);
-    println!("   Rate limit: {} req/s", config.rate_limit.requests_per_second);
+    if config.rate_limit.enabled {
+        println!("   Rate limit: {} req/s (burst: {})",
+            config.rate_limit.requests_per_second,
+            config.rate_limit.burst_size);
+    }
 
     axum::serve(listener, app).await.unwrap();
 }

@@ -1,8 +1,9 @@
-use serde::{Deserialize, Serialize};
-use std::path::Path;
+use config::{Config as ConfigLoader, ConfigError, File};
+use serde::Deserialize;
+use std::time::Duration;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct GatewayConfig {
+#[derive(Debug, Deserialize, Clone)]
+pub struct Config {
     pub server: ServerConfig,
     pub cache: CacheConfig,
     pub rate_limit: RateLimitConfig,
@@ -11,75 +12,71 @@ pub struct GatewayConfig {
     pub monitoring: MonitoringConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub workers: usize,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CacheConfig {
-    pub max_size_mb: usize,
+    pub max_size_mb: u64,
     pub ttl_seconds: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+impl CacheConfig {
+    pub fn max_size_bytes(&self) -> u64 {
+        self.max_size_mb * 1024 * 1024
+    }
+
+    pub fn ttl(&self) -> Duration {
+        Duration::from_secs(self.ttl_seconds)
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct RateLimitConfig {
     pub enabled: bool,
-    pub requests_per_second: u32,
+    pub requests_per_second: u64,
     pub burst_size: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct IpfsConfig {
     pub api_url: String,
     pub timeout_seconds: u64,
     pub retry_attempts: u32,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SecurityConfig {
     pub cors_enabled: bool,
     pub allowed_origins: Vec<String>,
-    pub max_request_size_mb: usize,
+    pub max_request_size_mb: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct MonitoringConfig {
     pub metrics_enabled: bool,
     pub health_check_interval_seconds: u64,
 }
 
-impl GatewayConfig {
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let settings = config::Config::builder()
-            .add_source(config::File::from(path.as_ref()))
+impl Config {
+    pub fn load() -> Result<Self, ConfigError> {
+        let config = ConfigLoader::builder()
+            .add_source(File::with_name("gateway/config").required(false))
+            .add_source(config::Environment::with_prefix("SHADOWMESH"))
             .build()?;
 
-        let config: GatewayConfig = settings.try_deserialize()?;
-        Ok(config)
+        config.try_deserialize()
     }
 
-    pub fn default_config_path() -> &'static str {
-        "gateway/config.toml"
-    }
-
-    pub fn server_address(&self) -> String {
-        format!("{}:{}", self.server.host, self.server.port)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_server_address() {
-        let config = GatewayConfig {
+    pub fn default() -> Self {
+        Self {
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
-                port: 8081,
+                port: 8080,
                 workers: 4,
             },
             cache: CacheConfig {
@@ -105,8 +102,6 @@ mod tests {
                 metrics_enabled: true,
                 health_check_interval_seconds: 30,
             },
-        };
-
-        assert_eq!(config.server_address(), "0.0.0.0:8081");
+        }
     }
 }
