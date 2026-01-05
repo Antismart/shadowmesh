@@ -7,10 +7,27 @@ pub struct StorageLayer {
 }
 
 impl StorageLayer {
+    /// Create a new StorageLayer with default IPFS configuration (localhost:5001)
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        // Connect to default IPFS daemon (localhost:5001)
-        let client = IpfsClient::default();
-        
+        Self::with_url("http://127.0.0.1:5001").await
+    }
+
+    /// Create a new StorageLayer with a custom IPFS API URL
+    pub async fn with_url(api_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let client = if api_url == "http://127.0.0.1:5001" || api_url == "http://localhost:5001" {
+            IpfsClient::default()
+        } else {
+            // Parse the URL and create client with custom address
+            let url = api_url.parse::<http::Uri>()?;
+            let host = url.host().unwrap_or("127.0.0.1");
+            let port = url.port_u16().unwrap_or(5001);
+            IpfsClient::from_host_and_port(
+                url.scheme_str().unwrap_or("http"),
+                host,
+                port
+            )?
+        };
+
         match client.version().await {
             Ok(version) => {
                 println!("✓ Connected to IPFS version: {}", version.version);

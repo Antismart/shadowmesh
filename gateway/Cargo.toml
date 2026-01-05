@@ -15,3 +15,6 @@ infer = "0.16"
 axum-macros = "0.3"
 
 tracing-subscriber = "0.3"
+
+config = "0.14"
+toml = "0.8"

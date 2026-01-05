@@ -1,0 +1,27 @@
+[server]
+host = "0.0.0.0"
+port = 8081
+workers = 4
+
+[cache]
+max_size_mb = 500
+ttl_seconds = 3600
+
+[rate_limit]
+enabled = true
+requests_per_second = 100
+burst_size = 200
+
+[ipfs]
+api_url = "http://127.0.0.1:5001"
+timeout_seconds = 30
+retry_attempts = 3
+
+[security]
+cors_enabled = true
+allowed_origins = ["*"]
+max_request_size_mb = 100
+
+[monitoring]
+metrics_enabled = true
+health_check_interval_seconds = 30
