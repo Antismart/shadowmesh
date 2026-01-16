@@ -1,5 +1,6 @@
 //! ShadowMesh Gateway
 
+mod cache;
 mod config;
 mod error;
 mod middleware;
@@ -8,16 +9,17 @@ mod rate_limit;
 use axum::{
     extract::{Path, State},
     middleware as axum_middleware,
-    response::{AppendHeaders, Html, IntoResponse, Json},
+    response::{Html, IntoResponse, Json, Response},
     routing::get,
     Router,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
-use protocol::StorageLayer;
-use tower_http::cors::CorsLayer;
+use std::time::{Duration, Instant};
+use protocol::{StorageLayer, StorageConfig};
+use tower_http::cors::{CorsLayer, Any};
 use config::Config;
+use cache::ContentCache;
 use serde::Serialize;
 
 /// Metrics for monitoring
@@ -50,6 +52,7 @@ impl Metrics {
 #[derive(Clone)]
 struct AppState {
     storage: Option<Arc<StorageLayer>>,
+    cache: Arc<ContentCache>,
     config: Arc<Config>,
     metrics: Arc<Metrics>,
     start_time: Instant,
@@ -72,9 +75,28 @@ async fn main() {
         }
     };
 
-    let storage = match StorageLayer::with_url(&config.ipfs.api_url).await {
+    // Initialize content cache
+    let cache = Arc::new(ContentCache::with_config(
+        (config.cache.max_size_mb * 10) as usize, // Rough estimate: ~100KB per entry
+        Duration::from_secs(config.cache.ttl_seconds),
+    ));
+    println!("✓ Cache initialized: {} MB, TTL {}s", 
+        config.cache.max_size_mb, 
+        config.cache.ttl_seconds);
+
+    // Create IPFS storage config
+    let storage_config = StorageConfig {
+        api_url: config.ipfs.api_url.clone(),
+        timeout: Duration::from_secs(config.ipfs.timeout_seconds),
+        retry_attempts: config.ipfs.retry_attempts,
+    };
+
+    let storage = match StorageLayer::with_config(storage_config).await {
         Ok(s) => {
             println!("✅ Connected to IPFS daemon at {}", config.ipfs.api_url);
+            println!("   Timeout: {}s, Retries: {}", 
+                config.ipfs.timeout_seconds, 
+                config.ipfs.retry_attempts);
             Some(Arc::new(s))
         }
         Err(e) => {
@@ -86,6 +108,7 @@ async fn main() {
 
     let state = AppState {
         storage,
+        cache,
         config: config.clone(),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
@@ -110,12 +133,27 @@ async fn main() {
 
     // Add middleware layers
     if config.security.cors_enabled {
-        app = app.layer(CorsLayer::permissive());
+        let cors = if config.security.allowed_origins.contains(&"*".to_string()) {
+            CorsLayer::permissive()
+        } else {
+            let origins: Vec<_> = config.security.allowed_origins
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods(Any)
+                .allow_headers(Any)
+        };
+        app = app.layer(cors);
     }
 
     app = app
         .layer(axum_middleware::from_fn(middleware::security_headers))
-        .layer(axum_middleware::from_fn(middleware::request_id));
+        .layer(axum_middleware::from_fn(middleware::request_id))
+        .layer(axum_middleware::from_fn(
+            middleware::max_request_size(config.security.max_request_size_mb)
+        ));
 
     if let Some(limiter) = rate_limiter {
         let limiter_clone = limiter.clone();
@@ -226,32 +264,73 @@ async fn index_handler(State(state): State<AppState>) -> Html<String> {
 async fn content_handler(
     State(state): State<AppState>,
     Path(cid): Path<String>,
-) -> impl IntoResponse {
-    match &state.storage {
-        Some(storage) => {
-            match storage.retrieve_content(&cid).await {
-                Ok(data) => {
-                    let content_type = infer::get(&data)
-                        .map(|t| t.mime_type())
-                        .unwrap_or("application/octet-stream");
+) -> Response {
+    state.metrics.increment_requests();
 
-                    (
-                        AppendHeaders([(axum::http::header::CONTENT_TYPE, content_type)]),
-                        data
-                    ).into_response()
-                }
-                Err(e) => {
-                    (
-                        axum::http::StatusCode::NOT_FOUND,
-                        Html(format!(r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#, e))
-                    ).into_response()
-                }
-            }
-        }
-        None => {
+    // Check cache first
+    if let Some((data, content_type)) = state.cache.get(&cid) {
+        state.metrics.increment_success();
+        state.metrics.add_bytes(data.len() as u64);
+        return (
+            [
+                (axum::http::header::CONTENT_TYPE, content_type),
+                (axum::http::header::HeaderName::from_static("x-cache"), "HIT".to_string()),
+            ],
+            data
+        ).into_response();
+    }
+
+    // Fetch from IPFS
+    let Some(storage) = &state.storage else {
+        state.metrics.increment_error();
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Html(r#"<html><body><h1>IPFS Not Connected</h1></body></html>"#)
+        ).into_response();
+    };
+
+    let storage = Arc::clone(storage);
+    let cid_clone = cid.clone();
+    
+    // Spawn blocking task for IPFS retrieval (handles non-Send stream)
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async {
+            storage.retrieve_content(&cid_clone).await
+        })
+    }).await;
+
+    match result {
+        Ok(Ok(data)) => {
+            let content_type = infer::get(&data)
+                .map(|t| t.mime_type().to_string())
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+
+            // Store in cache
+            state.cache.set(cid, data.clone(), content_type.clone());
+            
+            state.metrics.increment_success();
+            state.metrics.add_bytes(data.len() as u64);
+
             (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                Html(r#"<html><body><h1>IPFS Not Connected</h1></body></html>"#)
+                [
+                    (axum::http::header::CONTENT_TYPE, content_type),
+                    (axum::http::header::HeaderName::from_static("x-cache"), "MISS".to_string()),
+                ],
+                data
+            ).into_response()
+        }
+        Ok(Err(e)) => {
+            state.metrics.increment_error();
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                Html(format!(r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#, e))
+            ).into_response()
+        }
+        Err(e) => {
+            state.metrics.increment_error();
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#, e))
             ).into_response()
         }
     }
@@ -260,34 +339,74 @@ async fn content_handler(
 async fn content_path_handler(
     State(state): State<AppState>,
     Path((cid, path)): Path<(String, String)>,
-) -> impl IntoResponse {
+) -> Response {
     let full_path = format!("{}/{}", cid, path);
+    state.metrics.increment_requests();
     
-    match &state.storage {
-        Some(storage) => {
-            match storage.retrieve_content(&full_path).await {
-                Ok(data) => {
-                    let content_type = infer::get(&data)
-                        .map(|t| t.mime_type())
-                        .unwrap_or("application/octet-stream");
+    // Check cache first
+    if let Some((data, content_type)) = state.cache.get(&full_path) {
+        state.metrics.increment_success();
+        state.metrics.add_bytes(data.len() as u64);
+        return (
+            [
+                (axum::http::header::CONTENT_TYPE, content_type),
+                (axum::http::header::HeaderName::from_static("x-cache"), "HIT".to_string()),
+            ],
+            data
+        ).into_response();
+    }
 
-                    (
-                        AppendHeaders([(axum::http::header::CONTENT_TYPE, content_type)]),
-                        data
-                    ).into_response()
-                }
-                Err(e) => {
-                    (
-                        axum::http::StatusCode::NOT_FOUND,
-                        Html(format!(r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#, e))
-                    ).into_response()
-                }
-            }
-        }
-        None => {
+    // Fetch from IPFS
+    let Some(storage) = &state.storage else {
+        state.metrics.increment_error();
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Html(r#"<html><body><h1>IPFS Not Connected</h1></body></html>"#)
+        ).into_response();
+    };
+
+    let storage = Arc::clone(storage);
+    let path_clone = full_path.clone();
+    
+    // Spawn blocking task for IPFS retrieval (handles non-Send stream)
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async {
+            storage.retrieve_content(&path_clone).await
+        })
+    }).await;
+
+    match result {
+        Ok(Ok(data)) => {
+            let content_type = infer::get(&data)
+                .map(|t| t.mime_type().to_string())
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+
+            // Store in cache
+            state.cache.set(full_path, data.clone(), content_type.clone());
+            
+            state.metrics.increment_success();
+            state.metrics.add_bytes(data.len() as u64);
+
             (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                Html(r#"<html><body><h1>IPFS Not Connected</h1></body></html>"#)
+                [
+                    (axum::http::header::CONTENT_TYPE, content_type),
+                    (axum::http::header::HeaderName::from_static("x-cache"), "MISS".to_string()),
+                ],
+                data
+            ).into_response()
+        }
+        Ok(Err(e)) => {
+            state.metrics.increment_error();
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                Html(format!(r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#, e))
+            ).into_response()
+        }
+        Err(e) => {
+            state.metrics.increment_error();
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#, e))
             ).into_response()
         }
     }
@@ -324,7 +443,15 @@ struct MetricsResponse {
     requests_success: u64,
     requests_error: u64,
     bytes_served: u64,
+    cache: CacheMetrics,
     config: ConfigMetrics,
+}
+
+#[derive(Serialize)]
+struct CacheMetrics {
+    total_entries: usize,
+    expired_entries: usize,
+    max_entries: usize,
 }
 
 #[derive(Serialize)]
@@ -338,6 +465,7 @@ struct ConfigMetrics {
 
 async fn metrics_handler(State(state): State<AppState>) -> Json<MetricsResponse> {
     let uptime = state.start_time.elapsed().as_secs();
+    let cache_stats = state.cache.stats();
 
     Json(MetricsResponse {
         uptime_seconds: uptime,
@@ -345,6 +473,11 @@ async fn metrics_handler(State(state): State<AppState>) -> Json<MetricsResponse>
         requests_success: state.metrics.requests_success.load(Ordering::Relaxed),
         requests_error: state.metrics.requests_error.load(Ordering::Relaxed),
         bytes_served: state.metrics.bytes_served.load(Ordering::Relaxed),
+        cache: CacheMetrics {
+            total_entries: cache_stats.total_entries,
+            expired_entries: cache_stats.expired_entries,
+            max_entries: cache_stats.max_entries,
+        },
         config: ConfigMetrics {
             cache_max_size_mb: state.config.cache.max_size_mb,
             cache_ttl_seconds: state.config.cache.ttl_seconds,

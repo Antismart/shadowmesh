@@ -1,9 +1,32 @@
 use axum::{
     body::Body,
-    http::{Request, header},
+    http::{Request, header, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+
+/// Maximum request size check middleware
+pub fn max_request_size(max_size_mb: u64) -> impl Fn(Request<Body>, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> + Clone {
+    move |req: Request<Body>, next: Next| {
+        let max_bytes = max_size_mb * 1024 * 1024;
+        Box::pin(async move {
+            // Check Content-Length header if present
+            if let Some(content_length) = req.headers().get(header::CONTENT_LENGTH) {
+                if let Ok(len_str) = content_length.to_str() {
+                    if let Ok(len) = len_str.parse::<u64>() {
+                        if len > max_bytes {
+                            return (
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                format!("Request body too large. Max size: {} MB", max_size_mb)
+                            ).into_response();
+                        }
+                    }
+                }
+            }
+            next.run(req).await
+        })
+    }
+}
 
 pub async fn security_headers(
     req: Request<Body>,

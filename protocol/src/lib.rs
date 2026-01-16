@@ -34,4 +34,4 @@ pub use routing::RoutingLayer;
 pub use node::ShadowNode;
 
 // Re-export storage types
-pub use storage::StorageLayer;
+pub use storage::{StorageLayer, StorageConfig};

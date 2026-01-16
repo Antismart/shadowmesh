@@ -1,21 +1,49 @@
 use ipfs_api_backend_hyper::{IpfsApi, IpfsClient};
 use std::io::Cursor;
+use std::time::Duration;
 use futures::TryStreamExt;
+
+/// Configuration for StorageLayer
+#[derive(Clone, Debug)]
+pub struct StorageConfig {
+    pub api_url: String,
+    pub timeout: Duration,
+    pub retry_attempts: u32,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            api_url: "http://127.0.0.1:5001".to_string(),
+            timeout: Duration::from_secs(30),
+            retry_attempts: 3,
+        }
+    }
+}
 
 pub struct StorageLayer {
     ipfs_client: IpfsClient,
+    config: StorageConfig,
 }
 
 impl StorageLayer {
     /// Create a new StorageLayer with default IPFS configuration (localhost:5001)
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::with_url("http://127.0.0.1:5001").await
+        Self::with_config(StorageConfig::default()).await
     }
 
     /// Create a new StorageLayer with a custom IPFS API URL
-    pub async fn with_url(_api_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn with_url(api_url: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::with_config(StorageConfig {
+            api_url: api_url.to_string(),
+            ..Default::default()
+        }).await
+    }
+
+    /// Create a new StorageLayer with full configuration
+    pub async fn with_config(config: StorageConfig) -> Result<Self, Box<dyn std::error::Error>> {
         // For now, always use the default IPFS client (localhost:5001)
-        // TODO: Implement custom URL parsing when needed
+        // TODO: Parse custom URL when ipfs_api_backend_hyper supports it
         let client = IpfsClient::default();
 
         match client.version().await {
@@ -27,46 +55,110 @@ impl StorageLayer {
             }
         }
 
-        Ok(Self { ipfs_client: client })
+        Ok(Self { 
+            ipfs_client: client,
+            config,
+        })
     }
     
-    /// Upload content to IPFS
-    pub async fn store_content(&self, data: Vec<u8>) -> Result<String, Box<dyn std::error::Error>> {
-        let cursor = Cursor::new(data);
-        let response = self.ipfs_client.add(cursor).await?;
+    /// Upload content to IPFS with retry
+    pub async fn store_content(&self, data: Vec<u8>) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let mut last_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
         
-        Ok(response.hash)
+        for attempt in 1..=self.config.retry_attempts {
+            let cursor = Cursor::new(data.clone());
+            
+            match tokio::time::timeout(
+                self.config.timeout,
+                self.ipfs_client.add(cursor)
+            ).await {
+                Ok(Ok(response)) => return Ok(response.hash),
+                Ok(Err(e)) => {
+                    println!("✗ IPFS add attempt {}/{} failed: {}", attempt, self.config.retry_attempts, e);
+                    last_error = Some(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string()
+                    )));
+                }
+                Err(_) => {
+                    println!("✗ IPFS add attempt {}/{} timed out", attempt, self.config.retry_attempts);
+                    last_error = Some(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "IPFS operation timed out"
+                    )));
+                }
+            }
+            
+            // Brief delay before retry
+            if attempt < self.config.retry_attempts {
+                tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+            }
+        }
+        
+        Err(last_error.unwrap_or_else(|| Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Unknown error"
+        ))))
     }
     
-    /// Retrieve content from IPFS
-    pub async fn retrieve_content(&self, cid: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    /// Retrieve content from IPFS with timeout and retry
+    pub async fn retrieve_content(&self, cid: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         println!("→ Attempting to retrieve CID: {}", cid);
 
-        let client = self.ipfs_client.clone();
-        let cid = cid.to_string();
+        let mut last_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
 
-        // Use block_in_place to handle the non-Send IPFS stream
-        let result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                // Collect all chunks
-                let chunks: Vec<_> = client
-                    .cat(&cid)
-                    .try_collect()
-                    .await
-                    .map_err(|e| {
-                println!("✗ IPFS cat error: {}", e);
-                e
-            })?;
+        for attempt in 1..=self.config.retry_attempts {
+            let client = self.ipfs_client.clone();
+            let cid_owned = cid.to_string();
+            let timeout = self.config.timeout;
 
-                // Concatenate all chunks into single Vec
-                let data: Vec<u8> = chunks.into_iter().flatten().collect();
-                println!("✓ Retrieved {} bytes", data.len());
+            // Use block_in_place to handle the non-Send IPFS stream
+            let result = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    tokio::time::timeout(timeout, async {
+                        // Collect all chunks
+                        let chunks: Vec<_> = client
+                            .cat(&cid_owned)
+                            .try_collect()
+                            .await?;
 
+                        // Concatenate all chunks into single Vec
+                        let data: Vec<u8> = chunks.into_iter().flatten().collect();
+                        Ok::<Vec<u8>, ipfs_api_backend_hyper::Error>(data)
+                    }).await
+                })
+            });
 
-                Ok::<Vec<u8>, Box<dyn std::error::Error>>(data)
-            })
-        })?;
+            match result {
+                Ok(Ok(data)) => {
+                    println!("✓ Retrieved {} bytes", data.len());
+                    return Ok(data);
+                }
+                Ok(Err(e)) => {
+                    println!("✗ IPFS cat attempt {}/{} failed: {}", attempt, self.config.retry_attempts, e);
+                    last_error = Some(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string()
+                    )) as Box<dyn std::error::Error + Send + Sync>);
+                }
+                Err(_) => {
+                    println!("✗ IPFS cat attempt {}/{} timed out", attempt, self.config.retry_attempts);
+                    last_error = Some(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("IPFS operation timed out after {:?}", self.config.timeout)
+                    )) as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
 
-        Ok(result)
+            // Brief delay before retry
+            if attempt < self.config.retry_attempts {
+                tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Unknown error"
+        )) as Box<dyn std::error::Error + Send + Sync>))
     }
 }
