@@ -8,19 +8,51 @@ mod rate_limit;
 use axum::{
     extract::{Path, State},
     middleware as axum_middleware,
-    response::{AppendHeaders, Html, IntoResponse},
+    response::{AppendHeaders, Html, IntoResponse, Json},
     routing::get,
     Router,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use protocol::StorageLayer;
 use tower_http::cors::CorsLayer;
 use config::Config;
+use serde::Serialize;
+
+/// Metrics for monitoring
+#[derive(Default)]
+pub struct Metrics {
+    requests_total: AtomicU64,
+    requests_success: AtomicU64,
+    requests_error: AtomicU64,
+    bytes_served: AtomicU64,
+}
+
+impl Metrics {
+    pub fn increment_requests(&self) {
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn increment_success(&self) {
+        self.requests_success.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn increment_error(&self) {
+        self.requests_error.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn add_bytes(&self, bytes: u64) {
+        self.bytes_served.fetch_add(bytes, Ordering::Relaxed);
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
     storage: Option<Arc<StorageLayer>>,
     config: Arc<Config>,
+    metrics: Arc<Metrics>,
+    start_time: Instant,
 }
 
 #[tokio::main]
@@ -55,6 +87,8 @@ async fn main() {
     let state = AppState {
         storage,
         config: config.clone(),
+        metrics: Arc::new(Metrics::default()),
+        start_time: Instant::now(),
     };
 
     // Create rate limiter
@@ -68,6 +102,8 @@ async fn main() {
 
     let mut app = Router::new()
         .route("/", get(index_handler))
+        .route("/health", get(health_handler))
+        .route("/metrics", get(metrics_handler))
         .route("/:cid", get(content_handler))
         .route("/:cid/*path", get(content_path_handler))
         .with_state(state);
@@ -106,6 +142,10 @@ async fn main() {
         println!("   Rate limit: {} req/s (burst: {})",
             config.rate_limit.requests_per_second,
             config.rate_limit.burst_size);
+    }
+    if config.monitoring.metrics_enabled {
+        println!("   Metrics: http://localhost:{}/metrics", config.server.port);
+        println!("   Health: http://localhost:{}/health", config.server.port);
     }
 
     axum::serve(listener, app).await.unwrap();
@@ -251,4 +291,66 @@ async fn content_path_handler(
             ).into_response()
         }
     }
+}
+
+// ============================================
+// Health & Metrics Endpoints
+// ============================================
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    version: &'static str,
+    uptime_seconds: u64,
+    ipfs_connected: bool,
+}
+
+async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
+    let uptime = state.start_time.elapsed().as_secs();
+    let ipfs_connected = state.storage.is_some();
+
+    Json(HealthResponse {
+        status: if ipfs_connected { "healthy" } else { "degraded" },
+        version: env!("CARGO_PKG_VERSION"),
+        uptime_seconds: uptime,
+        ipfs_connected,
+    })
+}
+
+#[derive(Serialize)]
+struct MetricsResponse {
+    uptime_seconds: u64,
+    requests_total: u64,
+    requests_success: u64,
+    requests_error: u64,
+    bytes_served: u64,
+    config: ConfigMetrics,
+}
+
+#[derive(Serialize)]
+struct ConfigMetrics {
+    cache_max_size_mb: u64,
+    cache_ttl_seconds: u64,
+    rate_limit_enabled: bool,
+    rate_limit_rps: u64,
+    ipfs_connected: bool,
+}
+
+async fn metrics_handler(State(state): State<AppState>) -> Json<MetricsResponse> {
+    let uptime = state.start_time.elapsed().as_secs();
+
+    Json(MetricsResponse {
+        uptime_seconds: uptime,
+        requests_total: state.metrics.requests_total.load(Ordering::Relaxed),
+        requests_success: state.metrics.requests_success.load(Ordering::Relaxed),
+        requests_error: state.metrics.requests_error.load(Ordering::Relaxed),
+        bytes_served: state.metrics.bytes_served.load(Ordering::Relaxed),
+        config: ConfigMetrics {
+            cache_max_size_mb: state.config.cache.max_size_mb,
+            cache_ttl_seconds: state.config.cache.ttl_seconds,
+            rate_limit_enabled: state.config.rate_limit.enabled,
+            rate_limit_rps: state.config.rate_limit.requests_per_second,
+            ipfs_connected: state.storage.is_some(),
+        },
+    })
 }
