@@ -12,7 +12,7 @@ name = "protocol"
 path = "src/main.rs"
 
 [dependencies]
-libp2p = { workspace = true, features = ["tcp", "noise", "yamux", "kad", "gossipsub", "tokio", "macros"] }
+libp2p = { workspace = true, features = ["tcp", "noise", "yamux", "kad", "gossipsub", "tokio", "macros", "serde"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,6 +22,7 @@ rand = "0.8"
 futures = "0.3"
 ipfs-api-backend-hyper = "0.6"
 http = "0.2"
+bincode = "1.3"
 
 [dev-dependencies]
 tempfile = { workspace = true }

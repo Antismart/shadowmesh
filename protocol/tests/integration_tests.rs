@@ -22,6 +22,10 @@ use shadowmesh_protocol::{
     PeerDiscovery, PeerInfo, PeerState, DiscoveryConfig,
     // Bandwidth types
     BandwidthTracker, RateLimiter,
+    // ZK Relay types
+    ZkRelayClient, ZkRelayNode, ZkRelayConfig, RelayCell, RelayPayload,
+    CellType, BlindRequest, BlindResponse, TrafficPadder, RelayAction,
+    KEY_SIZE,
 };
 
 // ============================================================================
@@ -769,4 +773,347 @@ fn test_peer_success_rate() {
     // 2 successes, 1 failure = 66.7%
     let rate = peer.success_rate();
     assert!(rate > 0.6 && rate < 0.7);
+}
+
+// ============================================================================
+// ZK Relay Integration Tests
+// ============================================================================
+
+fn create_test_peer() -> libp2p::PeerId {
+    libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id()
+}
+
+fn create_test_peers_zk(n: usize) -> Vec<libp2p::PeerId> {
+    (0..n).map(|_| create_test_peer()).collect()
+}
+
+#[test]
+fn test_zk_relay_circuit_build() {
+    let secret = [42u8; KEY_SIZE];
+    let mut client = ZkRelayClient::new(secret);
+    let peers = create_test_peers_zk(3);
+
+    let circuit_id = client.build_circuit(&peers).unwrap();
+    assert_eq!(client.active_circuits(), 1);
+
+    // Verify entry node is first peer
+    let entry = client.get_entry_node(&circuit_id).unwrap();
+    assert_eq!(entry, peers[0]);
+}
+
+#[test]
+fn test_zk_relay_multi_circuit() {
+    let secret = [42u8; KEY_SIZE];
+    let mut client = ZkRelayClient::new(secret);
+
+    // Build multiple circuits
+    for _ in 0..5 {
+        let peers = create_test_peers_zk(3);
+        client.build_circuit(&peers).unwrap();
+    }
+
+    assert_eq!(client.active_circuits(), 5);
+}
+
+#[test]
+fn test_zk_relay_request_encryption() {
+    let secret = [42u8; KEY_SIZE];
+    let mut client = ZkRelayClient::new(secret);
+    let peers = create_test_peers_zk(3);
+
+    let circuit_id = client.build_circuit(&peers).unwrap();
+    let request = b"GET /content/abc123 HTTP/1.1\r\nHost: shadowmesh.network\r\n\r\n";
+
+    let cell = client.wrap_request(&circuit_id, request).unwrap();
+
+    // Cell should be encrypted
+    assert_eq!(cell.circuit_id, circuit_id);
+    assert_eq!(cell.cell_type, CellType::Relay);
+    assert!(!cell.payload.is_empty());
+
+    // Payload should not contain plaintext
+    let payload_str = String::from_utf8_lossy(&cell.payload);
+    assert!(!payload_str.contains("GET"));
+    assert!(!payload_str.contains("shadowmesh"));
+}
+
+#[test]
+fn test_zk_relay_blind_request_creation() {
+    let request = BlindRequest::new("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".to_string());
+
+    assert!(!request.content_hash.is_empty());
+    assert!(request.range.is_none());
+    assert!(request.timestamp > 0);
+
+    // With range
+    let range_request = BlindRequest::with_range(
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".to_string(),
+        0,
+        1024 * 1024,
+    );
+    assert_eq!(range_request.range, Some((0, 1024 * 1024)));
+}
+
+#[test]
+fn test_zk_relay_cell_serialization_roundtrip() {
+    let circuit_id = [0xABu8; 32];
+    let payload = b"encrypted payload data".to_vec();
+
+    let cell = RelayCell::new(circuit_id, CellType::Relay, payload.clone());
+    let serialized = cell.serialize();
+    let deserialized = RelayCell::deserialize(&serialized).unwrap();
+
+    assert_eq!(deserialized.circuit_id, circuit_id);
+    assert_eq!(deserialized.cell_type, CellType::Relay);
+    assert_eq!(deserialized.payload, payload);
+}
+
+#[test]
+fn test_zk_relay_payload_integrity() {
+    let hop_id = [0xCDu8; 16];
+    let inner_data = b"secret content hash request".to_vec();
+
+    let payload = RelayPayload::new(None, hop_id, inner_data.clone());
+
+    // Should pass integrity check
+    assert!(payload.verify());
+
+    // Tampering should fail
+    let mut tampered = payload.clone();
+    tampered.inner_data[0] ^= 0xFF;
+    assert!(!tampered.verify());
+}
+
+#[test]
+fn test_zk_relay_node_stats() {
+    let node_secret = [99u8; KEY_SIZE];
+    let node = ZkRelayNode::new(node_secret);
+
+    let stats = node.stats();
+    assert_eq!(stats.cells_relayed, 0);
+    assert_eq!(stats.bytes_relayed, 0);
+    assert_eq!(stats.active_circuits, 0);
+}
+
+#[test]
+fn test_zk_relay_traffic_padding() {
+    let padder = TrafficPadder::with_size(512);
+
+    // Small data gets padded
+    let small = vec![1, 2, 3, 4, 5];
+    let padded = padder.pad(&small);
+    assert_eq!(padded.len(), 512);
+    assert_eq!(&padded[..5], &small[..]);
+
+    // Large data stays same size
+    let large: Vec<u8> = (0..1000).map(|i| i as u8).collect();
+    let padded_large = padder.pad(&large);
+    assert_eq!(padded_large.len(), 1000);
+}
+
+#[test]
+fn test_zk_relay_circuit_expiry() {
+    use std::time::Duration;
+    use std::thread::sleep;
+
+    let secret = [42u8; KEY_SIZE];
+    let config = ZkRelayConfig {
+        circuit_lifetime: Duration::from_millis(50),
+        ..Default::default()
+    };
+    let mut client = ZkRelayClient::with_config(secret, config);
+    let peers = create_test_peers_zk(3);
+
+    let circuit_id = client.build_circuit(&peers).unwrap();
+    assert_eq!(client.active_circuits(), 1);
+
+    // Wait for expiry
+    sleep(Duration::from_millis(100));
+
+    // Request should fail on expired circuit
+    let result = client.wrap_request(&circuit_id, b"test");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_zk_relay_circuit_cleanup() {
+    use std::time::Duration;
+    use std::thread::sleep;
+
+    let secret = [42u8; KEY_SIZE];
+    let config = ZkRelayConfig {
+        circuit_lifetime: Duration::from_millis(10),
+        ..Default::default()
+    };
+    let mut client = ZkRelayClient::with_config(secret, config);
+
+    // Build several circuits
+    for _ in 0..5 {
+        let peers = create_test_peers_zk(3);
+        client.build_circuit(&peers).unwrap();
+    }
+
+    assert_eq!(client.active_circuits(), 5);
+
+    // Wait for expiry
+    sleep(Duration::from_millis(50));
+
+    // Cleanup expired
+    let cleaned = client.cleanup_expired();
+    assert_eq!(cleaned, 5);
+    assert_eq!(client.active_circuits(), 0);
+}
+
+#[test]
+fn test_zk_relay_destroy_circuit() {
+    let secret = [42u8; KEY_SIZE];
+    let mut client = ZkRelayClient::new(secret);
+    let peers = create_test_peers_zk(3);
+
+    let circuit_id = client.build_circuit(&peers).unwrap();
+    assert_eq!(client.active_circuits(), 1);
+
+    // Destroy should return a destroy cell
+    let destroy_cell = client.destroy_circuit(&circuit_id);
+    assert!(destroy_cell.is_some());
+    assert_eq!(destroy_cell.unwrap().cell_type, CellType::Destroy);
+    assert_eq!(client.active_circuits(), 0);
+
+    // Can't destroy again
+    let destroy_again = client.destroy_circuit(&circuit_id);
+    assert!(destroy_again.is_none());
+}
+
+#[test]
+fn test_zk_relay_padding_cells() {
+    let secret = [42u8; KEY_SIZE];
+    let config = ZkRelayConfig {
+        padding_enabled: true,
+        ..Default::default()
+    };
+    let mut client = ZkRelayClient::with_config(secret, config);
+    let peers = create_test_peers_zk(3);
+
+    let circuit_id = client.build_circuit(&peers).unwrap();
+
+    // Should generate padding cell
+    let padding = client.create_padding_cell(&circuit_id);
+    assert!(padding.is_some());
+    let cell = padding.unwrap();
+    assert_eq!(cell.cell_type, CellType::Padding);
+    assert!(!cell.payload.is_empty());
+}
+
+#[test]
+fn test_zk_relay_padding_disabled() {
+    let secret = [42u8; KEY_SIZE];
+    let config = ZkRelayConfig {
+        padding_enabled: false,
+        ..Default::default()
+    };
+    let mut client = ZkRelayClient::with_config(secret, config);
+    let peers = create_test_peers_zk(3);
+
+    let circuit_id = client.build_circuit(&peers).unwrap();
+
+    // Should not generate padding
+    let padding = client.create_padding_cell(&circuit_id);
+    assert!(padding.is_none());
+}
+
+#[test]
+fn test_zk_relay_minimum_hops() {
+    let secret = [42u8; KEY_SIZE];
+    let mut client = ZkRelayClient::new(secret);
+
+    // Single hop should fail
+    let single_peer = create_test_peers_zk(1);
+    let result = client.build_circuit(&single_peer);
+    assert!(result.is_err());
+
+    // Two hops should work
+    let two_peers = create_test_peers_zk(2);
+    let result = client.build_circuit(&two_peers);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_zk_relay_blind_response() {
+    let request = BlindRequest::new("test_hash".to_string());
+
+    let response = BlindResponse {
+        request_id: request.request_id,
+        encrypted_content: vec![1, 2, 3, 4, 5],
+        content_hash: "test_hash".to_string(),
+        success: true,
+        error: None,
+    };
+
+    assert!(response.success);
+    assert!(response.error.is_none());
+    assert_eq!(response.request_id, request.request_id);
+}
+
+#[test]
+fn test_zk_relay_node_circuit_limit() {
+    let node_secret = [99u8; KEY_SIZE];
+    let config = ZkRelayConfig {
+        max_circuits: 100,
+        ..Default::default()
+    };
+    let node = ZkRelayNode::with_config(node_secret, config);
+
+    // Node should start with 0 circuits
+    assert_eq!(node.active_circuits(), 0);
+}
+
+#[test]
+fn test_zk_relay_config_defaults() {
+    let config = ZkRelayConfig::default();
+
+    assert_eq!(config.default_hops, 3);
+    assert!(config.padding_enabled);
+    assert!(config.circuit_lifetime.as_secs() > 0);
+    assert!(config.max_circuits > 0);
+}
+
+#[test]
+fn test_zk_relay_full_workflow() {
+    // This test simulates the full ZK relay workflow:
+    // 1. Client builds circuit
+    // 2. Client wraps request
+    // 3. (In real world: request travels through relays)
+    // 4. Client can destroy circuit
+
+    let secret = [0xABu8; KEY_SIZE];
+    let mut client = ZkRelayClient::new(secret);
+    let peers = create_test_peers_zk(4);
+
+    // 1. Build circuit through 4 relays
+    let circuit_id = client.build_circuit(&peers).unwrap();
+    assert_eq!(client.active_circuits(), 1);
+
+    // 2. Create blind request
+    let blind_request = BlindRequest::new(
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi".to_string()
+    );
+    let request_bytes = bincode::serialize(&blind_request).unwrap();
+
+    // 3. Wrap request for circuit
+    let cell = client.wrap_request(&circuit_id, &request_bytes).unwrap();
+
+    // 4. Verify cell is properly formed
+    assert_eq!(cell.circuit_id, circuit_id);
+    assert_eq!(cell.cell_type, CellType::Relay);
+    assert!(cell.timestamp > 0);
+
+    // 5. Entry node should be first peer
+    let entry = client.get_entry_node(&circuit_id).unwrap();
+    assert_eq!(entry, peers[0]);
+
+    // 6. Cleanup
+    client.destroy_circuit(&circuit_id);
+    assert_eq!(client.active_circuits(), 0);
 }

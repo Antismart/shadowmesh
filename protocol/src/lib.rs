@@ -13,6 +13,7 @@
 //! - `replication` - Content replication and redundancy
 //! - `peer_discovery` - Peer discovery and scoring
 //! - `bandwidth` - Bandwidth tracking and rate limiting
+//! - `zk_relay` - Zero-knowledge relay for plausible deniability
 
 pub mod crypto;
 pub mod fragments;
@@ -23,6 +24,7 @@ pub mod dht;
 pub mod replication;
 pub mod peer_discovery;
 pub mod bandwidth;
+pub mod zk_relay;
 
 // Re-export crypto types
 pub use crypto::{
@@ -55,3 +57,12 @@ pub use peer_discovery::{PeerDiscovery, PeerInfo, PeerState, DiscoveryConfig, Di
 
 // Re-export bandwidth types
 pub use bandwidth::{BandwidthTracker, BandwidthStats, BandwidthSummary, RateLimiter, Direction};
+
+// Re-export ZK relay types
+pub use zk_relay::{
+    ZkRelayClient, ZkRelayNode, ZkRelayConfig,
+    RelayCell, RelayPayload, RelayAction, RelayError,
+    Circuit, CircuitHop, CircuitId, HopId,
+    CellType, BlindRequest, BlindResponse,
+    RelayStats, TrafficPadder,
+};
