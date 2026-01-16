@@ -9,12 +9,20 @@
 //! - `routing` - Multi-hop onion routing
 //! - `node` - P2P network node implementation
 //! - `storage` - IPFS/Filecoin integration
+//! - `dht` - Distributed hash table for content discovery
+//! - `replication` - Content replication and redundancy
+//! - `peer_discovery` - Peer discovery and scoring
+//! - `bandwidth` - Bandwidth tracking and rate limiting
 
 pub mod crypto;
 pub mod fragments;
 pub mod node;
 pub mod routing;
 pub mod storage;
+pub mod dht;
+pub mod replication;
+pub mod peer_discovery;
+pub mod bandwidth;
 
 // Re-export crypto types
 pub use crypto::{
@@ -35,3 +43,15 @@ pub use node::ShadowNode;
 
 // Re-export storage types
 pub use storage::{StorageLayer, StorageConfig};
+
+// Re-export DHT types
+pub use dht::{DHTManager, DHTResult, ContentRecord, ProviderInfo, ContentDHTMetadata, BandwidthStats as DHTBandwidthStats};
+
+// Re-export replication types
+pub use replication::{ReplicationManager, ReplicationStatus, ReplicationHealth, ReplicationPriority};
+
+// Re-export peer discovery types
+pub use peer_discovery::{PeerDiscovery, PeerInfo, PeerState, DiscoveryConfig, DiscoveryStats};
+
+// Re-export bandwidth types
+pub use bandwidth::{BandwidthTracker, BandwidthStats, BandwidthSummary, RateLimiter, Direction};
