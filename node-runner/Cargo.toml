@@ -13,3 +13,8 @@ protocol = { path = "../protocol" }
 config = "0.14"
 toml = "0.8"
 tempfile = "3.10"
+
+[dev-dependencies]
+hyper = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }

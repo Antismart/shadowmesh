@@ -21,3 +21,9 @@ config = "0.14"
 toml = "0.8"
 thiserror = "2.0"
 uuid = { version = "1.11", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+hyper = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }
