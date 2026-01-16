@@ -1,0 +1,72 @@
+# ShadowMesh Node Configuration
+# This file is automatically loaded from node-config.toml or SHADOWMESH_CONFIG env var
+
+# Node Identity
+[identity]
+# Display name for this node
+name = "My ShadowMesh Node"
+# Path to identity key (will be generated if not exists)
+key_file = ".shadowmesh/identity.key"
+# Geographic region (optional, helps with routing optimization)
+# region = "us-west"
+
+# Storage Configuration
+[storage]
+# Directory for storing fragments
+data_dir = ".shadowmesh/data"
+# Maximum storage capacity in bytes (default: 10 GB)
+max_storage_bytes = 10737418240
+# Enable automatic garbage collection
+gc_enabled = true
+# Garbage collection interval in seconds (default: 1 hour)
+gc_interval_secs = 3600
+# Minimum free space to maintain in bytes (default: 1 GB)
+min_free_space_bytes = 1073741824
+
+# Network Configuration
+[network]
+# P2P listen addresses
+listen_addresses = [
+    "/ip4/0.0.0.0/tcp/4001",
+    "/ip6/::/tcp/4001"
+]
+# Bootstrap nodes (add official or known peers here)
+bootstrap_nodes = []
+# Maximum inbound bandwidth in bytes/sec (optional, remove for unlimited)
+# max_inbound_bandwidth = 104857600  # 100 MB/s
+# Maximum outbound bandwidth in bytes/sec (optional, remove for unlimited)
+# max_outbound_bandwidth = 104857600  # 100 MB/s
+# Maximum number of peer connections
+max_peers = 50
+# Enable mDNS for local peer discovery
+enable_mdns = true
+# Enable DHT for content discovery
+enable_dht = true
+# Replication factor for stored content (1-10)
+replication_factor = 3
+
+# Dashboard Configuration
+[dashboard]
+# Enable web dashboard
+enabled = true
+# Dashboard host address
+host = "127.0.0.1"
+# Dashboard port
+port = 3030
+# Enable CORS for API
+enable_cors = true
+# Allowed CORS origins (empty = allow all)
+cors_origins = []
+
+# Performance Configuration
+[performance]
+# Number of worker threads (0 = auto, uses number of CPU cores)
+worker_threads = 0
+# Maximum concurrent requests
+max_concurrent_requests = 100
+# Request timeout in seconds
+request_timeout_secs = 30
+# Enable request caching
+enable_cache = true
+# Cache size in entries
+cache_size = 1000

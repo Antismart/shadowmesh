@@ -1,126 +1,206 @@
+//! ShadowMesh Node Runner
+//!
+//! A complete node implementation for the ShadowMesh decentralized CDN.
+
 use axum::{
-    routing::{get, post},
-    Router, Json,
+    routing::get,
+    Router,
     response::Html,
 };
-use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::net::TcpListener;
+use tokio::sync::{broadcast, RwLock};
+use tower_http::cors::{Any, CorsLayer};
 
+mod api;
+mod config;
 mod dashboard;
+mod metrics;
+mod storage;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct NodeStatus {
-    peer_id: String,
-    uptime: u64,
-    bandwidth_served: u64,
-    fragments_stored: u32,
-    earnings: f64,
-}
+use config::NodeConfig;
+use metrics::MetricsCollector;
+use storage::StorageManager;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct NodeConfig {
-    max_storage: u64,
-    max_bandwidth: u64,
-}
-
-struct AppState {
-    start_time: std::time::Instant,
-    config: RwLock<NodeConfig>,
-    bandwidth_served: RwLock<u64>,
-    fragments_stored: RwLock<u32>,
+/// Shared application state
+pub struct AppState {
+    /// Node peer ID
+    pub peer_id: String,
+    /// Node configuration
+    pub config: RwLock<NodeConfig>,
+    /// Metrics collector
+    pub metrics: Arc<MetricsCollector>,
+    /// Storage manager
+    pub storage: Arc<StorageManager>,
+    /// Shutdown signal sender
+    pub shutdown_signal: broadcast::Sender<()>,
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🌐 Starting ShadowMesh Node Runner...");
+    println!();
 
-    // Initialize shared state
-    let state = Arc::new(AppState {
-        start_time: std::time::Instant::now(),
-        config: RwLock::new(NodeConfig {
-            max_storage: 10 * 1024 * 1024 * 1024, // 10 GB
-            max_bandwidth: 100 * 1024 * 1024,     // 100 MB/s
-        }),
-        bandwidth_served: RwLock::new(0),
-        fragments_stored: RwLock::new(0),
-    });
-
-    // Initialize the ShadowMesh protocol node
-    let node = match shadowmesh_protocol::ShadowNode::new().await {
-        Ok(node) => {
-            println!("✅ Protocol node initialized: {:?}", node.peer_id());
-            Some(node)
+    // Load configuration
+    let config = match NodeConfig::load() {
+        Ok(cfg) => {
+            println!("✅ Configuration loaded");
+            cfg
         }
         Err(e) => {
-            println!("⚠️  Failed to initialize protocol node: {}", e);
-            println!("   Running in dashboard-only mode");
-            None
+            println!("⚠️  Failed to load config: {}", e);
+            println!("   Using default configuration");
+            NodeConfig::default()
         }
     };
-    
-    // Start P2P networking in background if node initialized
-    if let Some(mut node) = node {
-        tokio::spawn(async move {
-            if let Err(e) = node.start().await {
-                eprintln!("P2P network error: {}", e);
-            }
-        });
+
+    // Validate configuration
+    if let Err(errors) = config.validate() {
+        eprintln!("❌ Configuration validation failed:");
+        for err in errors {
+            eprintln!("   - {}", err);
+        }
+        return Err("Invalid configuration".into());
     }
+
+    config.print_summary();
+    println!();
+
+    // Create data directories
+    let data_dir = config.storage.data_dir.clone();
+    if let Err(e) = tokio::fs::create_dir_all(&data_dir).await {
+        eprintln!("❌ Failed to create data directory: {}", e);
+        return Err(e.into());
+    }
+
+    // Initialize storage manager
+    let storage = match StorageManager::new(
+        data_dir.clone(),
+        config.storage.max_storage_bytes,
+    ).await {
+        Ok(s) => {
+            let stats = s.get_stats().await;
+            println!("✅ Storage initialized");
+            println!("   📦 {} fragments, {} used",
+                stats.fragment_count,
+                metrics::BandwidthStats::format_bytes(stats.total_bytes)
+            );
+            Arc::new(s)
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to initialize storage: {}", e);
+            return Err(e.into());
+        }
+    };
+
+    // Initialize metrics collector
+    let metrics = Arc::new(MetricsCollector::new());
     
-    // Build the web dashboard router
+    // Start background metrics recording
+    metrics.clone().start_background_recording();
+
+    // Create shutdown signal
+    let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
+
+    // Initialize the ShadowMesh protocol node
+    let peer_id = match shadowmesh_protocol::ShadowNode::new().await {
+        Ok(node) => {
+            let peer_id = node.peer_id().to_string();
+            println!("✅ P2P node initialized");
+            println!("   🆔 Peer ID: {}", &peer_id[..20]);
+            
+            // Start P2P networking in background
+            tokio::spawn(async move {
+                let mut node = node;
+                if let Err(e) = node.start().await {
+                    eprintln!("❌ P2P network error: {}", e);
+                }
+            });
+            
+            peer_id
+        }
+        Err(e) => {
+            println!("⚠️  Failed to initialize P2P node: {}", e);
+            println!("   Running in dashboard-only mode");
+            "offline".to_string()
+        }
+    };
+
+    println!();
+
+    // Create shared state
+    let state = Arc::new(AppState {
+        peer_id,
+        config: RwLock::new(config.clone()),
+        metrics,
+        storage,
+        shutdown_signal: shutdown_tx,
+    });
+
+    // Build CORS layer
+    let cors = if config.dashboard.enable_cors {
+        if config.dashboard.cors_origins.is_empty() {
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any)
+        } else {
+            let origins: Vec<_> = config.dashboard.cors_origins
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods(Any)
+                .allow_headers(Any)
+        }
+    } else {
+        CorsLayer::new()
+    };
+
+    // Build the router
     let app = Router::new()
-        .route("/", get(dashboard_handler))
-        .route("/api/status", get({
-            let state = Arc::clone(&state);
-            move || status_handler(state)
-        }))
-        .route("/api/config", get({
-            let state = Arc::clone(&state);
-            move || get_config_handler(state)
-        }))
-        .route("/api/config", post({
-            let state = Arc::clone(&state);
-            move |body| config_handler(state, body)
-        }));
+        // Dashboard
+        .route("/", get(serve_dashboard))
+        // API routes
+        .nest("/api", api::api_routes())
+        // Add state and middleware
+        .with_state(state.clone())
+        .layer(cors);
+
+    // Bind to address
+    let bind_addr = config.dashboard.bind_address();
+    let listener = TcpListener::bind(&bind_addr).await?;
+
+    println!("🚀 Node dashboard running at http://{}", bind_addr);
+    println!("📊 API available at http://{}/api/status", bind_addr);
+    println!();
+    println!("Press Ctrl+C to stop the node");
+    println!();
+
+    // Run server with graceful shutdown
+    let mut shutdown_rx = state.shutdown_signal.subscribe();
     
-    let listener = TcpListener::bind("127.0.0.1:3030")
-        .await
-        .expect("Failed to bind to port 3030");
-    
-    println!("🚀 Node dashboard running at http://localhost:3030");
-    println!("📊 API available at http://localhost:3030/api/status");
-    
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    println!();
+                    println!("🛑 Shutting down...");
+                }
+                _ = shutdown_rx.recv() => {
+                    println!();
+                    println!("🛑 Shutdown signal received...");
+                }
+            }
+        })
+        .await?;
+
+    println!("✅ Node stopped gracefully");
+    Ok(())
 }
 
-async fn dashboard_handler() -> Html<&'static str> {
+/// Serve the dashboard HTML
+async fn serve_dashboard() -> Html<&'static str> {
     Html(include_str!("../assets/dashboard.html"))
-}
-
-async fn status_handler(state: Arc<AppState>) -> Json<NodeStatus> {
-    let uptime = state.start_time.elapsed().as_secs();
-    let bandwidth = *state.bandwidth_served.read().await;
-    let fragments = *state.fragments_stored.read().await;
-
-    Json(NodeStatus {
-        peer_id: "12D3KooW...".to_string(), // TODO: Get real peer ID
-        uptime,
-        bandwidth_served: bandwidth,
-        fragments_stored: fragments,
-        earnings: 0.0, // Future: actual token earnings
-    })
-}
-
-async fn get_config_handler(state: Arc<AppState>) -> Json<NodeConfig> {
-    let config = state.config.read().await;
-    Json(config.clone())
-}
-
-async fn config_handler(state: Arc<AppState>, Json(new_config): Json<NodeConfig>) -> Json<NodeConfig> {
-    let mut config = state.config.write().await;
-    *config = new_config.clone();
-    println!("📝 Configuration updated: {:?}", new_config);
-    Json(new_config)
 }

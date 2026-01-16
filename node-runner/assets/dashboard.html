@@ -216,11 +216,11 @@
                 const data = await response.json();
                 
                 // Update stats
-                document.getElementById('uptime').textContent = formatUptime(data.uptime);
-                document.getElementById('bandwidth').textContent = formatBytes(data.bandwidth_served);
-                document.getElementById('fragments').textContent = data.fragments_stored.toLocaleString();
-                document.getElementById('earnings').textContent = `${data.earnings.toFixed(4)} SMT`;
-                document.getElementById('peerId').textContent = data.peer_id;
+                document.getElementById('uptime').textContent = data.uptime_formatted;
+                document.getElementById('bandwidth').textContent = data.bandwidth_served;
+                document.getElementById('fragments').textContent = formatBytes(data.storage_used);
+                document.getElementById('earnings').textContent = `${data.connected_peers} peers`;
+                document.getElementById('peerId').textContent = data.peer_id.substring(0, 16) + '...';
                 
                 // Update bandwidth chart
                 const now = new Date();
@@ -233,17 +233,22 @@
                 
                 bandwidthChart.data.labels.push(timeLabel);
                 bandwidthChart.data.datasets[0].data.push(
-                    (data.bandwidth_served / (1024 * 1024)).toFixed(2)
+                    (data.storage_used / (1024 * 1024)).toFixed(2)
                 );
                 bandwidthChart.update('none');
                 
-                // Update activity chart with random data for demo
+                // Fetch metrics for activity chart
+                const metricsResponse = await fetch('/api/metrics');
+                const metrics = await metricsResponse.json();
+                
+                // Update activity chart
                 activityChart.data.datasets[0].data = [
-                    Math.floor(Math.random() * 100),
-                    data.fragments_stored,
-                    Math.floor(Math.random() * 20),
-                    Math.floor(Math.random() * 50)
+                    metrics.requests.total || 0,
+                    metrics.network.connected_peers || 0,
+                    metrics.requests.cache_hits || 0,
+                    metrics.requests.failed || 0
                 ];
+                activityChart.data.labels = ['Requests', 'Peers', 'Cache Hits', 'Errors'];
                 activityChart.update('none');
                 
             } catch (error) {
@@ -274,16 +279,16 @@
         }
         
         async function saveConfig() {
-            const maxStorage = parseInt(document.getElementById('maxStorage').value) * 1024 * 1024 * 1024;
-            const maxBandwidth = parseInt(document.getElementById('maxBandwidth').value) * 1024 * 1024;
+            const maxStorage = parseFloat(document.getElementById('maxStorage').value);
+            const maxBandwidth = parseInt(document.getElementById('maxBandwidth').value);
             
             try {
                 const response = await fetch('/api/config', {
-                    method: 'POST',
+                    method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        max_storage: maxStorage,
-                        max_bandwidth: maxBandwidth
+                        max_storage_gb: maxStorage,
+                        max_bandwidth_mbps: maxBandwidth
                     })
                 });
                 
@@ -303,8 +308,10 @@
                 const response = await fetch('/api/config');
                 const data = await response.json();
                 
-                document.getElementById('maxStorage').value = Math.floor(data.max_storage / (1024 * 1024 * 1024));
-                document.getElementById('maxBandwidth').value = Math.floor(data.max_bandwidth / (1024 * 1024));
+                document.getElementById('maxStorage').value = (data.storage.max_storage_bytes / (1024 * 1024 * 1024)).toFixed(0);
+                document.getElementById('maxBandwidth').value = data.network.max_outbound_bandwidth 
+                    ? Math.floor(data.network.max_outbound_bandwidth / (1024 * 1024))
+                    : 100;
             } catch (error) {
                 console.error('Failed to load config:', error);
             }
