@@ -7,6 +7,8 @@
 //! - Replication management
 //! - Peer discovery
 //! - Bandwidth tracking
+//! - ZK Relay
+//! - Adaptive Routing with censorship detection
 
 use shadowmesh_protocol::{
     // Fragment types
@@ -24,7 +26,10 @@ use shadowmesh_protocol::{
     BandwidthTracker, RateLimiter,
     // ZK Relay types
     ZkRelayClient, ZkRelayNode, ZkRelayConfig, RelayCell, RelayPayload,
-    CellType, BlindRequest, BlindResponse, TrafficPadder, RelayAction,
+    CellType, BlindRequest, BlindResponse, TrafficPadder,
+    // Adaptive Routing types
+    AdaptiveRouter, AdaptiveRoutingConfig, RouteStrategy,
+    CensorshipStatus, FailureType, GeoRegion, RelayInfo, PathHealth,
     KEY_SIZE,
 };
 
@@ -1116,4 +1121,482 @@ fn test_zk_relay_full_workflow() {
     // 6. Cleanup
     client.destroy_circuit(&circuit_id);
     assert_eq!(client.active_circuits(), 0);
+}
+
+// ============================================================================
+// Adaptive Routing Integration Tests
+// ============================================================================
+
+fn create_relay_info(peer_id: libp2p::PeerId, country: &str, is_guard: bool, is_exit: bool) -> RelayInfo {
+    let mut info = RelayInfo::with_geo(peer_id, country, None);
+    info.is_guard = is_guard;
+    info.is_exit = is_exit;
+    info.reputation = 0.8;
+    info.avg_latency_ms = 50;
+    info.bandwidth_bps = 10_000_000;
+    info
+}
+
+#[test]
+fn test_adaptive_router_creation() {
+    let router = AdaptiveRouter::new();
+    assert_eq!(router.relay_count(), 0);
+    assert_eq!(router.active_route_count(), 0);
+}
+
+#[test]
+fn test_adaptive_router_with_config() {
+    let config = AdaptiveRoutingConfig {
+        strategy: RouteStrategy::HighPrivacy,
+        min_hops: 4,
+        max_hops: 6,
+        require_geo_diversity: true,
+        auto_failover: true,
+        ..Default::default()
+    };
+    let router = AdaptiveRouter::with_config(config);
+    assert_eq!(router.relay_count(), 0);
+}
+
+#[test]
+fn test_relay_registration_and_retrieval() {
+    let router = AdaptiveRouter::new();
+
+    let peer_id = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+    let info = create_relay_info(peer_id, "US", true, false);
+
+    router.register_relay(info.clone());
+    assert_eq!(router.relay_count(), 1);
+
+    let retrieved = router.get_relay(&peer_id);
+    assert!(retrieved.is_some());
+    assert_eq!(retrieved.unwrap().peer_id, peer_id);
+}
+
+#[test]
+fn test_geo_region_diversity() {
+    // Test that geographic regions are properly assigned
+    assert_eq!(GeoRegion::from_country_code("US"), GeoRegion::NorthAmerica);
+    assert_eq!(GeoRegion::from_country_code("CA"), GeoRegion::NorthAmerica);
+    assert_eq!(GeoRegion::from_country_code("DE"), GeoRegion::Europe);
+    assert_eq!(GeoRegion::from_country_code("FR"), GeoRegion::Europe);
+    assert_eq!(GeoRegion::from_country_code("JP"), GeoRegion::Asia);
+    assert_eq!(GeoRegion::from_country_code("CN"), GeoRegion::Asia);
+    assert_eq!(GeoRegion::from_country_code("AU"), GeoRegion::Oceania);
+    assert_eq!(GeoRegion::from_country_code("BR"), GeoRegion::SouthAmerica);
+    assert_eq!(GeoRegion::from_country_code("ZA"), GeoRegion::Africa);
+    assert_eq!(GeoRegion::from_country_code("AE"), GeoRegion::MiddleEast);
+}
+
+#[test]
+fn test_route_computation_basic() {
+    let config = AdaptiveRoutingConfig {
+        min_hops: 2,
+        max_hops: 3,
+        require_geo_diversity: false,
+        ..Default::default()
+    };
+    let router = AdaptiveRouter::with_config(config);
+
+    // Register relays from different regions
+    for country in &["US", "DE", "JP", "AU"] {
+        let peer_id = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let info = create_relay_info(peer_id, country, true, true);
+        router.register_relay(info);
+    }
+
+    let route = router.compute_route(None).unwrap();
+    assert!(route.relays.len() >= 2);
+    assert!(route.health_score > 0.0);
+    assert!(!route.is_backup);
+}
+
+#[test]
+fn test_route_computation_insufficient_relays() {
+    let config = AdaptiveRoutingConfig {
+        min_hops: 5,
+        ..Default::default()
+    };
+    let router = AdaptiveRouter::with_config(config);
+
+    // Only 2 relays
+    for country in &["US", "DE"] {
+        let peer_id = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let info = create_relay_info(peer_id, country, true, true);
+        router.register_relay(info);
+    }
+
+    let result = router.compute_route(None);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_censorship_detection_patterns() {
+    // Test failure types that indicate censorship
+    assert!(FailureType::ConnectionReset.is_censorship_indicator());
+    assert!(FailureType::ContentTampering.is_censorship_indicator());
+    assert!(FailureType::DnsFailure.is_censorship_indicator());
+    assert!(FailureType::TlsFailure.is_censorship_indicator());
+    assert!(FailureType::Timeout.is_censorship_indicator());
+
+    // These should NOT indicate censorship
+    assert!(!FailureType::ConnectionRefused.is_censorship_indicator());
+    assert!(!FailureType::HttpError(404).is_censorship_indicator());
+    assert!(!FailureType::NetworkError.is_censorship_indicator());
+}
+
+#[test]
+fn test_path_health_success_tracking() {
+    let from = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+    let to = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+
+    let mut health = PathHealth::new(from, to);
+
+    // Record successes
+    health.record_success(50, 1000);
+    health.record_success(60, 2000);
+    health.record_success(55, 1500);
+
+    assert_eq!(health.consecutive_failures, 0);
+    assert!(health.last_success.is_some());
+    assert!(!health.should_avoid());
+}
+
+#[test]
+fn test_path_health_failure_tracking() {
+    let from = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+    let to = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+
+    let mut health = PathHealth::new(from, to);
+
+    // Record failures
+    health.record_failure(FailureType::Timeout);
+    assert_eq!(health.consecutive_failures, 1);
+
+    health.record_failure(FailureType::ConnectionReset);
+    assert_eq!(health.consecutive_failures, 2);
+
+    // Success resets counter
+    health.record_success(50, 1000);
+    assert_eq!(health.consecutive_failures, 0);
+}
+
+#[test]
+fn test_censorship_status_progression() {
+    let from = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+    let to = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+
+    let mut health = PathHealth::new(from, to);
+
+    // Initially unknown
+    assert_eq!(health.censorship_status, CensorshipStatus::Unknown);
+
+    // Record many censorship-indicative failures
+    for _ in 0..10 {
+        health.record_failure(FailureType::ConnectionReset);
+    }
+
+    // Should be confirmed censorship
+    assert_eq!(health.censorship_status, CensorshipStatus::Confirmed);
+    assert!(health.should_avoid());
+}
+
+#[test]
+fn test_blocked_path_management() {
+    let router = AdaptiveRouter::new();
+
+    let from = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+    let to = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+
+    // Initially empty
+    assert!(router.blocked_paths().is_empty());
+
+    // Block a path (simulating confirmed censorship)
+    router.block_path(from, to);
+
+    assert_eq!(router.blocked_paths().len(), 1);
+
+    // Unblock
+    router.unblock_path(from, to);
+    assert!(router.blocked_paths().is_empty());
+}
+
+#[test]
+fn test_routing_success_recording() {
+    let config = AdaptiveRoutingConfig {
+        min_hops: 2,
+        require_geo_diversity: false,
+        ..Default::default()
+    };
+    let router = AdaptiveRouter::with_config(config);
+
+    for country in &["US", "DE", "JP"] {
+        let peer_id = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let info = create_relay_info(peer_id, country, true, true);
+        router.register_relay(info);
+    }
+
+    let route = router.compute_route(None).unwrap();
+    router.record_success(&route.id, 100, 5000);
+
+    let stats = router.stats();
+    assert_eq!(stats.successful_deliveries, 1);
+}
+
+#[test]
+fn test_routing_failure_and_failover() {
+    let config = AdaptiveRoutingConfig {
+        min_hops: 2,
+        require_geo_diversity: false,
+        auto_failover: true,
+        ..Default::default()
+    };
+    let router = AdaptiveRouter::with_config(config);
+
+    // Register plenty of relays for backup routes
+    for country in &["US", "DE", "JP", "AU", "GB", "FR", "CA", "NL"] {
+        let peer_id = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let info = create_relay_info(peer_id, country, true, true);
+        router.register_relay(info);
+    }
+
+    let route = router.compute_route(None).unwrap();
+
+    // Record failure
+    let backup = router.record_failure(&route.id, 0, FailureType::ConnectionReset);
+
+    let stats = router.stats();
+    assert!(stats.failed_deliveries > 0 || backup.is_some());
+}
+
+#[test]
+fn test_routing_strategies() {
+    // Low latency should prefer fewer hops
+    let low_latency_config = AdaptiveRoutingConfig {
+        strategy: RouteStrategy::LowLatency,
+        min_hops: 2,
+        max_hops: 5,
+        require_geo_diversity: false,
+        ..Default::default()
+    };
+
+    // High privacy should prefer more hops
+    let high_privacy_config = AdaptiveRoutingConfig {
+        strategy: RouteStrategy::HighPrivacy,
+        min_hops: 2,
+        max_hops: 5,
+        require_geo_diversity: false,
+        ..Default::default()
+    };
+
+    let fast_router = AdaptiveRouter::with_config(low_latency_config);
+    let private_router = AdaptiveRouter::with_config(high_privacy_config);
+
+    for country in &["US", "DE", "JP", "AU", "GB"] {
+        let peer_id1 = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let peer_id2 = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+
+        fast_router.register_relay(create_relay_info(peer_id1, country, true, true));
+        private_router.register_relay(create_relay_info(peer_id2, country, true, true));
+    }
+
+    let fast_route = fast_router.compute_route(None).unwrap();
+    let private_route = private_router.compute_route(None).unwrap();
+
+    // High privacy should have more or equal hops
+    assert!(private_route.relays.len() >= fast_route.relays.len());
+}
+
+#[test]
+fn test_relay_info_health_check() {
+    let peer_id = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+
+    let mut info = RelayInfo::new(peer_id);
+    info.reputation = 0.8;
+    info.load = 0.3;
+    assert!(info.is_healthy());
+
+    // Low reputation = unhealthy
+    info.reputation = 0.1;
+    assert!(!info.is_healthy());
+
+    // High load = unhealthy
+    info.reputation = 0.8;
+    info.load = 0.95;
+    assert!(!info.is_healthy());
+}
+
+#[test]
+fn test_relay_fitness_scoring() {
+    let peer_id = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+
+    let mut info = RelayInfo::new(peer_id);
+    info.avg_latency_ms = 50;
+    info.load = 0.2;
+    info.reputation = 0.9;
+
+    let score = info.fitness_score(true);
+    assert!(score > 0.5);
+
+    // Higher load should reduce score
+    info.load = 0.9;
+    let lower_score = info.fitness_score(true);
+    assert!(lower_score < score);
+}
+
+#[test]
+fn test_adaptive_routing_full_workflow() {
+    // Complete workflow: setup -> compute -> use -> fail -> failover
+
+    let config = AdaptiveRoutingConfig {
+        min_hops: 3,
+        max_hops: 4,
+        require_geo_diversity: false,
+        auto_failover: true,
+        ..Default::default()
+    };
+    let router = AdaptiveRouter::with_config(config);
+
+    // 1. Register diverse relay network
+    let countries = ["US", "DE", "JP", "AU", "GB", "FR", "CA", "NL", "SG", "BR"];
+    let mut peer_ids = Vec::new();
+    for country in &countries {
+        let peer_id = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        peer_ids.push(peer_id);
+        router.register_relay(create_relay_info(peer_id, country, true, true));
+    }
+
+    assert_eq!(router.relay_count(), 10);
+
+    // 2. Compute initial route
+    let route = router.compute_route(None).unwrap();
+    assert!(route.relays.len() >= 3);
+    assert!(route.health_score > 0.0);
+    assert_eq!(router.active_route_count(), 1);
+
+    // 3. Simulate successful delivery
+    router.record_success(&route.id, 150, 10000);
+    let stats = router.stats();
+    assert_eq!(stats.successful_deliveries, 1);
+    assert_eq!(stats.routes_computed, 1);
+
+    // 4. Simulate failure with censorship indicator
+    router.record_failure(&route.id, 0, FailureType::ConnectionReset);
+    let stats = router.stats();
+    assert_eq!(stats.failed_deliveries, 1);
+
+    // 5. Check that failover was triggered
+    assert!(stats.failovers_triggered > 0);
+}
+
+#[test]
+fn test_avoid_regions_config() {
+    use std::collections::HashSet;
+
+    let mut avoid_regions = HashSet::new();
+    avoid_regions.insert(GeoRegion::Asia);
+    avoid_regions.insert(GeoRegion::MiddleEast);
+
+    let config = AdaptiveRoutingConfig {
+        min_hops: 2,
+        max_hops: 3,
+        require_geo_diversity: false,
+        avoid_regions,
+        ..Default::default()
+    };
+    let router = AdaptiveRouter::with_config(config);
+
+    // Register relays including ones in avoided regions
+    let regions = [
+        ("US", GeoRegion::NorthAmerica),
+        ("DE", GeoRegion::Europe),
+        ("JP", GeoRegion::Asia),  // Should be avoided
+        ("AU", GeoRegion::Oceania),
+        ("AE", GeoRegion::MiddleEast),  // Should be avoided
+    ];
+
+    for (country, _region) in &regions {
+        let peer_id = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        router.register_relay(create_relay_info(peer_id, country, true, true));
+    }
+
+    let route = router.compute_route(None).unwrap();
+
+    // Route should not include Asia or Middle East
+    for region in &route.regions {
+        assert!(!matches!(region, GeoRegion::Asia | GeoRegion::MiddleEast));
+    }
+}
+
+#[test]
+fn test_path_health_rate_calculations() {
+    let from = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+    let to = libp2p::identity::Keypair::generate_ed25519()
+        .public()
+        .to_peer_id();
+
+    let mut health = PathHealth::new(from, to);
+
+    // 7 successes, 3 failures = 30% failure rate
+    for _ in 0..7 {
+        health.record_success(50, 1000);
+    }
+    for _ in 0..3 {
+        health.record_failure(FailureType::Timeout);
+    }
+
+    let failure_rate = health.failure_rate();
+    assert!(failure_rate > 0.25 && failure_rate < 0.35);
+}
+
+#[test]
+fn test_routing_stats() {
+    let router = AdaptiveRouter::new();
+    let stats = router.stats();
+
+    assert_eq!(stats.routes_computed, 0);
+    assert_eq!(stats.successful_deliveries, 0);
+    assert_eq!(stats.failed_deliveries, 0);
+    assert_eq!(stats.failovers_triggered, 0);
+    assert_eq!(stats.censorship_events, 0);
 }

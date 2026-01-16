@@ -14,6 +14,7 @@
 //! - `peer_discovery` - Peer discovery and scoring
 //! - `bandwidth` - Bandwidth tracking and rate limiting
 //! - `zk_relay` - Zero-knowledge relay for plausible deniability
+//! - `adaptive_routing` - Censorship detection and route-around
 
 pub mod crypto;
 pub mod fragments;
@@ -25,6 +26,7 @@ pub mod replication;
 pub mod peer_discovery;
 pub mod bandwidth;
 pub mod zk_relay;
+pub mod adaptive_routing;
 
 // Re-export crypto types
 pub use crypto::{
@@ -65,4 +67,12 @@ pub use zk_relay::{
     Circuit, CircuitHop, CircuitId, HopId,
     CellType, BlindRequest, BlindResponse,
     RelayStats, TrafficPadder,
+};
+
+// Re-export adaptive routing types
+pub use adaptive_routing::{
+    AdaptiveRouter, AdaptiveRoutingConfig, ComputedRoute,
+    RoutingStats as AdaptiveRoutingStats, RoutingError,
+    RouteStrategy, CensorshipStatus, FailureType,
+    GeoRegion, RelayInfo, PathHealth,
 };
