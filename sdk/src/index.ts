@@ -1,8 +1,120 @@
+/**
+ * ShadowMesh SDK
+ * Decentralized content hosting and delivery network
+ */
+
+// Re-export all types
+export * from './types.js';
+
+// Re-export client
+export {
+  GatewayClient,
+  NodeClient,
+  createGatewayClient,
+  createNodeClient,
+} from './client.js';
+
+// Re-export crypto utilities
+export {
+  hashContent,
+  hashString,
+  deriveKey,
+  encrypt,
+  decrypt,
+  serializeEncrypted,
+  deserializeEncrypted,
+  verifyHash,
+  generateId,
+  secureCompare,
+  encryptToBase64,
+  decryptFromBase64,
+  randomBytes,
+  type EncryptedData,
+} from './crypto.js';
+
+// Re-export storage
+export {
+  // Backends
+  type StorageBackend,
+  MemoryStorage,
+  IndexedDBStorage,
+  // Content storage
+  type ContentStorageConfig,
+  type StoredContent,
+  ContentStorage,
+  // Fragment utilities
+  reassembleContent,
+  fragmentContent,
+  // IPFS
+  type IPFSConfig,
+  IPFSClient,
+} from './storage.js';
+
+// Re-export cache
+export {
+  type CacheEntry,
+  type CacheStats,
+  LRUCache,
+  ContentCache,
+  RequestDeduplicator,
+  type FetchFunction,
+  createCachedFetch,
+  ContentPreloader,
+} from './cache.js';
+
+// Re-export utilities
+export {
+  // Size formatting
+  formatBytes,
+  parseBytes,
+  // Time formatting
+  formatDuration,
+  formatRelativeTime,
+  // URL utilities
+  buildUrl,
+  parseQuery,
+  joinPaths,
+  // CID utilities
+  isValidCid,
+  extractCid,
+  buildIpfsUrl,
+  // Retry & backoff
+  type RetryOptions,
+  retry,
+  // Async utilities
+  sleep,
+  timeout,
+  concurrent,
+  debounce,
+  throttle,
+  // Data utilities
+  deepClone,
+  deepMerge,
+  // Encoding utilities
+  bytesToHex,
+  hexToBytes,
+  bytesToBase64,
+  base64ToBytes,
+  stringToBytes,
+  bytesToString,
+  // Validation utilities
+  assert,
+  ensureDefined,
+  isError,
+  // Environment utilities
+  isBrowser,
+  isNode,
+  isWebWorker,
+  // Event emitter
+  EventEmitter,
+} from './utils.js';
+
+// Legacy ShadowMesh class (for backwards compatibility)
 import { create } from '@web3-storage/w3up-client';
 import fs from 'fs/promises';
 import path from 'path';
 
-export interface DeployOptions {
+export interface LegacyDeployOptions {
   path: string;
   domain?: string;
   ens?: string;
@@ -10,15 +122,15 @@ export interface DeployOptions {
   redundancy?: number;
 }
 
-export interface DeploymentResult {
+export interface LegacyDeploymentResult {
   gateway: string;
   native: string;
   cid: string;
   ens?: string;
-  manifest: ContentManifest;
+  manifest: LegacyContentManifest;
 }
 
-export interface ContentManifest {
+export interface LegacyContentManifest {
   content_hash: string;
   fragments: string[];
   metadata: {
@@ -28,6 +140,9 @@ export interface ContentManifest {
   };
 }
 
+/**
+ * @deprecated Use ShadowMeshClient instead
+ */
 export class ShadowMesh {
   private client: ReturnType<typeof create> | null = null;
   private networkEndpoint: string;
@@ -38,7 +153,7 @@ export class ShadowMesh {
       : 'https://testnet.shadowmesh.network';
   }
 
-  async deploy(options: DeployOptions): Promise<DeploymentResult> {
+  async deploy(options: LegacyDeployOptions): Promise<LegacyDeploymentResult> {
     console.log(`📦 Deploying ${options.path}...`);
 
     // 1. Read and prepare content
@@ -54,7 +169,7 @@ export class ShadowMesh {
     await this.announceToNetwork(manifest, options);
     
     // 5. Generate URLs
-    const result: DeploymentResult = {
+    const result: LegacyDeploymentResult = {
       gateway: `https://${cid}.shadowmesh.network`,
       native: `shadow://${cid}`,
       cid,
@@ -80,12 +195,12 @@ export class ShadowMesh {
     return fs.readFile(filePath);
   }
 
-  private async fragmentContent(content: Buffer, filePath: string): Promise<ContentManifest> {
+  private async fragmentContent(content: Buffer, filePath: string): Promise<LegacyContentManifest> {
     try {
       // Call Rust protocol via HTTP API
       const response = await fetch(`${this.networkEndpoint}/fragment`, {
         method: 'POST',
-        body: content,
+        body: new Uint8Array(content),
       });
       
       if (response.ok) {
@@ -123,7 +238,7 @@ export class ShadowMesh {
       const client = await create();
       
       // Upload to IPFS via web3.storage
-      const file = new File([content], 'content');
+      const file = new File([new Uint8Array(content)], 'content');
       const cid = await client.uploadFile(file);
       
       return cid.toString();
@@ -136,8 +251,8 @@ export class ShadowMesh {
   }
 
   private async announceToNetwork(
-    manifest: ContentManifest, 
-    options: DeployOptions
+    manifest: LegacyContentManifest, 
+    options: LegacyDeployOptions
   ): Promise<void> {
     try {
       // Announce content to ShadowMesh network
@@ -194,3 +309,4 @@ export class ShadowMesh {
 
 // Default export for convenience
 export default ShadowMesh;
+
