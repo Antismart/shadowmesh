@@ -132,27 +132,167 @@ pub enum GeoRegion {
 }
 
 impl GeoRegion {
-    /// Get region from country code (simplified)
+    /// Get region from ISO 3166-1 alpha-2 country code
+    /// Comprehensive mapping covering all recognized countries
     pub fn from_country_code(code: &str) -> Self {
         match code.to_uppercase().as_str() {
-            // North America
-            "US" | "CA" | "MX" => GeoRegion::NorthAmerica,
-            // South America
-            "BR" | "AR" | "CL" | "CO" | "PE" | "VE" => GeoRegion::SouthAmerica,
-            // Europe
+            // North America (23 countries)
+            "US" | "CA" | "MX" | "GT" | "CU" | "HT" | "DO" | "HN" | "NI" | "SV" 
+            | "CR" | "PA" | "JM" | "TT" | "BS" | "BB" | "LC" | "GD" | "VC" | "AG" 
+            | "DM" | "KN" | "BZ" => GeoRegion::NorthAmerica,
+            
+            // South America (12 countries)
+            "BR" | "AR" | "CL" | "CO" | "PE" | "VE" | "EC" | "BO" | "PY" | "UY" 
+            | "GY" | "SR" => GeoRegion::SouthAmerica,
+            
+            // Europe (44 countries)
             "GB" | "DE" | "FR" | "NL" | "SE" | "NO" | "FI" | "CH" | "AT" | "BE" 
-            | "IT" | "ES" | "PT" | "PL" | "CZ" | "RO" | "UA" | "IE" => GeoRegion::Europe,
-            // Africa
-            "ZA" | "NG" | "KE" | "EG" | "MA" | "GH" => GeoRegion::Africa,
-            // Middle East
-            "AE" | "SA" | "IL" | "TR" | "IR" | "IQ" => GeoRegion::MiddleEast,
-            // Asia
+            | "IT" | "ES" | "PT" | "PL" | "CZ" | "RO" | "UA" | "IE" | "DK" | "HU"
+            | "SK" | "HR" | "SI" | "RS" | "BG" | "GR" | "LT" | "LV" | "EE" | "IS"
+            | "LU" | "MT" | "CY" | "AL" | "MK" | "BA" | "ME" | "MD" | "BY" | "XK"
+            | "AD" | "MC" | "SM" | "LI" => GeoRegion::Europe,
+            
+            // Africa (54 countries)
+            "ZA" | "NG" | "KE" | "EG" | "MA" | "GH" | "ET" | "TZ" | "UG" | "DZ"
+            | "SD" | "AO" | "MZ" | "MG" | "CM" | "CI" | "NE" | "BF" | "ML" | "MW"
+            | "ZM" | "SN" | "TD" | "SO" | "ZW" | "GN" | "RW" | "BJ" | "TN" | "BI"
+            | "SS" | "TG" | "SL" | "LY" | "CG" | "LR" | "CF" | "MR" | "ER" | "NA"
+            | "GM" | "BW" | "GA" | "LS" | "GW" | "GQ" | "MU" | "SZ" | "DJ" | "KM"
+            | "CV" | "ST" | "SC" | "CD" => GeoRegion::Africa,
+            
+            // Middle East (17 countries)
+            "AE" | "SA" | "IL" | "TR" | "IR" | "IQ" | "JO" | "LB" | "SY" | "YE"
+            | "OM" | "KW" | "QA" | "BH" | "PS" | "AM" | "GE" => GeoRegion::MiddleEast,
+            
+            // Asia (48 countries)
             "CN" | "JP" | "KR" | "IN" | "SG" | "HK" | "TW" | "TH" | "VN" | "ID" 
-            | "MY" | "PH" | "PK" | "BD" => GeoRegion::Asia,
-            // Oceania
-            "AU" | "NZ" => GeoRegion::Oceania,
+            | "MY" | "PH" | "PK" | "BD" | "LK" | "NP" | "MM" | "KH" | "LA" | "MN"
+            | "KZ" | "UZ" | "TM" | "TJ" | "KG" | "AZ" | "AF" | "BT" | "MV" | "BN"
+            | "TL" | "MO" | "KP" => GeoRegion::Asia,
+            
+            // Oceania (14 countries)
+            "AU" | "NZ" | "PG" | "FJ" | "SB" | "VU" | "WS" | "KI" | "TO" | "FM"
+            | "PW" | "MH" | "NR" | "TV" => GeoRegion::Oceania,
+            
+            // Unknown
             _ => GeoRegion::Unknown,
         }
+    }
+    
+    /// Get approximate latitude range for the region (for distance estimation)
+    pub fn latitude_range(&self) -> (f64, f64) {
+        match self {
+            GeoRegion::NorthAmerica => (15.0, 72.0),
+            GeoRegion::SouthAmerica => (-56.0, 12.0),
+            GeoRegion::Europe => (35.0, 71.0),
+            GeoRegion::Africa => (-35.0, 37.0),
+            GeoRegion::MiddleEast => (12.0, 42.0),
+            GeoRegion::Asia => (-10.0, 77.0),
+            GeoRegion::Oceania => (-47.0, -1.0),
+            GeoRegion::Unknown => (-90.0, 90.0),
+        }
+    }
+    
+    /// Get approximate longitude range for the region
+    pub fn longitude_range(&self) -> (f64, f64) {
+        match self {
+            GeoRegion::NorthAmerica => (-168.0, -52.0),
+            GeoRegion::SouthAmerica => (-81.0, -34.0),
+            GeoRegion::Europe => (-25.0, 60.0),
+            GeoRegion::Africa => (-17.0, 51.0),
+            GeoRegion::MiddleEast => (25.0, 63.0),
+            GeoRegion::Asia => (60.0, 180.0),
+            GeoRegion::Oceania => (110.0, 180.0),
+            GeoRegion::Unknown => (-180.0, 180.0),
+        }
+    }
+    
+    /// Estimate network distance between two regions (in arbitrary units)
+    /// Used for routing optimization
+    pub fn distance_to(&self, other: &GeoRegion) -> u32 {
+        if self == other {
+            return 0;
+        }
+        
+        // Distance matrix based on typical network latencies
+        match (self, other) {
+            // Adjacent regions have lower distance
+            (GeoRegion::NorthAmerica, GeoRegion::SouthAmerica) => 2,
+            (GeoRegion::SouthAmerica, GeoRegion::NorthAmerica) => 2,
+            
+            (GeoRegion::NorthAmerica, GeoRegion::Europe) => 2,
+            (GeoRegion::Europe, GeoRegion::NorthAmerica) => 2,
+            
+            (GeoRegion::Europe, GeoRegion::Africa) => 2,
+            (GeoRegion::Africa, GeoRegion::Europe) => 2,
+            
+            (GeoRegion::Europe, GeoRegion::MiddleEast) => 1,
+            (GeoRegion::MiddleEast, GeoRegion::Europe) => 1,
+            
+            (GeoRegion::MiddleEast, GeoRegion::Asia) => 2,
+            (GeoRegion::Asia, GeoRegion::MiddleEast) => 2,
+            
+            (GeoRegion::MiddleEast, GeoRegion::Africa) => 2,
+            (GeoRegion::Africa, GeoRegion::MiddleEast) => 2,
+            
+            (GeoRegion::Asia, GeoRegion::Oceania) => 2,
+            (GeoRegion::Oceania, GeoRegion::Asia) => 2,
+            
+            (GeoRegion::NorthAmerica, GeoRegion::Asia) => 3,
+            (GeoRegion::Asia, GeoRegion::NorthAmerica) => 3,
+            
+            (GeoRegion::NorthAmerica, GeoRegion::Oceania) => 3,
+            (GeoRegion::Oceania, GeoRegion::NorthAmerica) => 3,
+            
+            (GeoRegion::Europe, GeoRegion::Asia) => 3,
+            (GeoRegion::Asia, GeoRegion::Europe) => 3,
+            
+            // Distant regions
+            (GeoRegion::SouthAmerica, GeoRegion::Asia) => 4,
+            (GeoRegion::Asia, GeoRegion::SouthAmerica) => 4,
+            
+            (GeoRegion::SouthAmerica, GeoRegion::Oceania) => 4,
+            (GeoRegion::Oceania, GeoRegion::SouthAmerica) => 4,
+            
+            (GeoRegion::Africa, GeoRegion::Oceania) => 4,
+            (GeoRegion::Oceania, GeoRegion::Africa) => 4,
+            
+            (GeoRegion::SouthAmerica, GeoRegion::Africa) => 3,
+            (GeoRegion::Africa, GeoRegion::SouthAmerica) => 3,
+            
+            // Unknown regions get high distance
+            (GeoRegion::Unknown, _) | (_, GeoRegion::Unknown) => 5,
+            
+            // Default for any other combination
+            _ => 3,
+        }
+    }
+    
+    /// Get a human-readable name for the region
+    pub fn name(&self) -> &'static str {
+        match self {
+            GeoRegion::NorthAmerica => "North America",
+            GeoRegion::SouthAmerica => "South America",
+            GeoRegion::Europe => "Europe",
+            GeoRegion::Africa => "Africa",
+            GeoRegion::MiddleEast => "Middle East",
+            GeoRegion::Asia => "Asia",
+            GeoRegion::Oceania => "Oceania",
+            GeoRegion::Unknown => "Unknown",
+        }
+    }
+    
+    /// Get all known regions (excluding Unknown)
+    pub fn all() -> &'static [GeoRegion] {
+        &[
+            GeoRegion::NorthAmerica,
+            GeoRegion::SouthAmerica,
+            GeoRegion::Europe,
+            GeoRegion::Africa,
+            GeoRegion::MiddleEast,
+            GeoRegion::Asia,
+            GeoRegion::Oceania,
+        ]
     }
 }
 

@@ -128,7 +128,7 @@ async fn main() {
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/:cid", get(content_handler))
-        .route("/:cid/*path", get(content_path_handler))
+        .route("/ipfs/:cid", get(content_handler))
         .with_state(state);
 
     // Add middleware layers
@@ -415,6 +415,97 @@ async fn content_path_handler(
 // ============================================
 // Health & Metrics Endpoints
 // ============================================
+
+// Handler for /ipfs/{*path} - handles /ipfs/cid and /ipfs/cid/path
+async fn ipfs_content_path_handler(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+) -> Response {
+    // The path contains everything after /ipfs/
+    // It could be just "cid" or "cid/subpath/..."
+    let parts: Vec<&str> = path.splitn(2, '/').collect();
+    let cid = parts[0];
+    
+    if parts.len() == 1 {
+        // Just a CID, redirect to content_handler logic
+        fetch_content(&state, cid.to_string()).await
+    } else {
+        // CID with path
+        let full_path = path.clone();
+        fetch_content(&state, full_path).await
+    }
+}
+
+// Unified content fetching logic
+async fn fetch_content(state: &AppState, cid: String) -> Response {
+    state.metrics.increment_requests();
+
+    // Check cache first
+    if let Some((data, content_type)) = state.cache.get(&cid) {
+        state.metrics.increment_success();
+        state.metrics.add_bytes(data.len() as u64);
+        return (
+            [
+                (axum::http::header::CONTENT_TYPE, content_type),
+                (axum::http::header::HeaderName::from_static("x-cache"), "HIT".to_string()),
+            ],
+            data
+        ).into_response();
+    }
+
+    // Fetch from IPFS
+    let Some(storage) = &state.storage else {
+        state.metrics.increment_error();
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Html(r#"<html><body><h1>IPFS Not Connected</h1></body></html>"#)
+        ).into_response();
+    };
+
+    let storage = Arc::clone(storage);
+    let cid_clone = cid.clone();
+    
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async {
+            storage.retrieve_content(&cid_clone).await
+        })
+    }).await;
+
+    match result {
+        Ok(Ok(data)) => {
+            let content_type = infer::get(&data)
+                .map(|t| t.mime_type().to_string())
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+
+            state.cache.set(cid, data.clone(), content_type.clone());
+            
+            state.metrics.increment_success();
+            state.metrics.add_bytes(data.len() as u64);
+
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, content_type),
+                    (axum::http::header::HeaderName::from_static("x-cache"), "MISS".to_string()),
+                ],
+                data
+            ).into_response()
+        }
+        Ok(Err(e)) => {
+            state.metrics.increment_error();
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                Html(format!(r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#, e))
+            ).into_response()
+        }
+        Err(e) => {
+            state.metrics.increment_error();
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#, e))
+            ).into_response()
+        }
+    }
+}
 
 #[derive(Serialize)]
 struct HealthResponse {
