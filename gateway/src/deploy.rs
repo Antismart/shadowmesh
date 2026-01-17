@@ -213,6 +213,20 @@ pub async fn deploy_zip(
 
                 println!("✅ Deployed {} files, root CID: {}", files.len(), cid);
 
+                // Record deployment in state
+                let deployment_name = filename
+                    .as_ref()
+                    .map(|f| f.trim_end_matches(".zip").to_string())
+                    .unwrap_or_else(|| format!("deploy-{}", &cid[..8]));
+                
+                let deployment = crate::dashboard::Deployment::new(
+                    deployment_name,
+                    cid.clone(),
+                    upload_result.total_size,
+                    files.len(),
+                );
+                state.deployments.write().unwrap().insert(0, deployment);
+
                 return Json(DeployResponse {
                     success: true,
                     url: format!("http://localhost:{}/{}", port, cid),

@@ -2,6 +2,7 @@
 
 mod cache;
 mod config;
+mod dashboard;
 mod deploy;
 mod error;
 mod middleware;
@@ -15,7 +16,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use protocol::{StorageLayer, StorageConfig};
@@ -23,6 +24,7 @@ use tower_http::cors::{CorsLayer, Any};
 use config::Config;
 use cache::ContentCache;
 use serde::Serialize;
+use dashboard::Deployment;
 
 /// Metrics for monitoring
 #[derive(Default)]
@@ -52,12 +54,13 @@ impl Metrics {
 }
 
 #[derive(Clone)]
-struct AppState {
-    storage: Option<Arc<StorageLayer>>,
-    cache: Arc<ContentCache>,
-    config: Arc<Config>,
-    metrics: Arc<Metrics>,
-    start_time: Instant,
+pub struct AppState {
+    pub storage: Option<Arc<StorageLayer>>,
+    pub cache: Arc<ContentCache>,
+    pub config: Arc<Config>,
+    pub metrics: Arc<Metrics>,
+    pub start_time: Instant,
+    pub deployments: Arc<RwLock<Vec<Deployment>>>,
 }
 
 #[tokio::main]
@@ -114,6 +117,7 @@ async fn main() {
         config: config.clone(),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
+        deployments: Arc::new(RwLock::new(Vec::new())),
     };
 
     // Create rate limiter
@@ -127,6 +131,7 @@ async fn main() {
 
     let mut app = Router::new()
         .route("/", get(index_handler))
+        .route("/dashboard", get(dashboard::dashboard_handler))
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         // Deploy endpoints (Vercel-like)
