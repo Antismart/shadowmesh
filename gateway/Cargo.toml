@@ -12,6 +12,8 @@ serde_json = { workspace = true }
 protocol = { package = "protocol", path = "../protocol" }
 infer = "0.16"
 base64 = "0.22"
+zip = "2.2"
+tempfile = "3.14"
 
 axum-macros = "0.3"
 

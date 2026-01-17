@@ -46,7 +46,7 @@ pub use routing::RoutingLayer;
 pub use node::ShadowNode;
 
 // Re-export storage types
-pub use storage::{StorageLayer, StorageConfig};
+pub use storage::{StorageLayer, StorageConfig, DirectoryUploadResult, UploadedFile};
 
 // Re-export DHT types
 pub use dht::{DHTManager, DHTResult, ContentRecord, ProviderInfo, ContentDHTMetadata, BandwidthStats as DHTBandwidthStats};

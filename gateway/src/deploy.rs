@@ -1,0 +1,336 @@
+//! Deploy handlers for the ShadowMesh gateway
+//!
+//! Provides Vercel-like deployment of static websites and projects.
+//! Users can upload a ZIP file containing their website, and get back
+//! a CID that serves the entire site with proper directory structure.
+
+use axum::{
+    extract::{Multipart, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use std::io::{Cursor, Read};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tempfile::TempDir;
+use zip::ZipArchive;
+
+use crate::AppState;
+
+/// Maximum deployment size (100 MB for projects)
+const MAX_DEPLOY_SIZE: usize = 100 * 1024 * 1024;
+
+/// Deploy response returned after successful website deployment
+#[derive(Debug, Serialize)]
+pub struct DeployResponse {
+    /// Whether the deployment was successful
+    pub success: bool,
+    /// Root CID for the deployed website
+    pub cid: String,
+    /// Gateway URL for HTTP access (serves index.html at root)
+    pub url: String,
+    /// IPFS gateway URL
+    pub ipfs_url: String,
+    /// Native ShadowMesh URL
+    pub shadow_url: String,
+    /// Number of files deployed
+    pub file_count: usize,
+    /// Total size in bytes
+    pub total_size: u64,
+    /// List of deployed files
+    pub files: Vec<DeployedFile>,
+}
+
+/// Information about a deployed file
+#[derive(Debug, Serialize)]
+pub struct DeployedFile {
+    /// Path within the deployment
+    pub path: String,
+    /// IPFS CID of this file
+    pub cid: String,
+    /// Size in bytes
+    pub size: u64,
+}
+
+/// Error response for failed deployments
+#[derive(Debug, Serialize)]
+pub struct DeployError {
+    pub success: bool,
+    pub error: String,
+    pub code: String,
+}
+
+impl DeployError {
+    fn new(error: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            error: error.into(),
+            code: code.into(),
+        }
+    }
+}
+
+/// Deploy a static website from a ZIP file
+///
+/// The ZIP should contain website files (index.html, css/, js/, etc.)
+/// The root of the ZIP becomes the root of the deployed site.
+///
+/// Example using curl:
+/// ```bash
+/// # Create a ZIP of your website
+/// cd my-website && zip -r ../site.zip .
+/// 
+/// # Deploy to ShadowMesh
+/// curl -X POST http://localhost:8080/api/deploy \
+///   -F "file=@site.zip"
+/// ```
+pub async fn deploy_zip(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Response {
+    // Check IPFS connection
+    let Some(storage) = &state.storage else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(DeployError::new(
+                "Storage backend not available",
+                "STORAGE_UNAVAILABLE"
+            ))
+        ).into_response();
+    };
+
+    // Process multipart fields
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        
+        if name != "file" {
+            continue;
+        }
+
+        let filename = field.file_name().map(|s| s.to_string());
+
+        // Read the ZIP data
+        let data = match field.bytes().await {
+            Ok(bytes) => bytes.to_vec(),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(DeployError::new(
+                        format!("Failed to read upload: {}", e),
+                        "READ_ERROR"
+                    ))
+                ).into_response();
+            }
+        };
+
+        // Check size limit
+        if data.len() > MAX_DEPLOY_SIZE {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(DeployError::new(
+                    format!("Deployment too large. Maximum size is {} MB", MAX_DEPLOY_SIZE / 1024 / 1024),
+                    "FILE_TOO_LARGE"
+                ))
+            ).into_response();
+        }
+
+        // Verify it's a ZIP file
+        if !is_zip(&data) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DeployError::new(
+                    "File must be a ZIP archive. Use: zip -r site.zip .",
+                    "INVALID_FORMAT"
+                ))
+            ).into_response();
+        }
+
+        // Extract ZIP to temp directory
+        let temp_dir = match extract_zip(&data) {
+            Ok(dir) => dir,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(DeployError::new(
+                        format!("Failed to extract ZIP: {}", e),
+                        "EXTRACT_ERROR"
+                    ))
+                ).into_response();
+            }
+        };
+
+        // Check for index.html
+        let index_path = temp_dir.path().join("index.html");
+        if !index_path.exists() {
+            // Check one level deep (in case ZIP has a root folder)
+            let has_index = std::fs::read_dir(temp_dir.path())
+                .ok()
+                .and_then(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .find(|e| {
+                            e.path().is_dir() && e.path().join("index.html").exists()
+                        })
+                })
+                .is_some();
+
+            if !has_index {
+                println!("⚠️  No index.html found in deployment (site may not serve correctly at root)");
+            }
+        }
+
+        // Upload directory to IPFS
+        let storage = Arc::clone(storage);
+        let temp_path = temp_dir.path().to_path_buf();
+        
+        let result = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async {
+                storage.store_directory(&temp_path).await
+            })
+        }).await;
+
+        match result {
+            Ok(Ok(upload_result)) => {
+                let port = state.config.server.port;
+                let cid = upload_result.root_cid.clone();
+                
+                let files: Vec<DeployedFile> = upload_result.files.iter()
+                    .map(|f| DeployedFile {
+                        path: f.name.clone(),
+                        cid: f.hash.clone(),
+                        size: f.size,
+                    })
+                    .collect();
+
+                println!("✅ Deployed {} files, root CID: {}", files.len(), cid);
+
+                return Json(DeployResponse {
+                    success: true,
+                    url: format!("http://localhost:{}/{}", port, cid),
+                    ipfs_url: format!("https://ipfs.io/ipfs/{}", cid),
+                    shadow_url: format!("shadow://{}", cid),
+                    cid,
+                    file_count: files.len(),
+                    total_size: upload_result.total_size,
+                    files,
+                }).into_response();
+            }
+            Ok(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(DeployError::new(
+                        format!("Failed to deploy: {}", e),
+                        "DEPLOY_ERROR"
+                    ))
+                ).into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(DeployError::new(
+                        format!("Internal error: {}", e),
+                        "INTERNAL_ERROR"
+                    ))
+                ).into_response();
+            }
+        }
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(DeployError::new(
+            "No file field found in multipart data",
+            "MISSING_FILE"
+        ))
+    ).into_response()
+}
+
+/// Deploy from a tarball (.tar.gz)
+pub async fn deploy_tarball(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Response {
+    // For now, suggest using ZIP
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(DeployError::new(
+            "Tarball deployment coming soon. Please use ZIP format for now.",
+            "NOT_IMPLEMENTED"
+        ))
+    ).into_response()
+}
+
+/// Check if data is a ZIP file
+fn is_zip(data: &[u8]) -> bool {
+    // ZIP magic bytes: PK\x03\x04
+    data.len() >= 4 && data[0] == 0x50 && data[1] == 0x4B && data[2] == 0x03 && data[3] == 0x04
+}
+
+/// Extract ZIP to a temporary directory
+fn extract_zip(data: &[u8]) -> Result<TempDir, String> {
+    let cursor = Cursor::new(data);
+    let mut archive = ZipArchive::new(cursor)
+        .map_err(|e| format!("Invalid ZIP file: {}", e))?;
+
+    let temp_dir = TempDir::new()
+        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)
+            .map_err(|e| format!("Failed to read ZIP entry: {}", e))?;
+
+        let outpath = match file.enclosed_name() {
+            Some(path) => temp_dir.path().join(path),
+            None => continue,
+        };
+
+        if file.name().ends_with('/') {
+            // Create directory
+            std::fs::create_dir_all(&outpath)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        } else {
+            // Create parent directories if needed
+            if let Some(parent) = outpath.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("Failed to create directory: {}", e))?;
+                }
+            }
+
+            // Extract file
+            let mut outfile = std::fs::File::create(&outpath)
+                .map_err(|e| format!("Failed to create file: {}", e))?;
+            std::io::copy(&mut file, &mut outfile)
+                .map_err(|e| format!("Failed to extract file: {}", e))?;
+        }
+
+        // Set permissions on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Some(mode) = file.unix_mode() {
+                std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode)).ok();
+            }
+        }
+    }
+
+    Ok(temp_dir)
+}
+
+/// Deployment info endpoint - get info about deployment limits
+#[derive(Debug, Serialize)]
+pub struct DeployInfo {
+    pub max_size_mb: usize,
+    pub supported_formats: Vec<&'static str>,
+    pub example_command: &'static str,
+}
+
+pub async fn deploy_info() -> Json<DeployInfo> {
+    Json(DeployInfo {
+        max_size_mb: MAX_DEPLOY_SIZE / 1024 / 1024,
+        supported_formats: vec!["zip"],
+        example_command: "cd my-site && zip -r ../site.zip . && curl -X POST http://localhost:8080/api/deploy -F 'file=@../site.zip'",
+    })
+}

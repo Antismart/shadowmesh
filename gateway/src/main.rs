@@ -2,6 +2,7 @@
 
 mod cache;
 mod config;
+mod deploy;
 mod error;
 mod middleware;
 mod rate_limit;
@@ -128,7 +129,10 @@ async fn main() {
         .route("/", get(index_handler))
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
-        // Upload endpoints
+        // Deploy endpoints (Vercel-like)
+        .route("/api/deploy", post(deploy::deploy_zip))
+        .route("/api/deploy/info", get(deploy::deploy_info))
+        // Upload endpoints (single files)
         .route("/api/upload", post(upload::upload_multipart))
         .route("/api/upload/json", post(upload::upload_json))
         .route("/api/upload/raw", post(upload::upload_raw))
@@ -188,7 +192,8 @@ async fn main() {
             config.rate_limit.requests_per_second,
             config.rate_limit.burst_size);
     }
-    println!("   Upload: POST /api/upload (max 50 MB)");
+    println!("   Deploy: POST /api/deploy (ZIP, max 100 MB)");
+    println!("   Upload: POST /api/upload (single file, max 50 MB)");
     if config.monitoring.metrics_enabled {
         println!("   Metrics: http://localhost:{}/metrics", config.server.port);
         println!("   Health: http://localhost:{}/health", config.server.port);
@@ -278,7 +283,25 @@ async fn index_handler(State(state): State<AppState>) -> Html<String> {
             <h1>🌐 ShadowMesh Gateway</h1>
             <p>Deploy and access censorship-resistant content through a decentralized network.</p>
 
-            <h2>📤 Upload API</h2>
+            <h2>� Deploy API (Vercel-like)</h2>
+            
+            <div class="section" style="border-left-color: #9c27b0;">
+                <h3>Deploy a Website</h3>
+                <div class="api-endpoint" style="background: #f3e5f5;">
+                    <span class="method method-post">POST</span>
+                    <code>/api/deploy</code>
+                </div>
+                <p>Deploy a complete static website from a ZIP file:</p>
+                <pre># 1. Create a ZIP of your website
+cd my-website
+zip -r ../site.zip .
+
+# 2. Deploy to ShadowMesh
+curl -X POST http://localhost:{}/api/deploy -F "file=@../site.zip"</pre>
+                <p><strong>Your site will be live at the returned URL with full directory structure!</strong></p>
+            </div>
+
+            <h2>�📤 Upload API (Single Files)</h2>
             
             <div class="section">
                 <h3>Multipart Upload (Recommended)</h3>
@@ -360,7 +383,8 @@ async fn index_handler(State(state): State<AppState>) -> Html<String> {
                     <tr><td>Cache</td><td>{} MB (TTL: {}s)</td></tr>
                     <tr><td>Rate Limit</td><td>{} req/s (burst: {})</td></tr>
                     <tr><td>IPFS</td><td>{}</td></tr>
-                    <tr><td>Max Upload</td><td>50 MB</td></tr>
+                    <tr><td>Max Deploy</td><td>100 MB (ZIP)</td></tr>
+                    <tr><td>Max Upload</td><td>50 MB (single file)</td></tr>
                 </table>
             </div>
 
@@ -372,7 +396,7 @@ async fn index_handler(State(state): State<AppState>) -> Html<String> {
         </body>
         </html>
     "#,
-        port, port, port, port, port, port,
+        port, port, port, port, port, port, port,
         port,
         state.config.cache.max_size_mb,
         state.config.cache.ttl_seconds,
