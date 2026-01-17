@@ -5,12 +5,13 @@ mod config;
 mod error;
 mod middleware;
 mod rate_limit;
+mod upload;
 
 use axum::{
     extract::{Path, State},
     middleware as axum_middleware,
     response::{Html, IntoResponse, Json, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use std::sync::Arc;
@@ -127,6 +128,12 @@ async fn main() {
         .route("/", get(index_handler))
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
+        // Upload endpoints
+        .route("/api/upload", post(upload::upload_multipart))
+        .route("/api/upload/json", post(upload::upload_json))
+        .route("/api/upload/raw", post(upload::upload_raw))
+        .route("/api/upload/batch", post(upload::upload_batch))
+        // Content retrieval
         .route("/:cid", get(content_handler))
         .route("/ipfs/:cid", get(content_handler))
         .with_state(state);
@@ -181,6 +188,7 @@ async fn main() {
             config.rate_limit.requests_per_second,
             config.rate_limit.burst_size);
     }
+    println!("   Upload: POST /api/upload (max 50 MB)");
     if config.monitoring.metrics_enabled {
         println!("   Metrics: http://localhost:{}/metrics", config.server.port);
         println!("   Health: http://localhost:{}/health", config.server.port);
@@ -191,6 +199,9 @@ async fn main() {
 
 async fn index_handler(State(state): State<AppState>) -> Html<String> {
     let port = state.config.server.port;
+    let ipfs_status = if state.storage.is_some() { "Connected" } else { "Disconnected" };
+    let status_color = if state.storage.is_some() { "#4CAF50" } else { "#f44336" };
+    
     let html = format!(r#"
         <!DOCTYPE html>
         <html>
@@ -199,63 +210,177 @@ async fn index_handler(State(state): State<AppState>) -> Html<String> {
             <style>
                 body {{
                     font-family: system-ui;
-                    max-width: 800px;
-                    margin: 100px auto;
+                    max-width: 900px;
+                    margin: 50px auto;
                     padding: 20px;
+                    line-height: 1.6;
                 }}
                 h1 {{ color: #333; }}
+                h2 {{ color: #555; margin-top: 30px; }}
+                h3 {{ color: #666; margin-top: 20px; }}
                 code {{
                     background: #f4f4f4;
                     padding: 2px 6px;
                     border-radius: 3px;
-                }}
-                .example {{
-                    background: #f9f9f9;
-                    padding: 15px;
-                    border-left: 4px solid #4CAF50;
-                    margin: 20px 0;
-                }}
-                .config {{
-                    background: #f0f0f0;
-                    padding: 10px;
-                    border-radius: 5px;
-                    margin: 20px 0;
                     font-size: 0.9em;
                 }}
+                pre {{
+                    background: #2d2d2d;
+                    color: #f8f8f2;
+                    padding: 15px;
+                    border-radius: 5px;
+                    overflow-x: auto;
+                    font-size: 0.85em;
+                }}
+                .section {{
+                    background: #f9f9f9;
+                    padding: 20px;
+                    border-left: 4px solid #4CAF50;
+                    margin: 20px 0;
+                    border-radius: 0 5px 5px 0;
+                }}
+                .api-endpoint {{
+                    background: #e8f5e9;
+                    padding: 10px 15px;
+                    margin: 10px 0;
+                    border-radius: 5px;
+                }}
+                .method {{
+                    display: inline-block;
+                    padding: 3px 8px;
+                    border-radius: 3px;
+                    font-weight: bold;
+                    font-size: 0.8em;
+                    margin-right: 10px;
+                }}
+                .method-get {{ background: #61affe; color: white; }}
+                .method-post {{ background: #49cc90; color: white; }}
+                .config {{
+                    background: #f0f0f0;
+                    padding: 15px;
+                    border-radius: 5px;
+                    margin: 20px 0;
+                }}
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin: 15px 0;
+                }}
+                th, td {{
+                    text-align: left;
+                    padding: 10px;
+                    border-bottom: 1px solid #ddd;
+                }}
+                th {{ background: #f5f5f5; }}
             </style>
         </head>
         <body>
             <h1>🌐 ShadowMesh Gateway</h1>
-            <p>Access censorship-resistant content through a decentralized network.</p>
+            <p>Deploy and access censorship-resistant content through a decentralized network.</p>
 
-            <div class="example">
-                <h3>Usage:</h3>
-                <p>Access: <code>http://localhost:{}/$CID</code></p>
+            <h2>📤 Upload API</h2>
+            
+            <div class="section">
+                <h3>Multipart Upload (Recommended)</h3>
+                <div class="api-endpoint">
+                    <span class="method method-post">POST</span>
+                    <code>/api/upload</code>
+                </div>
+                <p>Upload a file using multipart form data:</p>
+                <pre>curl -X POST http://localhost:{}/api/upload \
+  -F "file=@./index.html"</pre>
             </div>
 
+            <div class="section">
+                <h3>JSON Upload (Base64)</h3>
+                <div class="api-endpoint">
+                    <span class="method method-post">POST</span>
+                    <code>/api/upload/json</code>
+                </div>
+                <p>Upload base64-encoded content:</p>
+                <pre>curl -X POST http://localhost:{}/api/upload/json \
+  -H "Content-Type: application/json" \
+  -d '{{"data": "PGh0bWw+SGVsbG88L2h0bWw+", "filename": "index.html"}}'</pre>
+            </div>
+
+            <div class="section">
+                <h3>Raw Upload</h3>
+                <div class="api-endpoint">
+                    <span class="method method-post">POST</span>
+                    <code>/api/upload/raw</code>
+                </div>
+                <p>Upload raw binary data:</p>
+                <pre>curl -X POST http://localhost:{}/api/upload/raw \
+  -H "Content-Type: text/html" \
+  --data-binary @./index.html</pre>
+            </div>
+
+            <div class="section">
+                <h3>Batch Upload</h3>
+                <div class="api-endpoint">
+                    <span class="method method-post">POST</span>
+                    <code>/api/upload/batch</code>
+                </div>
+                <p>Upload multiple files at once:</p>
+                <pre>curl -X POST http://localhost:{}/api/upload/batch \
+  -H "Content-Type: application/json" \
+  -d '{{"files": [{{"data": "...", "filename": "a.html"}}, {{"data": "..."}}]}}'</pre>
+            </div>
+
+            <h2>📥 Content Retrieval</h2>
+            
+            <div class="section">
+                <div class="api-endpoint">
+                    <span class="method method-get">GET</span>
+                    <code>/{{cid}}</code> or <code>/ipfs/{{cid}}</code>
+                </div>
+                <p>Retrieve content by CID:</p>
+                <pre>curl http://localhost:{}/QmExample...</pre>
+            </div>
+
+            <h2>📊 Response Format</h2>
             <div class="config">
-                <h3>Configuration:</h3>
-                <ul>
-                    <li>Port: {}</li>
-                    <li>Cache: {} MB (TTL: {}s)</li>
-                    <li>Rate Limit: {} req/s (burst: {})</li>
-                    <li>IPFS: {}</li>
-                </ul>
+                <p>Successful uploads return:</p>
+                <pre>{{
+  "success": true,
+  "cid": "QmExample...",
+  "gateway_url": "http://localhost:{}/QmExample...",
+  "shadow_url": "shadow://QmExample...",
+  "size": 1234,
+  "content_type": "text/html",
+  "filename": "index.html"
+}}</pre>
+            </div>
+
+            <h2>⚙️ Configuration</h2>
+            <div class="config">
+                <table>
+                    <tr><th>Setting</th><th>Value</th></tr>
+                    <tr><td>Port</td><td>{}</td></tr>
+                    <tr><td>Cache</td><td>{} MB (TTL: {}s)</td></tr>
+                    <tr><td>Rate Limit</td><td>{} req/s (burst: {})</td></tr>
+                    <tr><td>IPFS</td><td>{}</td></tr>
+                    <tr><td>Max Upload</td><td>50 MB</td></tr>
+                </table>
             </div>
 
             <p style="color: #666; margin-top: 40px;">
-                Status: <span style="color: #4CAF50;">● Online</span>
+                IPFS Status: <span style="color: {};">● {}</span> |
+                <a href="/health">Health</a> |
+                <a href="/metrics">Metrics</a>
             </p>
         </body>
         </html>
     "#,
-        port,
+        port, port, port, port, port, port,
         port,
         state.config.cache.max_size_mb,
         state.config.cache.ttl_seconds,
         state.config.rate_limit.requests_per_second,
         state.config.rate_limit.burst_size,
-        state.config.ipfs.api_url
+        state.config.ipfs.api_url,
+        status_color,
+        ipfs_status
     );
 
     Html(html)
