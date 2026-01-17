@@ -137,6 +137,8 @@ async fn main() {
         // Deploy endpoints (Vercel-like)
         .route("/api/deploy", post(deploy::deploy_zip))
         .route("/api/deploy/info", get(deploy::deploy_info))
+        .route("/api/deploy/github", post(dashboard::deploy_from_github))
+        .route("/api/deployments", get(dashboard::get_deployments))
         // Upload endpoints (single files)
         .route("/api/upload", post(upload::upload_multipart))
         .route("/api/upload/json", post(upload::upload_json))
