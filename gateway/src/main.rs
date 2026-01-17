@@ -139,7 +139,7 @@ async fn main() {
         .route("/api/upload/batch", post(upload::upload_batch))
         // Content retrieval
         .route("/:cid", get(content_handler))
-        .route("/ipfs/:cid", get(content_handler))
+        .route("/ipfs/*path", get(ipfs_content_path_handler))
         .with_state(state);
 
     // Add middleware layers
@@ -559,6 +559,15 @@ async fn content_path_handler(
             ).into_response()
         }
     }
+}
+
+// Handler for /:cid/*path - access files within a directory CID
+async fn content_with_path_handler(
+    State(state): State<AppState>,
+    Path((cid, path)): Path<(String, String)>,
+) -> Response {
+    let full_path = format!("{}/{}", cid, path);
+    fetch_content(&state, full_path).await
 }
 
 // ============================================

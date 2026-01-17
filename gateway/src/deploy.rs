@@ -184,6 +184,10 @@ pub async fn deploy_zip(
         // Upload directory to IPFS
         let storage = Arc::clone(storage);
         let temp_path = temp_dir.path().to_path_buf();
+        let temp_dir_name = temp_path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         
         let result = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async {
@@ -196,9 +200,12 @@ pub async fn deploy_zip(
                 let port = state.config.server.port;
                 let cid = upload_result.root_cid.clone();
                 
+                // Strip the temp directory prefix from file paths
+                let prefix = format!("{}/", temp_dir_name);
                 let files: Vec<DeployedFile> = upload_result.files.iter()
+                    .filter(|f| f.name != temp_dir_name) // Skip the root dir entry
                     .map(|f| DeployedFile {
-                        path: f.name.clone(),
+                        path: f.name.strip_prefix(&prefix).unwrap_or(&f.name).to_string(),
                         cid: f.hash.clone(),
                         size: f.size,
                     })
