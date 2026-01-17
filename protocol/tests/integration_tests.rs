@@ -828,7 +828,7 @@ fn test_zk_relay_request_encryption() {
     let mut client = ZkRelayClient::new(secret);
     let peers = create_test_peers_zk(3);
 
-    let circuit_id = client.build_circuit(&peers).unwrap();
+    let circuit_id = client.build_circuit_sync(&peers).unwrap();
     let request = b"GET /content/abc123 HTTP/1.1\r\nHost: shadowmesh.network\r\n\r\n";
 
     let cell = client.wrap_request(&circuit_id, request).unwrap();
@@ -1097,7 +1097,7 @@ fn test_zk_relay_full_workflow() {
     let peers = create_test_peers_zk(4);
 
     // 1. Build circuit through 4 relays
-    let circuit_id = client.build_circuit(&peers).unwrap();
+    let circuit_id = client.build_circuit_sync(&peers).unwrap();
     assert_eq!(client.active_circuits(), 1);
 
     // 2. Create blind request
