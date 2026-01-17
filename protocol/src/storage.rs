@@ -1,4 +1,4 @@
-use ipfs_api_backend_hyper::{IpfsApi, IpfsClient};
+use ipfs_api_backend_hyper::{IpfsApi, IpfsClient, TryFromUri};
 use std::io::Cursor;
 use std::time::Duration;
 use futures::TryStreamExt;
@@ -42,16 +42,22 @@ impl StorageLayer {
 
     /// Create a new StorageLayer with full configuration
     pub async fn with_config(config: StorageConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        // For now, always use the default IPFS client (localhost:5001)
-        // TODO: Parse custom URL when ipfs_api_backend_hyper supports it
-        let client = IpfsClient::default();
+        // Parse custom URL using TryFromUri trait
+        let client = if config.api_url == "http://127.0.0.1:5001" {
+            // Use default for standard localhost connection
+            IpfsClient::default()
+        } else {
+            // Parse custom URL
+            IpfsClient::from_str(&config.api_url)
+                .map_err(|e| format!("Invalid IPFS API URL '{}': {}", config.api_url, e))?
+        };
 
         match client.version().await {
             Ok(version) => {
-                println!("✓ Connected to IPFS version: {}", version.version);
+                println!("✓ Connected to IPFS at {} (version: {})", config.api_url, version.version);
             }
             Err(e) => {
-                println!("✗ IPFS version check failed: {}", e);
+                return Err(format!("Failed to connect to IPFS at {}: {}", config.api_url, e).into());
             }
         }
 
