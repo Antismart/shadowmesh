@@ -13,7 +13,7 @@ use axum::{
     extract::{Path, State},
     middleware as axum_middleware,
     response::{Html, IntoResponse, Json, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::sync::{Arc, RwLock};
@@ -67,6 +67,8 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
+    let _ = dotenvy::dotenv();
+    let _ = dotenvy::from_filename("gateway/.env");
     tracing_subscriber::fmt::init();
 
     // Load configuration
@@ -143,6 +145,9 @@ async fn main() {
         .route("/api/deploy/info", get(deploy::deploy_info))
         .route("/api/deploy/github", post(dashboard::deploy_from_github))
         .route("/api/deployments", get(dashboard::get_deployments))
+    .route("/api/deployments/:cid", delete(dashboard::delete_deployment))
+    .route("/api/deployments/:cid/redeploy", post(dashboard::redeploy_github))
+    .route("/api/deployments/:cid/logs", get(dashboard::deployment_logs))
     .route("/api/github/login", get(dashboard::github_login))
     .route("/api/github/callback", get(dashboard::github_callback))
     .route("/api/github/status", get(dashboard::github_status))
@@ -582,7 +587,7 @@ async fn content_with_path_handler(
     Path((cid, path)): Path<(String, String)>,
 ) -> Response {
     let full_path = format!("{}/{}", cid, path);
-    fetch_content(&state, full_path).await
+    fetch_content(&state, full_path, Some(format!("/{}/", cid))).await
 }
 
 // ============================================
@@ -601,16 +606,16 @@ async fn ipfs_content_path_handler(
     
     if parts.len() == 1 {
         // Just a CID, redirect to content_handler logic
-        fetch_content(&state, cid.to_string()).await
+        fetch_content(&state, cid.to_string(), Some(format!("/ipfs/{}/", cid))).await
     } else {
         // CID with path
         let full_path = path.clone();
-        fetch_content(&state, full_path).await
+        fetch_content(&state, full_path, Some(format!("/ipfs/{}/", cid))).await
     }
 }
 
 // Unified content fetching logic
-async fn fetch_content(state: &AppState, cid: String) -> Response {
+async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String>) -> Response {
     state.metrics.increment_requests();
 
     // Check cache first
@@ -646,9 +651,8 @@ async fn fetch_content(state: &AppState, cid: String) -> Response {
 
     match result {
         Ok(Ok(data)) => {
-            let content_type = infer::get(&data)
-                .map(|t| t.mime_type().to_string())
-                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let content_type = content_type_from_path(&cid, &data);
+            let data = rewrite_html_assets(&data, &content_type, base_prefix.as_deref());
 
             state.cache.set(cid, data.clone(), content_type.clone());
             
@@ -678,6 +682,87 @@ async fn fetch_content(state: &AppState, cid: String) -> Response {
             ).into_response()
         }
     }
+}
+
+fn content_type_from_path(path: &str, data: &[u8]) -> String {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".html") || lower.ends_with(".htm") || looks_like_html(data) {
+        return "text/html".to_string();
+    }
+    if lower.ends_with(".css") {
+        return "text/css".to_string();
+    }
+    if lower.ends_with(".js") || lower.ends_with(".mjs") || lower.ends_with(".jsx") || lower.ends_with(".ts") {
+        return "application/javascript".to_string();
+    }
+    if lower.ends_with(".json") || lower.ends_with(".map") {
+        return "application/json".to_string();
+    }
+    if lower.ends_with(".svg") {
+        return "image/svg+xml".to_string();
+    }
+    if lower.ends_with(".png") {
+        return "image/png".to_string();
+    }
+    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        return "image/jpeg".to_string();
+    }
+    if lower.ends_with(".gif") {
+        return "image/gif".to_string();
+    }
+    if lower.ends_with(".webp") {
+        return "image/webp".to_string();
+    }
+    if lower.ends_with(".ico") {
+        return "image/x-icon".to_string();
+    }
+
+    infer::get(data)
+        .map(|t| t.mime_type().to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string())
+}
+
+fn looks_like_html(data: &[u8]) -> bool {
+    let snippet = String::from_utf8_lossy(&data[..data.len().min(512)]).to_lowercase();
+    snippet.contains("<!doctype html") || snippet.contains("<html")
+}
+
+fn rewrite_html_assets(data: &[u8], content_type: &str, base_prefix: Option<&str>) -> Vec<u8> {
+    if content_type != "text/html" {
+        return data.to_vec();
+    }
+
+    let Some(base_prefix) = base_prefix else {
+        return data.to_vec();
+    };
+
+    let base_prefix = if base_prefix.ends_with('/') {
+        base_prefix.to_string()
+    } else {
+        format!("{}/", base_prefix)
+    };
+
+    let mut html = String::from_utf8_lossy(data).to_string();
+    let guard = "__IPFS_GUARD__";
+
+    if !html.to_lowercase().contains("<base ") {
+        if let Some(head_pos) = html.to_lowercase().find("<head") {
+            if let Some(end_pos) = html[head_pos..].find('>') {
+                let insert_pos = head_pos + end_pos + 1;
+                let base_tag = format!("\n    <base href=\"{}\">", base_prefix);
+                html.insert_str(insert_pos, &base_tag);
+            }
+        }
+    }
+
+    for attr in ["href", "src", "srcset"] {
+        let guard_token = format!("{}=\"{}/", attr, guard);
+        html = html.replace(&format!("{}=\"/ipfs/", attr), &guard_token);
+        html = html.replace(&format!("{}=\"/", attr), &format!("{}=\"{}", attr, base_prefix));
+        html = html.replace(&guard_token, &format!("{}=\"/ipfs/", attr));
+    }
+
+    html.into_bytes()
 }
 
 #[derive(Serialize)]

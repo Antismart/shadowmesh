@@ -1,51 +1,119 @@
 //! Dashboard for ShadowMesh Gateway - Tailwind CSS Version
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path as AxumPath, Query, State},
     response::{Html, IntoResponse, Json, Redirect},
     http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
 use crate::AppState;
 use serde_json::json;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use uuid::Uuid;
 
 pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
     let deployments = state.deployments.read().unwrap();
-    let deployment_rows: String = deployments
-        .iter()
-        .map(|d| {
-            let status_class = if d.status == "Ready" { "status-ready" } else { "status-pending" };
-            let status_icon = if d.status == "Ready" { "✓" } else { "◐" };
-            let source_label = if d.source == "github" { "GitHub" } else { "Upload" };
-            let branch_display = d.branch.as_deref().unwrap_or("main");
+    let mut grouped: BTreeMap<String, Vec<&Deployment>> = BTreeMap::new();
+    for deployment in deployments.iter() {
+        let key = if deployment.source == "github" {
+            deployment
+                .repo_url
+                .clone()
+                .unwrap_or_else(|| deployment.name.clone())
+        } else {
+            "Uploads".to_string()
+        };
+        grouped.entry(key).or_default().push(deployment);
+    }
+
+    let render_deployment = |d: &Deployment| {
+        let status_class = if d.status == "Ready" { "status-ready" } else { "status-pending" };
+        let status_icon = if d.status == "Ready" { "✓" } else { "◐" };
+        let source_label = if d.source == "github" { "GitHub" } else { "Upload" };
+        let branch_display = d.branch.as_deref().unwrap_or("main");
+        let build_status = d.build_status.as_str();
+        let build_class = if build_status.contains("Built") {
+            "build-ready"
+        } else if build_status.contains("Failed") {
+            "build-failed"
+        } else {
+            "build-skipped"
+        };
+        let redeploy_button = if d.source == "github" {
             format!(
-                r##"<div class="card deploy-card" onclick="window.open('/ipfs/{}/index.html','_blank')">
-                    <div class="deploy-top">
-                        <div>
-                            <div class="deploy-name">{}</div>
-                            <div class="deploy-meta">{} · {} · {}</div>
-                        </div>
-                        <div class="deploy-status {}">
-                            <span class="status-dot">{}</span>
-                            <span>{}</span>
-                        </div>
-                    </div>
-                    <div class="deploy-bottom">
-                        <span class="deploy-url">shadowmesh.local/{}...</span>
-                        <button onclick="event.stopPropagation();navigator.clipboard.writeText(location.origin+'/ipfs/{}/index.html');alert('URL copied!')" class="btn-ghost">Copy URL</button>
-                    </div>
-                </div>"##,
-                d.cid,
-                d.name,
-                source_label,
-                branch_display,
-                d.created_at,
-                status_class,
-                status_icon,
-                d.status,
-                &d.cid[..8.min(d.cid.len())],
+                r##"<button onclick=\"event.stopPropagation();redeployDeployment('{}')\" class=\"btn-ghost\">Redeploy</button>"##,
                 d.cid
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            r##"<div class="card deploy-card" onclick="window.open('/ipfs/{}/index.html','_blank')">
+                <div class="deploy-top">
+                    <div>
+                        <div class="deploy-name">{}</div>
+                        <div class="deploy-meta">{} · {} · {}</div>
+                    </div>
+                    <div class="deploy-status {}">
+                        <span class="status-dot">{}</span>
+                        <span>{}</span>
+                    </div>
+                </div>
+                <div class="deploy-status-row">
+                    <span class="build-status {}">Build: {}</span>
+                    <button onclick="event.stopPropagation();showLogs('{}')" class="btn-ghost">View logs</button>
+                </div>
+                <div class="deploy-bottom">
+                    <span class="deploy-url">shadowmesh.local/{}...</span>
+                    <div style="display:flex; gap:8px;">
+                        <button onclick="event.stopPropagation();navigator.clipboard.writeText(location.origin+'/ipfs/{}/index.html');alert('URL copied!')" class="btn-ghost">Copy URL</button>
+                        {}
+                        <button onclick="event.stopPropagation();deleteDeployment('{}')" class="btn-ghost btn-danger">Delete</button>
+                    </div>
+                </div>
+            </div>"##,
+            d.cid,
+            d.name,
+            source_label,
+            branch_display,
+            d.created_at,
+            status_class,
+            status_icon,
+            d.status,
+            build_class,
+            build_status,
+            d.cid,
+            &d.cid[..8.min(d.cid.len())],
+            d.cid,
+            redeploy_button,
+            d.cid
+        )
+    };
+
+    let deployment_rows: String = grouped
+        .iter()
+        .map(|(key, items)| {
+            let title = if key == "Uploads" {
+                "Uploads".to_string()
+            } else {
+                format!("GitHub · {}", key)
+            };
+            let count = items.len();
+            let list = items.iter().map(|d| render_deployment(d)).collect::<Vec<_>>().join("\n");
+            format!(
+                r##"<section class="repo-group">
+                        <div class="repo-header">
+                            <div class="repo-title">{}</div>
+                            <div class="repo-count">{} deploy{} </div>
+                        </div>
+                        <div class="repo-list">{}</div>
+                    </section>"##,
+                title,
+                count,
+                if count == 1 { "ment" } else { "ments" },
+                list
             )
         })
         .collect::<Vec<_>>()
@@ -186,6 +254,11 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
         .status-dot {{ font-size: 12px; }}
         .deploy-bottom {{ display: flex; justify-content: space-between; align-items: center; }}
         .deploy-url {{ font-family: "SFMono-Regular", ui-monospace, monospace; font-size: 12px; color: #64748b; }}
+    .deploy-status-row {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }}
+    .build-status {{ font-size: 12px; padding: 4px 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.1); }}
+    .build-ready {{ color: #4ade80; background: rgba(74, 222, 128, 0.12); }}
+    .build-failed {{ color: #f87171; background: rgba(248, 113, 113, 0.12); }}
+    .build-skipped {{ color: #fbbf24; background: rgba(251, 191, 36, 0.12); }}
         .btn-ghost {{
             border: none;
             background: rgba(255, 255, 255, 0.08);
@@ -197,6 +270,16 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
             transition: background 0.2s ease;
         }}
         .btn-ghost:hover {{ background: rgba(255, 255, 255, 0.16); }}
+        .btn-danger {{
+            background: rgba(248, 113, 113, 0.16);
+            color: #fecaca;
+        }}
+        .btn-danger:hover {{ background: rgba(248, 113, 113, 0.3); }}
+        .repo-group {{ display: grid; gap: 14px; margin-bottom: 24px; }}
+        .repo-header {{ display: flex; align-items: center; justify-content: space-between; }}
+        .repo-title {{ font-size: 14px; font-weight: 600; color: #e2e8f0; }}
+        .repo-count {{ font-size: 12px; color: #94a3b8; }}
+        .repo-list {{ display: grid; gap: 16px; }}
         .empty-state {{ display: grid; place-items: center; text-align: center; padding: 48px; gap: 12px; }}
         .empty-icon {{ width: 72px; height: 72px; border-radius: 20px; background: rgba(255, 255, 255, 0.08); display: grid; place-items: center; font-size: 32px; }}
         .empty-title {{ font-size: 20px; font-weight: 600; }}
@@ -387,6 +470,19 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
             </div>
         </div>
     </div>
+
+    <div id="logsModal" class="modal-overlay">
+        <div class="card modal">
+            <div class="modal-header">
+                <h2>Build Logs</h2>
+                <button onclick="hideLogs()" class="btn-ghost">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="logsStatus" class="build-status build-skipped">Build</div>
+                <pre id="logsContent" style="white-space:pre-wrap; font-size:12px; color:#e2e8f0; background:rgba(15,23,42,0.6); padding:12px; border-radius:12px; max-height:360px; overflow:auto;"></pre>
+            </div>
+        </div>
+    </div>
     
     <script>
     function showUploadModal() {{ document.getElementById('uploadModal').classList.add('active'); }}
@@ -492,7 +588,49 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
                 .catch(function(e) {{ clearInterval(iv); text.textContent = 'Error'; text.style.color = '#f87171'; }});
         }}
 
+        async function deleteDeployment(cid) {{
+            if (!confirm('Delete this deployment?')) return;
+            try {{
+                var res = await fetch('/api/deployments/' + cid, {{ method: 'DELETE' }});
+                if (!res.ok) {{ alert('Failed to delete deployment'); return; }}
+                location.reload();
+            }} catch (err) {{
+                alert('Failed to delete deployment');
+            }}
+        }}
+
+        async function redeployDeployment(cid) {{
+            if (!confirm('Redeploy this project?')) return;
+            try {{
+                var res = await fetch('/api/deployments/' + cid + '/redeploy', {{ method: 'POST' }});
+                var data = await res.json();
+                if (!res.ok || !data.success) {{
+                    alert(data.error || 'Redeploy failed');
+                    return;
+                }}
+                location.reload();
+            }} catch (err) {{
+                alert('Redeploy failed');
+            }}
+        }}
+
         document.addEventListener('DOMContentLoaded', function() {{ loadGithubStatus(); }});
+
+        function showLogs(cid) {{
+            fetch('/api/deployments/' + cid + '/logs')
+                .then(function(res) {{ return res.json(); }})
+                .then(function(data) {{
+                    if (!data.success) {{ alert(data.error || 'Failed to load logs'); return; }}
+                    var status = document.getElementById('logsStatus');
+                    status.textContent = 'Build: ' + data.status;
+                    status.className = 'build-status ' + (data.status.includes('Built') ? 'build-ready' : data.status.includes('Failed') ? 'build-failed' : 'build-skipped');
+                    document.getElementById('logsContent').textContent = data.logs || 'No logs available.';
+                    document.getElementById('logsModal').classList.add('active');
+                }})
+                .catch(function() {{ alert('Failed to load logs'); }});
+        }}
+
+        function hideLogs() {{ document.getElementById('logsModal').classList.remove('active'); }}
     </script>
 </body>
 </html>"###, deployments_content);
@@ -513,83 +651,79 @@ pub async fn deploy_from_github(
     let url = request.url.trim();
     let branch = request.branch.as_deref().unwrap_or("main");
     
-    let repo_info = match parse_github_url(url) {
-        Some(info) => info,
-        None => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success":false,"error":"Invalid GitHub URL"}))).into_response(),
-    };
-    
-    let zip_url = format!("https://github.com/{}/{}/archive/refs/heads/{}.zip", repo_info.owner, repo_info.repo, branch);
-    
-    let client = reqwest::Client::new();
-    let response = match client.get(&zip_url).send().await {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"success":false,"error":format!("Failed to download: {}",e)}))).into_response(),
-    };
-    
-    if !response.status().is_success() {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"success":false,"error":format!("Repository or branch '{}' not found", branch)}))).into_response();
+    match deploy_github_project(&state, url, branch).await {
+        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Err((status, message)) => (status, Json(json!({"success": false, "error": message}))).into_response(),
     }
-    
-    let zip_bytes = match response.bytes().await {
-        Ok(b) => b,
-        Err(e) => return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"success":false,"error":format!("Failed to read: {}",e)}))).into_response(),
+}
+
+pub async fn redeploy_github(
+    State(state): State<AppState>,
+    AxumPath(cid): AxumPath<String>,
+) -> impl IntoResponse {
+    let deployment = {
+        let deployments = state.deployments.read().unwrap();
+        deployments.iter().find(|d| d.cid == cid).cloned()
     };
-    
-    let temp_dir = match extract_github_zip(&zip_bytes) {
-        Ok(d) => d,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success":false,"error":e}))).into_response(),
+
+    let Some(deployment) = deployment else {
+        return (StatusCode::NOT_FOUND, Json(json!({"success": false, "error": "Deployment not found"}))).into_response();
     };
-    
-    let storage = match &state.storage {
-        Some(s) => s,
-        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"success":false,"error":"IPFS not available"}))).into_response(),
+
+    if deployment.source != "github" {
+        return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": "Redeploy only supported for GitHub deployments"}))).into_response();
+    }
+
+    let repo_url = match deployment.repo_url.clone() {
+        Some(url) => url,
+        None => return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": "Missing repo URL"}))).into_response(),
     };
-    
-    fn count_files(dir: &std::path::Path) -> (u64, usize) {
-        let mut size = 0u64;
-        let mut count = 0usize;
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let (s, c) = count_files(&path);
-                    size += s;
-                    count += c;
-                } else if let Ok(meta) = path.metadata() {
-                    size += meta.len();
-                    count += 1;
-                }
-            }
+    let branch = deployment.branch.clone().unwrap_or_else(|| "main".to_string());
+
+    match deploy_github_project(&state, &repo_url, &branch).await {
+        Ok(payload) => {
+            let mut deployments = state.deployments.write().unwrap();
+            deployments.retain(|d| d.cid != cid);
+            (StatusCode::OK, Json(payload)).into_response()
         }
-        (size, count)
+        Err((status, message)) => (status, Json(json!({"success": false, "error": message}))).into_response(),
     }
-    
-    let (total_size, file_count) = count_files(temp_dir.path());
-    
-    let result = match storage.store_directory(temp_dir.path()).await {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success":false,"error":format!("IPFS upload failed: {}",e)}))).into_response(),
-    };
-    
-    let cid = result.root_cid;
-    
-    let deployment = Deployment::new_github(repo_info.repo.clone(), cid.clone(), total_size, file_count, branch.to_string());
-    state.deployments.write().unwrap().insert(0, deployment);
-    
-    println!("✅ Deployed {} from GitHub, CID: {}", repo_info.repo, cid);
-    
-    (StatusCode::OK, Json(serde_json::json!({
-        "success": true,
-        "cid": cid,
-        "repo": format!("{}/{}", repo_info.owner, repo_info.repo),
-        "branch": branch,
-        "url": format!("http://localhost:8081/ipfs/{}/index.html", cid)
-    }))).into_response()
 }
 
 pub async fn get_deployments(State(state): State<AppState>) -> impl IntoResponse {
     let deployments = state.deployments.read().unwrap();
     Json(deployments.clone())
+}
+
+pub async fn delete_deployment(
+    State(state): State<AppState>,
+    AxumPath(cid): AxumPath<String>,
+) -> impl IntoResponse {
+    let mut deployments = state.deployments.write().unwrap();
+    let before = deployments.len();
+    deployments.retain(|d| d.cid != cid);
+
+    if deployments.len() == before {
+        (StatusCode::NOT_FOUND, Json(json!({"success": false, "error": "Deployment not found"}))).into_response()
+    } else {
+        Json(json!({"success": true})).into_response()
+    }
+}
+
+pub async fn deployment_logs(
+    State(state): State<AppState>,
+    AxumPath(cid): AxumPath<String>,
+) -> impl IntoResponse {
+    let deployments = state.deployments.read().unwrap();
+    if let Some(deployment) = deployments.iter().find(|d| d.cid == cid) {
+        (StatusCode::OK, Json(json!({
+            "success": true,
+            "status": deployment.build_status,
+            "logs": deployment.build_logs.clone().unwrap_or_else(|| "No logs available".to_string())
+        }))).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({"success": false, "error": "Deployment not found"}))).into_response()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -807,6 +941,178 @@ fn extract_github_zip(data: &[u8]) -> Result<tempfile::TempDir, String> {
     Ok(temp_dir)
 }
 
+async fn deploy_github_project(
+    state: &AppState,
+    url: &str,
+    branch: &str,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let repo_info = parse_github_url(url)
+        .ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
+
+    let zip_url = format!(
+        "https://github.com/{}/{}/archive/refs/heads/{}.zip",
+        repo_info.owner, repo_info.repo, branch
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&zip_url)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Failed to download: {}", e)))?;
+
+    if !response.status().is_success() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("Repository or branch '{}' not found", branch),
+        ));
+    }
+
+    let zip_bytes = response
+        .bytes()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Failed to read: {}", e)))?;
+
+    let temp_dir = extract_github_zip(&zip_bytes)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let build_outcome = prepare_deploy_dir(temp_dir.path())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "IPFS not available".to_string()))?;
+
+    fn count_files(dir: &std::path::Path) -> (u64, usize) {
+        let mut size = 0u64;
+        let mut count = 0usize;
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let (s, c) = count_files(&path);
+                    size += s;
+                    count += c;
+                } else if let Ok(meta) = path.metadata() {
+                    size += meta.len();
+                    count += 1;
+                }
+            }
+        }
+        (size, count)
+    }
+
+    let (total_size, file_count) = count_files(&build_outcome.deploy_root);
+
+    let result = storage
+        .store_directory(&build_outcome.deploy_root)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("IPFS upload failed: {}", e)))?;
+
+    let cid = result.root_cid;
+
+    let deployment = Deployment::new_github(
+        repo_info.repo.clone(),
+        cid.clone(),
+        total_size,
+        file_count,
+        branch.to_string(),
+        Some(url.to_string()),
+        build_outcome.build_status,
+        Some(build_outcome.build_logs),
+    );
+    state.deployments.write().unwrap().insert(0, deployment);
+
+    Ok(json!({
+        "success": true,
+        "cid": cid,
+        "repo": format!("{}/{}", repo_info.owner, repo_info.repo),
+        "branch": branch,
+        "url": format!("http://localhost:8081/ipfs/{}/index.html", cid)
+    }))
+}
+
+struct BuildOutcome {
+    deploy_root: PathBuf,
+    build_status: String,
+    build_logs: String,
+}
+
+fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
+    let package_json = root.join("package.json");
+    if package_json.exists() {
+        let build_script = std::fs::read_to_string(&package_json)
+            .ok()
+            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+            .and_then(|value| value.get("scripts").cloned())
+            .and_then(|scripts| scripts.get("build").cloned());
+
+        if build_script.is_some() {
+            let mut logs = String::new();
+            logs.push_str("$ npm install\n");
+            let output = Command::new("npm")
+                .arg("install")
+                .current_dir(root)
+                .output()
+                .map_err(|e| format!("Failed to run npm install: {}", e))?;
+            logs.push_str(&String::from_utf8_lossy(&output.stdout));
+            logs.push_str(&String::from_utf8_lossy(&output.stderr));
+            if !output.status.success() {
+                return Err(format!("npm install failed\n{}", trim_logs(&logs)));
+            }
+
+            logs.push_str("\n$ npm run build\n");
+            let output = Command::new("npm")
+                .arg("run")
+                .arg("build")
+                .current_dir(root)
+                .output()
+                .map_err(|e| format!("Failed to run npm build: {}", e))?;
+            logs.push_str(&String::from_utf8_lossy(&output.stdout));
+            logs.push_str(&String::from_utf8_lossy(&output.stderr));
+            if !output.status.success() {
+                return Err(format!("npm run build failed\n{}", trim_logs(&logs)));
+            }
+
+            let dist_dir = root.join("dist");
+            if dist_dir.exists() {
+                return Ok(BuildOutcome {
+                    deploy_root: dist_dir,
+                    build_status: "Built".to_string(),
+                    build_logs: trim_logs(&logs),
+                });
+            }
+            let build_dir = root.join("build");
+            if build_dir.exists() {
+                return Ok(BuildOutcome {
+                    deploy_root: build_dir,
+                    build_status: "Built".to_string(),
+                    build_logs: trim_logs(&logs),
+                });
+            }
+
+            return Err(format!("Build finished but no dist/ or build/ folder found.\n{}", trim_logs(&logs)));
+        }
+    }
+
+    Ok(BuildOutcome {
+        deploy_root: root.to_path_buf(),
+        build_status: "Skipped".to_string(),
+        build_logs: "No build script detected. Deployed repository as-is.".to_string(),
+    })
+}
+
+fn trim_logs(logs: &str) -> String {
+    const MAX: usize = 12000;
+    if logs.len() <= MAX {
+        logs.to_string()
+    } else {
+        let start = logs.len().saturating_sub(MAX);
+        format!("…\n{}", &logs[start..])
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Deployment {
     pub name: String,
@@ -816,14 +1122,50 @@ pub struct Deployment {
     pub created_at: String,
     pub source: String,
     pub branch: Option<String>,
+    pub repo_url: Option<String>,
+    pub build_status: String,
+    pub build_logs: Option<String>,
     pub status: String,
 }
 
 impl Deployment {
     pub fn new(name: String, cid: String, size: u64, file_count: usize) -> Self {
-        Self { name, cid, size, file_count, created_at: chrono::Utc::now().format("%b %d, %H:%M").to_string(), source: "upload".to_string(), branch: None, status: "Ready".to_string() }
+        Self {
+            name,
+            cid,
+            size,
+            file_count,
+            created_at: chrono::Utc::now().format("%b %d, %H:%M").to_string(),
+            source: "upload".to_string(),
+            branch: None,
+            repo_url: None,
+            build_status: "Uploaded".to_string(),
+            build_logs: Some("Uploaded ZIP without build step".to_string()),
+            status: "Ready".to_string(),
+        }
     }
-    pub fn new_github(name: String, cid: String, size: u64, file_count: usize, branch: String) -> Self {
-        Self { name, cid, size, file_count, created_at: chrono::Utc::now().format("%b %d, %H:%M").to_string(), source: "github".to_string(), branch: Some(branch), status: "Ready".to_string() }
+    pub fn new_github(
+        name: String,
+        cid: String,
+        size: u64,
+        file_count: usize,
+        branch: String,
+        repo_url: Option<String>,
+        build_status: String,
+        build_logs: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            cid,
+            size,
+            file_count,
+            created_at: chrono::Utc::now().format("%b %d, %H:%M").to_string(),
+            source: "github".to_string(),
+            branch: Some(branch),
+            repo_url,
+            build_status,
+            build_logs,
+            status: "Ready".to_string(),
+        }
     }
 }
