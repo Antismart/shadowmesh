@@ -61,6 +61,8 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub start_time: Instant,
     pub deployments: Arc<RwLock<Vec<Deployment>>>,
+    pub github_auth: Arc<RwLock<Option<dashboard::GithubAuth>>>,
+    pub github_oauth_state: Arc<RwLock<Option<String>>>,
 }
 
 #[tokio::main]
@@ -118,6 +120,8 @@ async fn main() {
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
         deployments: Arc::new(RwLock::new(Vec::new())),
+        github_auth: Arc::new(RwLock::new(None)),
+        github_oauth_state: Arc::new(RwLock::new(None)),
     };
 
     // Create rate limiter
@@ -139,6 +143,10 @@ async fn main() {
         .route("/api/deploy/info", get(deploy::deploy_info))
         .route("/api/deploy/github", post(dashboard::deploy_from_github))
         .route("/api/deployments", get(dashboard::get_deployments))
+    .route("/api/github/login", get(dashboard::github_login))
+    .route("/api/github/callback", get(dashboard::github_callback))
+    .route("/api/github/status", get(dashboard::github_status))
+    .route("/api/github/repos", get(dashboard::github_repos))
         // Upload endpoints (single files)
         .route("/api/upload", post(upload::upload_multipart))
         .route("/api/upload/json", post(upload::upload_json))

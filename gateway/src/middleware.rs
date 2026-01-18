@@ -32,6 +32,7 @@ pub async fn security_headers(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    let path = req.uri().path().to_string();
     let mut response = next.run(req).await;
 
     let headers = response.headers_mut();
@@ -53,9 +54,15 @@ pub async fn security_headers(
         header::STRICT_TRANSPORT_SECURITY,
         "max-age=31536000; includeSubDomains".parse().unwrap(),
     );
+    let csp = if path == "/dashboard" || path == "/metrics" {
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    } else {
+        "default-src 'self'"
+    };
+
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        "default-src 'self'".parse().unwrap(),
+        csp.parse().unwrap(),
     );
 
     response
