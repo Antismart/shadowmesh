@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.7.9", features = ["macros", "multipart"] }
+axum = { version = "0.7.9", features = ["macros", "multipart", "ws"] }
+futures = "0.3"
 tokio = { workspace = true }
 tower-http = { workspace = true }
 serde = { workspace = true }
