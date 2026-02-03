@@ -8,8 +8,10 @@ mod config;
 mod dashboard;
 mod deploy;
 mod error;
+mod lock_utils;
 mod metrics;
 mod middleware;
+mod production;
 mod rate_limit;
 mod upload;
 
@@ -105,6 +107,12 @@ async fn main() {
 
     // Warn about security configuration
     validate_security_config(&config);
+
+    // Enforce production validation (fails in production mode if misconfigured)
+    if let Err(e) = production::enforce_production_validation(&config) {
+        eprintln!("FATAL: {}", e);
+        std::process::exit(1);
+    }
 
     // Initialize content cache
     let cache = Arc::new(ContentCache::with_config(
@@ -274,7 +282,48 @@ async fn main() {
         println!("   Health: http://localhost:{}/health", config.server.port);
     }
 
-    axum::serve(listener, app).await.unwrap();
+    // Start server with graceful shutdown
+    tracing::info!("Starting server with graceful shutdown support");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("Server error: {}", e);
+        });
+
+    tracing::info!("Server shutdown complete");
+}
+
+/// Wait for shutdown signal (SIGTERM or Ctrl+C)
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("Received Ctrl+C, initiating graceful shutdown...");
+        },
+        _ = terminate => {
+            tracing::info!("Received SIGTERM, initiating graceful shutdown...");
+        },
+    }
+
+    println!("\n🛑 Shutting down gracefully...");
 }
 
 async fn index_handler(State(state): State<AppState>) -> Html<String> {
