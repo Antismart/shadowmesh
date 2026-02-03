@@ -92,7 +92,7 @@ impl CircuitBreaker {
             CircuitState::Closed => true,
             CircuitState::Open => {
                 // Check if reset timeout has elapsed
-                if let Some(last_failure) = *self.last_failure_time.read().unwrap() {
+                if let Some(last_failure) = *crate::lock_utils::read_lock(&self.last_failure_time) {
                     if last_failure.elapsed() >= self.reset_timeout {
                         // Transition to half-open
                         self.transition_to(CircuitState::HalfOpen);
@@ -142,7 +142,7 @@ impl CircuitBreaker {
         let new_count = self.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
 
         // Update last failure time
-        *self.last_failure_time.write().unwrap() = Some(Instant::now());
+        *crate::lock_utils::write_lock(&self.last_failure_time) = Some(Instant::now());
 
         match state {
             CircuitState::Closed => {
@@ -163,7 +163,7 @@ impl CircuitBreaker {
     /// Open the circuit
     fn open_circuit(&self) {
         self.transition_to(CircuitState::Open);
-        *self.opened_at.write().unwrap() = Some(Instant::now());
+        *crate::lock_utils::write_lock(&self.opened_at) = Some(Instant::now());
         tracing::warn!(
             circuit = %self.name,
             failure_count = %self.failure_count.load(Ordering::SeqCst),
@@ -186,7 +186,7 @@ impl CircuitBreaker {
     /// Get time since circuit opened (if open)
     pub fn time_in_open_state(&self) -> Option<Duration> {
         if self.state() == CircuitState::Open {
-            self.opened_at.read().unwrap().map(|t| t.elapsed())
+            crate::lock_utils::read_lock(&self.opened_at).map(|t| t.elapsed())
         } else {
             None
         }
