@@ -128,7 +128,7 @@ fn normalize_endpoint(path: &str) -> String {
     let normalized: Vec<&str> = parts
         .iter()
         .enumerate()
-        .map(|(i, part)| {
+        .map(|(_i, part)| {
             // Check if this looks like a CID or UUID
             if part.starts_with("Qm") || part.starts_with("bafy") || part.len() > 30 {
                 ":cid"
