@@ -89,6 +89,6 @@ pub use transport::{
 pub use signaling::{
     generate_session_id, AnnounceMessage, AnswerMessage, DiscoverMessage, ErrorMessage,
     HeartbeatMessage, IceCandidateMessage, OfferMessage, PeerDisconnectedMessage,
-    PeerInfo as SignalingPeerInfo, PeersMessage, PendingSession, SessionState,
-    SignalingErrorCode, SignalingMessage, TrackedPeer,
+    PeerInfo as SignalingPeerInfo, PeersMessage, PendingSession, SessionState, SignalingErrorCode,
+    SignalingMessage, TrackedPeer,
 };

@@ -116,10 +116,15 @@ impl ShadowMeshClient {
         let signaling = SignalingClient::new(&self.config.signaling_url, &self.peer_id);
 
         // Connect to signaling server
-        signaling.connect().await.map_err(|e| JsValue::from_str(&e.to_string()))?;
+        signaling
+            .connect()
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         // Announce presence
-        signaling.announce().map_err(|e| JsValue::from_str(&e.to_string()))?;
+        signaling
+            .announce()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         // Store signaling client
         *self.signaling.borrow_mut() = Some(signaling);
@@ -134,16 +139,17 @@ impl ShadowMeshClient {
     #[wasm_bindgen(js_name = discoverPeers)]
     pub async fn discover_peers(&self) -> Result<JsValue, JsValue> {
         let signaling = self.signaling.borrow();
-        let signaling = signaling.as_ref()
+        let signaling = signaling
+            .as_ref()
             .ok_or_else(|| JsValue::from_str("Not connected"))?;
 
-        signaling.discover(self.config.max_peers)
+        signaling
+            .discover(self.config.max_peers)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         // Return current known peers
         let peers = self.available_peers.borrow();
-        serde_wasm_bindgen::to_value(&*peers)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&*peers).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Fetch content by CID

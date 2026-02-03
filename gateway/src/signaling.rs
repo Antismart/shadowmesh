@@ -222,7 +222,8 @@ impl SignalingServer {
                 self.relay_to_peer(&candidate.to, &message).await
             }
             SignalingMessage::Heartbeat(heartbeat) => {
-                self.handle_heartbeat(connection_id, heartbeat.clone()).await
+                self.handle_heartbeat(connection_id, heartbeat.clone())
+                    .await
             }
             _ => {
                 debug!("Ignoring message type from {}", connection_id);
@@ -412,7 +413,9 @@ impl SignalingServer {
         // Get peer ID if any
         let peer_id = {
             let connections = self.connections.read().await;
-            connections.get(connection_id).and_then(|c| c.peer_id.clone())
+            connections
+                .get(connection_id)
+                .and_then(|c| c.peer_id.clone())
         };
 
         // Remove connection
@@ -436,10 +439,11 @@ impl SignalingServer {
             }
 
             // Notify other peers about disconnect
-            let disconnect_msg = SignalingMessage::PeerDisconnected(protocol::PeerDisconnectedMessage {
-                peer_id: peer_id.clone(),
-                reason: Some("Connection closed".to_string()),
-            });
+            let disconnect_msg =
+                SignalingMessage::PeerDisconnected(protocol::PeerDisconnectedMessage {
+                    peer_id: peer_id.clone(),
+                    reason: Some("Connection closed".to_string()),
+                });
 
             // Broadcast to all connected peers
             let connections = self.connections.read().await;
@@ -495,10 +499,7 @@ pub struct SignalingStats {
 pub type SignalingState = Arc<SignalingServer>;
 
 /// WebSocket upgrade handler
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(signaling): State<SignalingState>,
-) -> Response {
+pub async fn ws_handler(ws: WebSocketUpgrade, State(signaling): State<SignalingState>) -> Response {
     let connection_id = generate_session_id();
     ws.on_upgrade(move |socket| async move {
         signaling.handle_connection(socket, connection_id).await;

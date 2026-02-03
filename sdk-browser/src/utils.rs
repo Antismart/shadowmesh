@@ -17,10 +17,7 @@ pub fn generate_session_id() -> String {
 
 /// Get random bytes using Web Crypto API
 fn getrandom(dest: &mut [u8]) {
-    let crypto = window()
-        .expect("window")
-        .crypto()
-        .expect("crypto");
+    let crypto = window().expect("window").crypto().expect("crypto");
 
     crypto
         .get_random_values_with_u8_array(dest)

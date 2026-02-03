@@ -129,17 +129,27 @@ impl ShadowNode {
 
             // Combine transports using OrTransport
             let combined = OrTransport::new(tcp_transport, webrtc_transport);
-            Ok(combined.map(|out, _| match out {
-                futures::future::Either::Left((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
-                futures::future::Either::Right((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
-            }).boxed())
+            Ok(combined
+                .map(|out, _| match out {
+                    futures::future::Either::Left((peer_id, muxer)) => {
+                        (peer_id, StreamMuxerBox::new(muxer))
+                    }
+                    futures::future::Either::Right((peer_id, muxer)) => {
+                        (peer_id, StreamMuxerBox::new(muxer))
+                    }
+                })
+                .boxed())
         } else if config.enable_webrtc {
             // WebRTC only
             let webrtc_transport = Self::build_webrtc_transport(keypair)?;
-            Ok(webrtc_transport.map(|(peer_id, muxer), _| (peer_id, StreamMuxerBox::new(muxer))).boxed())
+            Ok(webrtc_transport
+                .map(|(peer_id, muxer), _| (peer_id, StreamMuxerBox::new(muxer)))
+                .boxed())
         } else {
             // TCP only (default)
-            Ok(tcp_transport.map(|(peer_id, muxer), _| (peer_id, StreamMuxerBox::new(muxer))).boxed())
+            Ok(tcp_transport
+                .map(|(peer_id, muxer), _| (peer_id, StreamMuxerBox::new(muxer)))
+                .boxed())
         }
     }
 

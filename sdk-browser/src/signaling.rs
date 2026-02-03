@@ -156,7 +156,10 @@ impl SignalingClient {
 
         // Create WebSocket
         let ws = WebSocket::new(&self.url).map_err(|e| {
-            SdkError::new(codes::CONNECTION_FAILED, &format!("Failed to create WebSocket: {:?}", e))
+            SdkError::new(
+                codes::CONNECTION_FAILED,
+                &format!("Failed to create WebSocket: {:?}", e),
+            )
         })?;
 
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
@@ -235,8 +238,12 @@ impl SignalingClient {
             SdkError::new(codes::NOT_CONNECTED, "Not connected to signaling server")
         })?;
 
-        let json = serde_json::to_string(message)
-            .map_err(|e| SdkError::new(codes::SIGNALING_ERROR, &format!("Serialization error: {}", e)))?;
+        let json = serde_json::to_string(message).map_err(|e| {
+            SdkError::new(
+                codes::SIGNALING_ERROR,
+                &format!("Serialization error: {}", e),
+            )
+        })?;
 
         ws.send_with_str(&json)
             .map_err(|e| SdkError::new(codes::SIGNALING_ERROR, &format!("Send error: {:?}", e)))?;

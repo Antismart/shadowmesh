@@ -22,10 +22,10 @@
 use wasm_bindgen::prelude::*;
 
 mod client;
-mod signaling;
-mod webrtc;
 mod error;
+mod signaling;
 mod utils;
+mod webrtc;
 
 pub use client::ShadowMeshClient;
 pub use error::SdkError;

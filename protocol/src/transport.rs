@@ -314,7 +314,11 @@ impl TransportConfig {
 
 impl TurnServer {
     /// Create a new TURN server configuration
-    pub fn new(url: impl Into<String>, username: impl Into<String>, credential: impl Into<String>) -> Self {
+    pub fn new(
+        url: impl Into<String>,
+        username: impl Into<String>,
+        credential: impl Into<String>,
+    ) -> Self {
         Self {
             url: url.into(),
             username: username.into(),
@@ -389,6 +393,9 @@ mod tests {
     fn test_multiaddr_generation() {
         let config = TransportConfig::dual(4001, 4002);
         assert_eq!(config.tcp_multiaddr(), "/ip4/0.0.0.0/tcp/4001");
-        assert_eq!(config.webrtc_multiaddr(), "/ip4/0.0.0.0/udp/4002/webrtc-direct");
+        assert_eq!(
+            config.webrtc_multiaddr(),
+            "/ip4/0.0.0.0/udp/4002/webrtc-direct"
+        );
     }
 }
