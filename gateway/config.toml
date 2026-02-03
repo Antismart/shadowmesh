@@ -28,3 +28,13 @@ max_request_size_mb = 100
 [monitoring]
 metrics_enabled = true
 health_check_interval_seconds = 30
+
+[circuit_breaker]
+# Number of consecutive failures before opening circuit
+failure_threshold = 5
+# Seconds to wait before testing recovery
+reset_timeout_seconds = 30
+
+[deploy]
+# Maximum deployment size in MB
+max_size_mb = 100
