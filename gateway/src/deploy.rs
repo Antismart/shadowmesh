@@ -289,7 +289,12 @@ fn is_zip(data: &[u8]) -> bool {
     data.len() >= 4 && data[0] == 0x50 && data[1] == 0x4B && data[2] == 0x03 && data[3] == 0x04
 }
 
-/// Extract ZIP to a temporary directory
+/// Extract ZIP to a temporary directory with security validation
+///
+/// This function includes multiple layers of protection against path traversal attacks:
+/// 1. Uses `enclosed_name()` which sanitizes paths
+/// 2. Validates that resolved paths are within the temp directory
+/// 3. Rejects any paths containing suspicious patterns
 fn extract_zip(data: &[u8]) -> Result<TempDir, String> {
     let cursor = Cursor::new(data);
     let mut archive = ZipArchive::new(cursor)
@@ -298,14 +303,41 @@ fn extract_zip(data: &[u8]) -> Result<TempDir, String> {
     let temp_dir = TempDir::new()
         .map_err(|e| format!("Failed to create temp directory: {}", e))?;
 
+    // Get canonical path of temp directory for validation
+    let temp_dir_canonical = temp_dir.path().canonicalize()
+        .map_err(|e| format!("Failed to canonicalize temp directory: {}", e))?;
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)
             .map_err(|e| format!("Failed to read ZIP entry: {}", e))?;
 
-        let outpath = match file.enclosed_name() {
-            Some(path) => temp_dir.path().join(path),
-            None => continue,
+        // Get the file name - enclosed_name() sanitizes basic traversal attempts
+        let file_path = match file.enclosed_name() {
+            Some(path) => path.to_path_buf(),
+            None => {
+                tracing::warn!(
+                    entry = %file.name(),
+                    "Skipping ZIP entry with invalid path"
+                );
+                continue;
+            }
         };
+
+        // Additional security check: reject paths with suspicious patterns
+        let path_str = file_path.to_string_lossy();
+        if path_str.contains("..") || path_str.starts_with('/') || path_str.contains("\\..") {
+            tracing::warn!(
+                entry = %file.name(),
+                sanitized = %path_str,
+                "Rejecting ZIP entry with suspicious path pattern"
+            );
+            return Err(format!(
+                "Security error: ZIP contains suspicious path '{}'. Path traversal attempts are not allowed.",
+                file.name()
+            ));
+        }
+
+        let outpath = temp_dir.path().join(&file_path);
 
         if file.name().ends_with('/') {
             // Create directory
@@ -325,6 +357,25 @@ fn extract_zip(data: &[u8]) -> Result<TempDir, String> {
                 .map_err(|e| format!("Failed to create file: {}", e))?;
             std::io::copy(&mut file, &mut outfile)
                 .map_err(|e| format!("Failed to extract file: {}", e))?;
+
+            // SECURITY: Verify the extracted file is within the temp directory
+            // This is a defense-in-depth check after extraction
+            if let Ok(canonical_outpath) = outpath.canonicalize() {
+                if !canonical_outpath.starts_with(&temp_dir_canonical) {
+                    // Delete the file that escaped
+                    let _ = std::fs::remove_file(&outpath);
+                    tracing::error!(
+                        entry = %file.name(),
+                        resolved = %canonical_outpath.display(),
+                        temp_dir = %temp_dir_canonical.display(),
+                        "SECURITY: ZIP extraction path traversal attempt detected and blocked"
+                    );
+                    return Err(format!(
+                        "Security error: ZIP entry '{}' attempted to escape extraction directory",
+                        file.name()
+                    ));
+                }
+            }
         }
 
         // Set permissions on Unix
@@ -332,7 +383,9 @@ fn extract_zip(data: &[u8]) -> Result<TempDir, String> {
         {
             use std::os::unix::fs::PermissionsExt;
             if let Some(mode) = file.unix_mode() {
-                std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode)).ok();
+                // Limit permissions - don't allow setuid/setgid/sticky bits
+                let safe_mode = mode & 0o777;
+                std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(safe_mode)).ok();
             }
         }
     }
