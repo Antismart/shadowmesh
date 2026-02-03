@@ -3,6 +3,8 @@
 //! These tests verify gateway functionality including auth, rate limiting,
 //! security validation, and other core features.
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -38,7 +40,7 @@ mod auth_tests {
                 return true;
             }
 
-            let public_routes = vec!["GET:/health", "GET:/metrics", "GET:/", "GET:/dashboard"];
+            let public_routes = ["GET:/health", "GET:/metrics", "GET:/", "GET:/dashboard"];
 
             let route_key = format!("{}:{}", method, path);
             public_routes.contains(&route_key.as_str())
@@ -73,11 +75,7 @@ mod auth_tests {
     #[test]
     fn test_bearer_token_extraction() {
         fn extract_bearer(auth_header: &str) -> Option<String> {
-            if auth_header.starts_with("Bearer ") {
-                Some(auth_header[7..].to_string())
-            } else {
-                None
-            }
+            auth_header.strip_prefix("Bearer ").map(|s| s.to_string())
         }
 
         assert_eq!(

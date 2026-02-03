@@ -331,9 +331,7 @@ mod tests {
 
     #[test]
     fn test_extract_api_key() {
-        use axum::http::HeaderValue;
-
-        let mut req = Request::builder()
+        let req = Request::builder()
             .header(header::AUTHORIZATION, "Bearer test-key-123")
             .body(Body::empty())
             .unwrap();

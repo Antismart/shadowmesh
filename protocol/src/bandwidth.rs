@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn test_bandwidth_limits() {
-        let mut tracker = BandwidthTracker::with_limits(Some(1024), Some(512));
+        let tracker = BandwidthTracker::with_limits(Some(1024), Some(512));
 
         // Initially should be able to transfer
         assert!(tracker.can_receive(1024));

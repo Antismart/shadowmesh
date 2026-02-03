@@ -1493,7 +1493,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut circuit = Circuit::new(config.circuit_lifetime);
+        let circuit = Circuit::new(config.circuit_lifetime);
         assert!(!circuit.is_expired());
 
         std::thread::sleep(Duration::from_millis(10));
