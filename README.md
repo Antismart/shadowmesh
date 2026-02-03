@@ -212,7 +212,7 @@ cargo bench -p benchmarks
 - [x] HTTP Gateway API
 - [x] TypeScript SDK
 - [x] Integration tests
-- [ ] WebRTC transport support
+- [x] WebRTC transport support
 - [ ] Mobile SDK (React Native)
 - [ ] Incentive layer with token rewards
 - [ ] Browser extension
