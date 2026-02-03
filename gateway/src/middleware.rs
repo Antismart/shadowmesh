@@ -40,33 +40,28 @@ pub async fn security_headers(
 
     let headers = response.headers_mut();
 
-    // Security headers
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        "nosniff".parse().unwrap(),
-    );
-    headers.insert(
-        header::X_FRAME_OPTIONS,
-        "DENY".parse().unwrap(),
-    );
-    headers.insert(
-        "X-XSS-Protection",
-        "1; mode=block".parse().unwrap(),
-    );
-    headers.insert(
-        header::STRICT_TRANSPORT_SECURITY,
-        "max-age=31536000; includeSubDomains".parse().unwrap(),
-    );
+    // Security headers - using if-let to handle parse errors gracefully
+    if let Ok(value) = "nosniff".parse() {
+        headers.insert(header::X_CONTENT_TYPE_OPTIONS, value);
+    }
+    if let Ok(value) = "DENY".parse() {
+        headers.insert(header::X_FRAME_OPTIONS, value);
+    }
+    if let Ok(value) = "1; mode=block".parse() {
+        headers.insert("X-XSS-Protection", value);
+    }
+    if let Ok(value) = "max-age=31536000; includeSubDomains".parse() {
+        headers.insert(header::STRICT_TRANSPORT_SECURITY, value);
+    }
     let csp = if path == "/dashboard" || path == "/metrics" {
         "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
     } else {
         "default-src 'self'"
     };
 
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        csp.parse().unwrap(),
-    );
+    if let Ok(value) = csp.parse() {
+        headers.insert(header::CONTENT_SECURITY_POLICY, value);
+    }
 
     response
 }
@@ -79,10 +74,9 @@ pub async fn request_id(
     req.extensions_mut().insert(request_id.clone());
 
     let mut response = next.run(req).await;
-    response.headers_mut().insert(
-        "X-Request-ID",
-        request_id.parse().unwrap(),
-    );
+    if let Ok(value) = request_id.parse() {
+        response.headers_mut().insert("X-Request-ID", value);
+    }
 
     response
 }
