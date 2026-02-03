@@ -1,0 +1,155 @@
+groups:
+  - name: shadowmesh-gateway-alerts
+    rules:
+      # High error rate - Critical
+      - alert: ShadowMeshHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: shadowmesh-gateway
+        annotations:
+          summary: "High error rate on ShadowMesh Gateway"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+          runbook_url: "https://docs.shadowmesh.io/runbooks/high-error-rate"
+
+      # High latency - Warning
+      - alert: ShadowMeshHighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: shadowmesh-gateway
+        annotations:
+          summary: "High latency on ShadowMesh Gateway"
+          description: "P95 latency is {{ $value | humanizeDuration }}"
+          runbook_url: "https://docs.shadowmesh.io/runbooks/high-latency"
+
+      # Very high latency - Critical
+      - alert: ShadowMeshVeryHighLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: shadowmesh-gateway
+        annotations:
+          summary: "Very high latency on ShadowMesh Gateway"
+          description: "P95 latency is {{ $value | humanizeDuration }} - service may be degraded"
+
+      # IPFS disconnected - Critical
+      - alert: ShadowMeshIPFSDisconnected
+        expr: ipfs_connected == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: shadowmesh-gateway
+        annotations:
+          summary: "ShadowMesh Gateway disconnected from IPFS"
+          description: "Gateway has been disconnected from IPFS for more than 2 minutes"
+          runbook_url: "https://docs.shadowmesh.io/runbooks/ipfs-disconnected"
+
+      # High rate limiting - Warning
+      - alert: ShadowMeshHighRateLimiting
+        expr: |
+          sum(rate(rate_limit_exceeded_total[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: shadowmesh-gateway
+        annotations:
+          summary: "High rate of rate-limited requests"
+          description: "{{ $value | humanize }} requests/second are being rate limited"
+
+      # Low cache hit rate - Warning
+      - alert: ShadowMeshLowCacheHitRate
+        expr: |
+          sum(rate(cache_hits_total[5m]))
+          / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m]))) < 0.5
+        for: 15m
+        labels:
+          severity: warning
+          service: shadowmesh-gateway
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache hit rate is {{ $value | humanizePercentage }}"
+
+      # Authentication failure spike - Warning
+      - alert: ShadowMeshAuthFailureSpike
+        expr: |
+          sum(rate(auth_failures_total[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: shadowmesh-gateway
+        annotations:
+          summary: "Spike in authentication failures"
+          description: "{{ $value | humanize }} auth failures per second - possible attack"
+
+      # No requests - Warning (service may be down or unreachable)
+      - alert: ShadowMeshNoRequests
+        expr: |
+          sum(rate(http_requests_total[5m])) == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: shadowmesh-gateway
+        annotations:
+          summary: "No requests received by ShadowMesh Gateway"
+          description: "Gateway has not received any requests in the last 5 minutes"
+
+      # High in-flight requests - Warning
+      - alert: ShadowMeshHighInFlightRequests
+        expr: http_requests_in_flight > 100
+        for: 2m
+        labels:
+          severity: warning
+          service: shadowmesh-gateway
+        annotations:
+          summary: "High number of in-flight requests"
+          description: "{{ $value }} requests currently being processed"
+
+  - name: shadowmesh-gateway-slos
+    rules:
+      # SLO: 99.9% availability (measured by successful requests)
+      - record: shadowmesh:slo:availability:5m
+        expr: |
+          sum(rate(http_requests_total{status!~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m]))
+
+      # SLO: P95 latency under 500ms
+      - record: shadowmesh:slo:latency_p95:5m
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+
+      # SLO: P99 latency under 1s
+      - record: shadowmesh:slo:latency_p99:5m
+        expr: |
+          histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+
+      # Alert on SLO breach - Availability
+      - alert: ShadowMeshSLOAvailabilityBreach
+        expr: shadowmesh:slo:availability:5m < 0.999
+        for: 5m
+        labels:
+          severity: critical
+          service: shadowmesh-gateway
+          slo: availability
+        annotations:
+          summary: "SLO breach: Availability below 99.9%"
+          description: "Current availability is {{ $value | humanizePercentage }}"
+
+      # Alert on SLO breach - Latency
+      - alert: ShadowMeshSLOLatencyBreach
+        expr: shadowmesh:slo:latency_p95:5m > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: shadowmesh-gateway
+          slo: latency
+        annotations:
+          summary: "SLO breach: P95 latency above 500ms"
+          description: "Current P95 latency is {{ $value | humanizeDuration }}"
