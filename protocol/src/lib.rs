@@ -15,6 +15,7 @@
 //! - `bandwidth` - Bandwidth tracking and rate limiting
 //! - `zk_relay` - Zero-knowledge relay for plausible deniability
 //! - `adaptive_routing` - Censorship detection and route-around
+//! - `transport` - Multi-transport configuration (TCP, WebRTC)
 
 pub mod adaptive_routing;
 pub mod bandwidth;
@@ -25,7 +26,9 @@ pub mod node;
 pub mod peer_discovery;
 pub mod replication;
 pub mod routing;
+pub mod signaling;
 pub mod storage;
+pub mod transport;
 pub mod zk_relay;
 
 // Re-export crypto types
@@ -74,4 +77,18 @@ pub use zk_relay::{
 pub use adaptive_routing::{
     AdaptiveRouter, AdaptiveRoutingConfig, CensorshipStatus, ComputedRoute, FailureType, GeoRegion,
     PathHealth, RelayInfo, RouteStrategy, RoutingError, RoutingStats as AdaptiveRoutingStats,
+};
+
+// Re-export transport types
+pub use transport::{
+    SignalingConfig, TransportConfig, TurnServer, TurnTransport, WebRtcConfig,
+    DEFAULT_STUN_SERVERS, DEFAULT_TCP_PORT, DEFAULT_WEBRTC_PORT,
+};
+
+// Re-export signaling types
+pub use signaling::{
+    generate_session_id, AnnounceMessage, AnswerMessage, DiscoverMessage, ErrorMessage,
+    HeartbeatMessage, IceCandidateMessage, OfferMessage, PeerDisconnectedMessage,
+    PeerInfo as SignalingPeerInfo, PeersMessage, PendingSession, SessionState,
+    SignalingErrorCode, SignalingMessage, TrackedPeer,
 };
