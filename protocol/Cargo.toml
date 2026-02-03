@@ -12,13 +12,25 @@ name = "protocol"
 path = "src/main.rs"
 
 [dependencies]
-libp2p = { workspace = true, features = ["tcp", "noise", "yamux", "kad", "gossipsub", "tokio", "macros", "serde"] }
+libp2p = { workspace = true, features = [
+    # Existing features
+    "tcp", "noise", "yamux", "kad", "gossipsub", "tokio", "macros", "serde",
+    # DNS resolution for multiaddrs
+    "dns",
+    # Peer identification protocol
+    "identify",
+    # Relay for NAT traversal
+    "relay",
+] }
+# WebRTC transport (alpha - separate crate)
+libp2p-webrtc = { version = "0.9.0-alpha.1", features = ["tokio"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 blake3 = { workspace = true }
 chacha20poly1305 = { workspace = true }
 rand = "0.8"
+tracing = { workspace = true }
 futures = "0.3"
 ipfs-api-backend-hyper = "0.6"
 http = "0.2"
