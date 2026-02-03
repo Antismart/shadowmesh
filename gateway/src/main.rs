@@ -1,18 +1,23 @@
 //! ShadowMesh Gateway
 
+mod api_keys;
 mod audit;
 mod auth;
 mod cache;
 mod circuit_breaker;
 mod config;
+mod config_watcher;
 mod dashboard;
 mod deploy;
+mod distributed_rate_limit;
 mod error;
 mod lock_utils;
 mod metrics;
 mod middleware;
 mod production;
 mod rate_limit;
+mod redis_client;
+mod telemetry;
 mod upload;
 
 use axum::{
@@ -73,6 +78,8 @@ pub struct AppState {
     pub ipfs_circuit_breaker: Arc<circuit_breaker::CircuitBreaker>,
     /// Audit logger for security events
     pub audit_logger: Arc<audit::AuditLogger>,
+    /// Redis client for persistence (optional)
+    pub redis: Option<Arc<redis_client::RedisClient>>,
 }
 
 #[tokio::main]
@@ -80,8 +87,23 @@ async fn main() {
     let _ = dotenvy::dotenv();
     let _ = dotenvy::from_filename("gateway/.env");
 
-    // Initialize structured logging
-    init_logging();
+    // Load configuration first (needed for telemetry)
+    let config = match Config::load() {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e);
+            Arc::new(Config::default())
+        }
+    };
+
+    // Initialize telemetry (replaces init_logging)
+    if let Err(e) = telemetry::init_telemetry(&config.telemetry) {
+        eprintln!("Warning: Failed to initialize telemetry: {}", e);
+        // Fall back to basic logging
+        init_logging();
+    } else if config.telemetry.enabled {
+        println!("✓ OpenTelemetry tracing enabled");
+    }
 
     // Register Prometheus metrics
     metrics::register_metrics();
@@ -92,18 +114,7 @@ async fn main() {
     // Load authentication configuration
     let auth_config = Arc::new(auth::AuthConfig::from_env());
 
-    // Load configuration
-    let config = match Config::load() {
-        Ok(c) => {
-            println!("✓ Loaded configuration");
-            Arc::new(c)
-        }
-        Err(e) => {
-            println!("⚠️  Failed to load configuration: {}", e);
-            println!("   Using default configuration");
-            Arc::new(Config::default())
-        }
-    };
+    println!("✓ Loaded configuration");
 
     // Warn about security configuration
     validate_security_config(&config);
@@ -147,17 +158,50 @@ async fn main() {
         }
     };
 
-    // Create circuit breaker for IPFS operations
-    // Opens after 5 consecutive failures, resets after 30 seconds
+    // Create circuit breaker for IPFS operations (configurable)
     let ipfs_circuit_breaker = Arc::new(circuit_breaker::CircuitBreaker::new(
         "ipfs",
-        5,  // failure threshold
-        Duration::from_secs(30),  // reset timeout
+        config.circuit_breaker.failure_threshold,
+        config.circuit_breaker.reset_timeout(),
     ));
 
     // Create audit logger for security events
     let audit_logger = Arc::new(audit::AuditLogger::new(10000)); // Keep last 10k events
     println!("✓ Audit logging enabled");
+
+    // Initialize Redis client (optional)
+    let redis = if let Some(redis_url) = config.redis.get_url() {
+        match redis_client::RedisClient::new(&redis_url, config.redis.key_prefix.clone()).await {
+            Ok(client) => {
+                println!("✅ Connected to Redis at {}", redis_url);
+                Some(Arc::new(client))
+            }
+            Err(e) => {
+                println!("⚠️  Redis not available: {}", e);
+                println!("   Running with in-memory state (data lost on restart)");
+                None
+            }
+        }
+    } else {
+        println!("ℹ️  Redis not configured (using in-memory state)");
+        None
+    };
+
+    // Load existing deployments from Redis if available
+    let initial_deployments = if let Some(ref redis_client) = redis {
+        match dashboard::Deployment::load_all_from_redis(redis_client).await {
+            Ok(deployments) => {
+                println!("✓ Loaded {} deployments from Redis", deployments.len());
+                deployments
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load deployments from Redis: {}", e);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
 
     let state = AppState {
         storage,
@@ -165,17 +209,37 @@ async fn main() {
         config: config.clone(),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
-        deployments: Arc::new(RwLock::new(Vec::new())),
+        deployments: Arc::new(RwLock::new(initial_deployments)),
         github_auth: Arc::new(RwLock::new(None)),
         github_oauth_state: Arc::new(RwLock::new(None)),
         ipfs_circuit_breaker,
         audit_logger,
+        redis: redis.clone(),
     };
 
-    // Create rate limiter
+    // Initialize API key manager for key rotation
+    let admin_key = std::env::var("SHADOWMESH_ADMIN_KEY").ok();
+    let api_key_manager = Arc::new(api_keys::ApiKeyManager::new(redis, admin_key));
+    let api_key_state = api_keys::ApiKeyState {
+        manager: api_key_manager,
+    };
+    if std::env::var("SHADOWMESH_ADMIN_KEY").is_ok() {
+        println!("✓ API key management enabled (admin key configured)");
+    } else {
+        println!("ℹ️  API key management disabled (set SHADOWMESH_ADMIN_KEY to enable)");
+    }
+
+    // Create rate limiter (distributed when Redis available)
     let rate_limiter = if config.rate_limit.enabled {
-        Some(rate_limit::RateLimiter::new(
-            config.rate_limit.requests_per_second,
+        let rate_config = rate_limit::RateLimitConfig {
+            ip_requests_per_second: config.rate_limit.requests_per_second,
+            key_requests_per_second: config.rate_limit.requests_per_second * 10,
+            burst_size: config.rate_limit.burst_size,
+            window: std::time::Duration::from_secs(1),
+        };
+        Some(distributed_rate_limit::DistributedRateLimiter::new(
+            state.redis.clone(),
+            rate_config,
         ))
     } else {
         None
@@ -207,7 +271,9 @@ async fn main() {
         // Content retrieval
         .route("/:cid", get(content_handler))
         .route("/ipfs/*path", get(ipfs_content_path_handler))
-        .with_state(state);
+        .with_state(state)
+        // API key management routes (separate state)
+        .nest("/api/keys", api_keys::api_keys_router(api_key_state));
 
     // Add middleware layers
     if config.security.cors_enabled {
@@ -225,6 +291,11 @@ async fn main() {
                 .allow_headers(Any)
         };
         app = app.layer(cors);
+    }
+
+    // Add tracing middleware for OpenTelemetry (before other middleware)
+    if config.telemetry.enabled {
+        app = app.layer(axum_middleware::from_fn(telemetry::middleware::trace_request));
     }
 
     app = app
@@ -285,12 +356,19 @@ async fn main() {
     // Start server with graceful shutdown
     tracing::info!("Starting server with graceful shutdown support");
 
+    let telemetry_enabled = config.telemetry.enabled;
+
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap_or_else(|e| {
             tracing::error!("Server error: {}", e);
         });
+
+    // Shutdown OpenTelemetry gracefully
+    if telemetry_enabled {
+        telemetry::shutdown_telemetry();
+    }
 
     tracing::info!("Server shutdown complete");
 }
@@ -609,6 +687,7 @@ async fn content_handler(
     }
 }
 
+#[allow(dead_code)]
 async fn content_path_handler(
     State(state): State<AppState>,
     Path((cid, path)): Path<(String, String)>,
@@ -686,6 +765,7 @@ async fn content_path_handler(
 }
 
 // Handler for /:cid/*path - access files within a directory CID
+#[allow(dead_code)]
 async fn content_with_path_handler(
     State(state): State<AppState>,
     Path((cid, path)): Path<(String, String)>,
