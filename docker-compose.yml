@@ -1,0 +1,52 @@
+# ShadowMesh Development Docker Compose
+version: '3.8'
+
+services:
+  # IPFS node
+  ipfs:
+    image: ipfs/kubo:latest
+    container_name: shadowmesh-ipfs
+    ports:
+      - "4001:4001"      # Swarm
+      - "5001:5001"      # API
+      - "8080:8080"      # Gateway
+    volumes:
+      - ipfs-data:/data/ipfs
+    environment:
+      - IPFS_PROFILE=server
+    healthcheck:
+      test: ["CMD", "ipfs", "id"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ShadowMesh Gateway
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: shadowmesh-gateway
+    ports:
+      - "8081:8081"
+    environment:
+      - RUST_LOG=info
+      - SHADOWMESH_SERVER_HOST=0.0.0.0
+      - SHADOWMESH_SERVER_PORT=8081
+      - SHADOWMESH_IPFS_API_URL=http://ipfs:5001
+      # Security - set these in production!
+      # - SHADOWMESH_API_KEYS=your-api-key-here
+      # - SHADOWMESH_SECURITY_ALLOWED_ORIGINS=https://your-domain.com
+      # GitHub OAuth - required for dashboard
+      # - GITHUB_CLIENT_ID=your-client-id
+      # - GITHUB_CLIENT_SECRET=your-client-secret
+    depends_on:
+      ipfs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  ipfs-data:
