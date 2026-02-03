@@ -318,8 +318,8 @@ impl PerformanceConfig {
 impl NodeConfig {
     /// Load configuration from file, environment, and defaults
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let config_path = std::env::var("SHADOWMESH_CONFIG")
-            .unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
+        let config_path =
+            std::env::var("SHADOWMESH_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG_PATH.to_string());
 
         let mut builder = config::Config::builder()
             .set_default("identity.name", "ShadowMesh Node")?
@@ -392,10 +392,7 @@ impl NodeConfig {
         println!("   Storage: {:.2} GB", self.storage.max_storage_gb());
         println!("   Max Peers: {}", self.network.max_peers);
         println!("   Replication: {}x", self.network.replication_factor);
-        println!(
-            "   Dashboard: http://{}",
-            self.dashboard.bind_address()
-        );
+        println!("   Dashboard: http://{}", self.dashboard.bind_address());
         if let Some(region) = &self.identity.region {
             println!("   Region: {}", region);
         }

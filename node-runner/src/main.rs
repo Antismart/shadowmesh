@@ -2,11 +2,7 @@
 //!
 //! A complete node implementation for the ShadowMesh decentralized CDN.
 
-use axum::{
-    routing::get,
-    Router,
-    response::Html,
-};
+use axum::{response::Html, routing::get, Router};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, RwLock};
@@ -74,28 +70,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Initialize storage manager
-    let storage = match StorageManager::new(
-        data_dir.clone(),
-        config.storage.max_storage_bytes,
-    ).await {
-        Ok(s) => {
-            let stats = s.get_stats().await;
-            println!("✅ Storage initialized");
-            println!("   📦 {} fragments, {} used",
-                stats.fragment_count,
-                metrics::BandwidthStats::format_bytes(stats.total_bytes)
-            );
-            Arc::new(s)
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to initialize storage: {}", e);
-            return Err(e.into());
-        }
-    };
+    let storage =
+        match StorageManager::new(data_dir.clone(), config.storage.max_storage_bytes).await {
+            Ok(s) => {
+                let stats = s.get_stats().await;
+                println!("✅ Storage initialized");
+                println!(
+                    "   📦 {} fragments, {} used",
+                    stats.fragment_count,
+                    metrics::BandwidthStats::format_bytes(stats.total_bytes)
+                );
+                Arc::new(s)
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to initialize storage: {}", e);
+                return Err(e.into());
+            }
+        };
 
     // Initialize metrics collector
     let metrics = Arc::new(MetricsCollector::new());
-    
+
     // Start background metrics recording
     metrics.clone().start_background_recording();
 
@@ -108,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let peer_id = node.peer_id().to_string();
             println!("✅ P2P node initialized");
             println!("   🆔 Peer ID: {}", &peer_id[..20]);
-            
+
             // Start P2P networking in background
             tokio::spawn(async move {
                 let mut node = node;
@@ -116,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("❌ P2P network error: {}", e);
                 }
             });
-            
+
             peer_id
         }
         Err(e) => {
@@ -145,7 +140,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .allow_methods(Any)
                 .allow_headers(Any)
         } else {
-            let origins: Vec<_> = config.dashboard.cors_origins
+            let origins: Vec<_> = config
+                .dashboard
+                .cors_origins
                 .iter()
                 .filter_map(|o| o.parse().ok())
                 .collect();
@@ -180,7 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run server with graceful shutdown
     let mut shutdown_rx = state.shutdown_signal.subscribe();
-    
+
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {

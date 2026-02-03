@@ -111,9 +111,13 @@ impl MetricsCollector {
     pub fn record_request(&self, success: bool) {
         self.requests.total_requests.fetch_add(1, Ordering::Relaxed);
         if success {
-            self.requests.successful_requests.fetch_add(1, Ordering::Relaxed);
+            self.requests
+                .successful_requests
+                .fetch_add(1, Ordering::Relaxed);
         } else {
-            self.requests.failed_requests.fetch_add(1, Ordering::Relaxed);
+            self.requests
+                .failed_requests
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -128,19 +132,29 @@ impl MetricsCollector {
 
     /// Record bandwidth usage
     pub fn record_bandwidth(&self, served: u64, received: u64, uploaded: u64) {
-        self.bandwidth.bytes_served.fetch_add(served, Ordering::Relaxed);
-        self.bandwidth.bytes_received.fetch_add(received, Ordering::Relaxed);
-        self.bandwidth.bytes_uploaded.fetch_add(uploaded, Ordering::Relaxed);
+        self.bandwidth
+            .bytes_served
+            .fetch_add(served, Ordering::Relaxed);
+        self.bandwidth
+            .bytes_received
+            .fetch_add(received, Ordering::Relaxed);
+        self.bandwidth
+            .bytes_uploaded
+            .fetch_add(uploaded, Ordering::Relaxed);
     }
 
     /// Record bytes served
     pub fn record_served(&self, bytes: u64) {
-        self.bandwidth.bytes_served.fetch_add(bytes, Ordering::Relaxed);
+        self.bandwidth
+            .bytes_served
+            .fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Record bytes received
     pub fn record_received(&self, bytes: u64) {
-        self.bandwidth.bytes_received.fetch_add(bytes, Ordering::Relaxed);
+        self.bandwidth
+            .bytes_received
+            .fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Update network metrics
@@ -215,23 +229,24 @@ impl MetricsCollector {
         let failed = self.requests.failed_requests.load(Ordering::Relaxed);
         let network = self.network.read().await.clone();
 
-        let (requests_per_min, bandwidth_mbps, error_rate) = if let Some(last) = history.last_recorded {
-            let elapsed_secs = now.duration_since(last).as_secs_f64().max(1.0);
-            let req_diff = current_requests.saturating_sub(history.last_requests);
-            let bw_diff = current_bandwidth.saturating_sub(history.last_bandwidth);
+        let (requests_per_min, bandwidth_mbps, error_rate) =
+            if let Some(last) = history.last_recorded {
+                let elapsed_secs = now.duration_since(last).as_secs_f64().max(1.0);
+                let req_diff = current_requests.saturating_sub(history.last_requests);
+                let bw_diff = current_bandwidth.saturating_sub(history.last_bandwidth);
 
-            let rpm = (req_diff as f64 / elapsed_secs * 60.0) as u64;
-            let mbps = (bw_diff as f64 / elapsed_secs) / (1024.0 * 1024.0);
-            let err = if current_requests > 0 {
-                (failed as f64 / current_requests as f64) * 100.0
+                let rpm = (req_diff as f64 / elapsed_secs * 60.0) as u64;
+                let mbps = (bw_diff as f64 / elapsed_secs) / (1024.0 * 1024.0);
+                let err = if current_requests > 0 {
+                    (failed as f64 / current_requests as f64) * 100.0
+                } else {
+                    0.0
+                };
+
+                (rpm, mbps, err)
             } else {
-                0.0
+                (0, 0.0, 0.0)
             };
-
-            (rpm, mbps, err)
-        } else {
-            (0, 0.0, 0.0)
-        };
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -383,7 +398,7 @@ mod tests {
     #[test]
     fn test_request_recording() {
         let collector = MetricsCollector::new();
-        
+
         collector.record_request(true);
         collector.record_request(true);
         collector.record_request(false);
@@ -397,7 +412,7 @@ mod tests {
     #[test]
     fn test_cache_recording() {
         let collector = MetricsCollector::new();
-        
+
         collector.record_cache(true);
         collector.record_cache(true);
         collector.record_cache(false);

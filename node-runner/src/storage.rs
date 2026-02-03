@@ -127,10 +127,14 @@ impl StorageManager {
     /// Load metadata from disk
     async fn load_metadata(&self) -> Result<(), std::io::Error> {
         let metadata_path = self.data_dir.join("metadata").join("index.json");
-        
+
         if metadata_path.exists() {
             let data = fs::read_to_string(&metadata_path).await?;
-            if let Ok((fragments, content)) = serde_json::from_str::<(HashMap<String, StoredFragment>, HashMap<String, StoredContent>)>(&data) {
+            if let Ok((fragments, content)) = serde_json::from_str::<(
+                HashMap<String, StoredFragment>,
+                HashMap<String, StoredContent>,
+            )>(&data)
+            {
                 let mut frags = self.fragments.write().await;
                 let mut cont = self.content.write().await;
                 *frags = fragments;
@@ -156,13 +160,13 @@ impl StorageManager {
     async fn save_metadata(&self) -> Result<(), std::io::Error> {
         let fragments = self.fragments.read().await;
         let content = self.content.read().await;
-        
+
         let data = serde_json::to_string_pretty(&(&*fragments, &*content))
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        
+
         let metadata_path = self.data_dir.join("metadata").join("index.json");
         fs::write(&metadata_path, data).await?;
-        
+
         Ok(())
     }
 
@@ -399,7 +403,7 @@ impl StorageManager {
     /// Delete a fragment
     async fn delete_fragment(&self, hash: &str) -> Result<(), StorageError> {
         let fragment_path = self.fragment_path(hash);
-        
+
         let size = {
             let fragments = self.fragments.read().await;
             fragments.get(hash).map(|f| f.size).unwrap_or(0)
@@ -460,12 +464,16 @@ impl StorageManager {
         // Get last access time from fragments
         let fragments = self.fragments.read().await;
         unpinned.sort_by(|a, b| {
-            let a_last = a.fragments.iter()
+            let a_last = a
+                .fragments
+                .iter()
                 .filter_map(|h| fragments.get(h))
                 .map(|f| f.last_accessed)
                 .min()
                 .unwrap_or(0);
-            let b_last = b.fragments.iter()
+            let b_last = b
+                .fragments
+                .iter()
                 .filter_map(|h| fragments.get(h))
                 .map(|f| f.last_accessed)
                 .min()
@@ -552,8 +560,15 @@ pub enum StorageError {
 impl std::fmt::Display for StorageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InsufficientSpace { required, available } => {
-                write!(f, "Insufficient space: need {} bytes, have {} available", required, available)
+            Self::InsufficientSpace {
+                required,
+                available,
+            } => {
+                write!(
+                    f,
+                    "Insufficient space: need {} bytes, have {} available",
+                    required, available
+                )
             }
             Self::NotFound(id) => write!(f, "Not found: {}", id),
             Self::Pinned(id) => write!(f, "Content is pinned: {}", id),

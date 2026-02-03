@@ -256,7 +256,7 @@ async fn run_garbage_collection(
     Json(req): Json<GCRequest>,
 ) -> Result<Json<crate::storage::GCResult>, (StatusCode, String)> {
     let target_bytes = (req.target_free_gb * 1024.0 * 1024.0 * 1024.0) as u64;
-    
+
     state
         .storage
         .garbage_collect(target_bytes)
