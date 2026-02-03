@@ -87,6 +87,7 @@ struct RateLimitError {
 
 impl RateLimiter {
     /// Create a new rate limiter with default config
+    #[allow(dead_code)]
     pub fn new(requests_per_second: u64) -> Self {
         Self::with_config(RateLimitConfig {
             ip_requests_per_second: requests_per_second,
@@ -252,7 +253,7 @@ impl RateLimiter {
                     "Rate limit exceeded"
                 );
 
-                let response = (
+                let _response = (
                     StatusCode::TOO_MANY_REQUESTS,
                     [
                         (header::RETRY_AFTER, retry_after.to_string()),
