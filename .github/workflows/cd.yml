@@ -183,7 +183,6 @@ jobs:
 
           echo "Smoke tests passed!"
         if: ${{ secrets.KUBE_CONFIG_STAGING != '' }}
-        continue-on-error: true
 
       - name: Rollback on failure
         if: failure() && ${{ secrets.KUBE_CONFIG_STAGING != '' }}
@@ -251,7 +250,6 @@ jobs:
 
           echo "Production smoke tests passed!"
         if: ${{ secrets.KUBE_CONFIG_PRODUCTION != '' }}
-        continue-on-error: true
 
       - name: Rollback on failure
         if: failure() && ${{ secrets.KUBE_CONFIG_PRODUCTION != '' }}
