@@ -1,16 +1,21 @@
 //! Dashboard for ShadowMesh Gateway - Tailwind CSS Version
 
+use crate::{
+    lock_utils::{read_lock, write_lock},
+    redis_client::RedisClient,
+    AppState,
+};
 use axum::{
     extract::{Path as AxumPath, Query, State},
-    response::{Html, IntoResponse, Json, Redirect},
     http::StatusCode,
+    response::{Html, IntoResponse, Json, Redirect},
 };
 use serde::{Deserialize, Serialize};
-use crate::{AppState, lock_utils::{read_lock, write_lock}};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -29,9 +34,17 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
     }
 
     let render_deployment = |d: &Deployment| {
-        let status_class = if d.status == "Ready" { "status-ready" } else { "status-pending" };
+        let status_class = if d.status == "Ready" {
+            "status-ready"
+        } else {
+            "status-pending"
+        };
         let status_icon = if d.status == "Ready" { "✓" } else { "◐" };
-        let source_label = if d.source == "github" { "GitHub" } else { "Upload" };
+        let source_label = if d.source == "github" {
+            "GitHub"
+        } else {
+            "Upload"
+        };
         let branch_display = d.branch.as_deref().unwrap_or("main");
         let build_status = d.build_status.as_str();
         let build_class = if build_status.contains("Built") {
@@ -101,7 +114,11 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
                 format!("GitHub · {}", key)
             };
             let count = items.len();
-            let list = items.iter().map(|d| render_deployment(d)).collect::<Vec<_>>().join("\n");
+            let list = items
+                .iter()
+                .map(|d| render_deployment(d))
+                .collect::<Vec<_>>()
+                .join("\n");
             format!(
                 r##"<section class="repo-group">
                         <div class="repo-header">
@@ -132,7 +149,8 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
         deployment_rows
     };
 
-    let html = format!(r###"<!DOCTYPE html>
+    let html = format!(
+        r###"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -633,7 +651,9 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
         function hideLogs() {{ document.getElementById('logsModal').classList.remove('active'); }}
     </script>
 </body>
-</html>"###, deployments_content);
+</html>"###,
+        deployments_content
+    );
 
     Html(html)
 }
@@ -650,10 +670,12 @@ pub async fn deploy_from_github(
 ) -> impl IntoResponse {
     let url = request.url.trim();
     let branch = request.branch.as_deref().unwrap_or("main");
-    
+
     match deploy_github_project(&state, url, branch).await {
         Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err((status, message)) => (status, Json(json!({"success": false, "error": message}))).into_response(),
+        Err((status, message)) => {
+            (status, Json(json!({"success": false, "error": message}))).into_response()
+        }
     }
 }
 
@@ -667,7 +689,11 @@ pub async fn redeploy_github(
     };
 
     let Some(deployment) = deployment else {
-        return (StatusCode::NOT_FOUND, Json(json!({"success": false, "error": "Deployment not found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"success": false, "error": "Deployment not found"})),
+        )
+            .into_response();
     };
 
     if deployment.source != "github" {
@@ -676,9 +702,18 @@ pub async fn redeploy_github(
 
     let repo_url = match deployment.repo_url.clone() {
         Some(url) => url,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": "Missing repo URL"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": "Missing repo URL"})),
+            )
+                .into_response()
+        }
     };
-    let branch = deployment.branch.clone().unwrap_or_else(|| "main".to_string());
+    let branch = deployment
+        .branch
+        .clone()
+        .unwrap_or_else(|| "main".to_string());
 
     match deploy_github_project(&state, &repo_url, &branch).await {
         Ok(payload) => {
@@ -686,7 +721,9 @@ pub async fn redeploy_github(
             deployments.retain(|d| d.cid != cid);
             (StatusCode::OK, Json(payload)).into_response()
         }
-        Err((status, message)) => (status, Json(json!({"success": false, "error": message}))).into_response(),
+        Err((status, message)) => {
+            (status, Json(json!({"success": false, "error": message}))).into_response()
+        }
     }
 }
 
@@ -704,7 +741,11 @@ pub async fn delete_deployment(
     deployments.retain(|d| d.cid != cid);
 
     if deployments.len() == before {
-        (StatusCode::NOT_FOUND, Json(json!({"success": false, "error": "Deployment not found"}))).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"success": false, "error": "Deployment not found"})),
+        )
+            .into_response()
     } else {
         Json(json!({"success": true})).into_response()
     }
@@ -722,7 +763,11 @@ pub async fn deployment_logs(
             "logs": deployment.build_logs.clone().unwrap_or_else(|| "No logs available".to_string())
         }))).into_response()
     } else {
-        (StatusCode::NOT_FOUND, Json(json!({"success": false, "error": "Deployment not found"}))).into_response()
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"success": false, "error": "Deployment not found"})),
+        )
+            .into_response()
     }
 }
 
@@ -768,13 +813,18 @@ pub async fn github_login(State(state): State<AppState>) -> impl IntoResponse {
                 Json(json!({
                     "success": false,
                     "error": "GITHUB_CLIENT_ID not set"
-                }))
-            ).into_response();
+                })),
+            )
+                .into_response();
         }
     };
 
-    let redirect_uri = std::env::var("GITHUB_REDIRECT_URL")
-        .unwrap_or_else(|_| format!("http://localhost:{}/api/github/callback", state.config.server.port));
+    let redirect_uri = std::env::var("GITHUB_REDIRECT_URL").unwrap_or_else(|_| {
+        format!(
+            "http://localhost:{}/api/github/callback",
+            state.config.server.port
+        )
+    });
 
     let csrf_state = Uuid::new_v4().to_string();
     *write_lock(&state.github_oauth_state) = Some(csrf_state.clone());
@@ -795,19 +845,39 @@ pub async fn github_callback(
 ) -> impl IntoResponse {
     let client_id = match std::env::var("GITHUB_CLIENT_ID") {
         Ok(val) => val,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": "GITHUB_CLIENT_ID not set"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": "GITHUB_CLIENT_ID not set"})),
+            )
+                .into_response()
+        }
     };
     let client_secret = match std::env::var("GITHUB_CLIENT_SECRET") {
         Ok(val) => val,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": "GITHUB_CLIENT_SECRET not set"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": "GITHUB_CLIENT_SECRET not set"})),
+            )
+                .into_response()
+        }
     };
 
-    let redirect_uri = std::env::var("GITHUB_REDIRECT_URL")
-        .unwrap_or_else(|_| format!("http://localhost:{}/api/github/callback", state.config.server.port));
+    let redirect_uri = std::env::var("GITHUB_REDIRECT_URL").unwrap_or_else(|_| {
+        format!(
+            "http://localhost:{}/api/github/callback",
+            state.config.server.port
+        )
+    });
 
     if let Some(expected_state) = read_lock(&state.github_oauth_state).clone() {
         if Some(expected_state) != query.state {
-            return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": "Invalid OAuth state"}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": "Invalid OAuth state"})),
+            )
+                .into_response();
         }
     }
 
@@ -825,12 +895,24 @@ pub async fn github_callback(
         .await
     {
         Ok(resp) => resp,
-        Err(e) => return (StatusCode::BAD_GATEWAY, Json(json!({"success": false, "error": format!("Token exchange failed: {}", e)}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"success": false, "error": format!("Token exchange failed: {}", e)})),
+            )
+                .into_response()
+        }
     };
 
     let token_body: GithubTokenResponse = match token_response.json().await {
         Ok(body) => body,
-        Err(_) => return (StatusCode::BAD_GATEWAY, Json(json!({"success": false, "error": "Invalid token response"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"success": false, "error": "Invalid token response"})),
+            )
+                .into_response()
+        }
     };
 
     let user_response = match client
@@ -842,12 +924,24 @@ pub async fn github_callback(
         .await
     {
         Ok(resp) => resp,
-        Err(e) => return (StatusCode::BAD_GATEWAY, Json(json!({"success": false, "error": format!("Failed to fetch user: {}", e)}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"success": false, "error": format!("Failed to fetch user: {}", e)})),
+            )
+                .into_response()
+        }
     };
 
     let user: GithubUser = match user_response.json().await {
         Ok(body) => body,
-        Err(_) => return (StatusCode::BAD_GATEWAY, Json(json!({"success": false, "error": "Failed to parse user"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"success": false, "error": "Failed to parse user"})),
+            )
+                .into_response()
+        }
     };
 
     *write_lock(&state.github_auth) = Some(GithubAuth {
@@ -872,7 +966,13 @@ pub async fn github_repos(State(state): State<AppState>) -> impl IntoResponse {
     let auth = read_lock(&state.github_auth).clone();
     let auth = match auth {
         Some(auth) => auth,
-        None => return (StatusCode::UNAUTHORIZED, Json(json!({"error": "GitHub not connected"}))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "GitHub not connected"})),
+            )
+                .into_response()
+        }
     };
 
     let client = reqwest::Client::new();
@@ -885,31 +985,52 @@ pub async fn github_repos(State(state): State<AppState>) -> impl IntoResponse {
         .await
     {
         Ok(resp) => resp,
-        Err(e) => return (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("Failed to fetch repos: {}", e)}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("Failed to fetch repos: {}", e)})),
+            )
+                .into_response()
+        }
     };
 
     let repos: Vec<GithubRepo> = match response.json().await {
         Ok(list) => list,
-        Err(_) => return (StatusCode::BAD_GATEWAY, Json(json!({"error": "Failed to parse repos"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to parse repos"})),
+            )
+                .into_response()
+        }
     };
 
     Json(repos).into_response()
 }
 
-struct RepoInfo { owner: String, repo: String }
+struct RepoInfo {
+    owner: String,
+    repo: String,
+}
 
 fn parse_github_url(url: &str) -> Option<RepoInfo> {
     let url = url.trim_end_matches('/').trim_end_matches(".git");
     if let Some(path) = url.strip_prefix("https://github.com/") {
         let parts: Vec<&str> = path.split('/').collect();
         if parts.len() >= 2 {
-            return Some(RepoInfo { owner: parts[0].to_string(), repo: parts[1].to_string() });
+            return Some(RepoInfo {
+                owner: parts[0].to_string(),
+                repo: parts[1].to_string(),
+            });
         }
     }
     if let Some(path) = url.strip_prefix("github.com/") {
         let parts: Vec<&str> = path.split('/').collect();
         if parts.len() >= 2 {
-            return Some(RepoInfo { owner: parts[0].to_string(), repo: parts[1].to_string() });
+            return Some(RepoInfo {
+                owner: parts[0].to_string(),
+                repo: parts[1].to_string(),
+            });
         }
     }
     None
@@ -922,20 +1043,37 @@ fn extract_github_zip(data: &[u8]) -> Result<tempfile::TempDir, String> {
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid ZIP: {}", e))?;
     let mut root_prefix = String::new();
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| format!("ZIP error: {}", e))?;
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("ZIP error: {}", e))?;
         let name = file.name().to_string();
-        if i == 0 && name.ends_with('/') { root_prefix = name.clone(); continue; }
-        let relative_path = if !root_prefix.is_empty() && name.starts_with(&root_prefix) { &name[root_prefix.len()..] } else { &name };
-        if relative_path.is_empty() { continue; }
+        if i == 0 && name.ends_with('/') {
+            root_prefix = name.clone();
+            continue;
+        }
+        let relative_path = if !root_prefix.is_empty() && name.starts_with(&root_prefix) {
+            &name[root_prefix.len()..]
+        } else {
+            &name
+        };
+        if relative_path.is_empty() {
+            continue;
+        }
         let out_path = temp_dir.path().join(relative_path);
         if file.is_dir() {
             std::fs::create_dir_all(&out_path).map_err(|e| format!("Dir failed: {}", e))?;
         } else {
-            if let Some(parent) = out_path.parent() { std::fs::create_dir_all(parent).ok(); }
-            let mut outfile = std::fs::File::create(&out_path).map_err(|e| format!("File failed: {}", e))?;
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let mut outfile =
+                std::fs::File::create(&out_path).map_err(|e| format!("File failed: {}", e))?;
             let mut contents = Vec::new();
-            file.read_to_end(&mut contents).map_err(|e| format!("Read failed: {}", e))?;
-            outfile.write_all(&contents).map_err(|e| format!("Write failed: {}", e))?;
+            file.read_to_end(&mut contents)
+                .map_err(|e| format!("Read failed: {}", e))?;
+            outfile
+                .write_all(&contents)
+                .map_err(|e| format!("Write failed: {}", e))?;
         }
     }
     Ok(temp_dir)
@@ -946,8 +1084,8 @@ async fn deploy_github_project(
     url: &str,
     branch: &str,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
-    let repo_info = parse_github_url(url)
-        .ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
+    let repo_info =
+        parse_github_url(url).ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
 
     let zip_url = format!(
         "https://github.com/{}/{}/archive/refs/heads/{}.zip",
@@ -955,11 +1093,12 @@ async fn deploy_github_project(
     );
 
     let client = reqwest::Client::new();
-    let response = client
-        .get(&zip_url)
-        .send()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Failed to download: {}", e)))?;
+    let response = client.get(&zip_url).send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Failed to download: {}", e),
+        )
+    })?;
 
     if !response.status().is_success() {
         return Err((
@@ -973,16 +1112,16 @@ async fn deploy_github_project(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Failed to read: {}", e)))?;
 
-    let temp_dir = extract_github_zip(&zip_bytes)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let temp_dir =
+        extract_github_zip(&zip_bytes).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let build_outcome = prepare_deploy_dir(temp_dir.path())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let build_outcome =
+        prepare_deploy_dir(temp_dir.path()).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let storage = state
-        .storage
-        .as_ref()
-        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "IPFS not available".to_string()))?;
+    let storage = state.storage.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "IPFS not available".to_string(),
+    ))?;
 
     fn count_files(dir: &std::path::Path) -> (u64, usize) {
         let mut size = 0u64;
@@ -1008,7 +1147,12 @@ async fn deploy_github_project(
     let result = storage
         .store_directory(&build_outcome.deploy_root)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("IPFS upload failed: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("IPFS upload failed: {}", e),
+            )
+        })?;
 
     let cid = result.root_cid;
 
@@ -1092,7 +1236,10 @@ fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
                 });
             }
 
-            return Err(format!("Build finished but no dist/ or build/ folder found.\n{}", trim_logs(&logs)));
+            return Err(format!(
+                "Build finished but no dist/ or build/ folder found.\n{}",
+                trim_logs(&logs)
+            ));
         }
     }
 
@@ -1113,7 +1260,7 @@ fn trim_logs(logs: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Deployment {
     pub name: String,
     pub cid: String,
@@ -1167,5 +1314,52 @@ impl Deployment {
             build_logs,
             status: "Ready".to_string(),
         }
+    }
+
+    /// Save deployment to Redis
+    pub async fn save_to_redis(
+        &self,
+        redis: &RedisClient,
+    ) -> Result<(), crate::redis_client::RedisClientError> {
+        // Store the deployment JSON
+        redis
+            .set_json(&format!("deployment:{}", self.cid), self, None)
+            .await?;
+
+        // Add to sorted set for ordering (by timestamp)
+        let timestamp = chrono::Utc::now().timestamp() as f64;
+        redis.zadd("deployments", &self.cid, timestamp).await?;
+
+        Ok(())
+    }
+
+    /// Load all deployments from Redis
+    pub async fn load_all_from_redis(
+        redis: &Arc<RedisClient>,
+    ) -> Result<Vec<Deployment>, crate::redis_client::RedisClientError> {
+        // Get all deployment CIDs from sorted set (newest first)
+        let cids = redis.zrevrange("deployments", 0, -1).await?;
+
+        let mut deployments = Vec::with_capacity(cids.len());
+        for cid in cids {
+            if let Some(deployment) = redis
+                .get_json::<Deployment>(&format!("deployment:{}", cid))
+                .await?
+            {
+                deployments.push(deployment);
+            }
+        }
+
+        Ok(deployments)
+    }
+
+    /// Delete deployment from Redis
+    pub async fn delete_from_redis(
+        cid: &str,
+        redis: &RedisClient,
+    ) -> Result<(), crate::redis_client::RedisClientError> {
+        redis.delete(&format!("deployment:{}", cid)).await?;
+        redis.zrem("deployments", cid).await?;
+        Ok(())
     }
 }
