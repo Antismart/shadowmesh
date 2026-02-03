@@ -72,6 +72,29 @@ pub struct SecurityConfig {
     pub max_request_size_mb: u64,
 }
 
+impl SecurityConfig {
+    /// Load CORS origins from environment variable, falling back to config
+    pub fn get_allowed_origins(&self) -> Vec<String> {
+        // Check for environment variable override
+        if let Ok(origins_env) = std::env::var("SHADOWMESH_SECURITY_ALLOWED_ORIGINS") {
+            let origins: Vec<String> = origins_env
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !origins.is_empty() {
+                return origins;
+            }
+        }
+        self.allowed_origins.clone()
+    }
+
+    /// Check if CORS is configured permissively
+    pub fn is_cors_permissive(&self) -> bool {
+        self.get_allowed_origins().contains(&"*".to_string())
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct MonitoringConfig {
     pub metrics_enabled: bool,
