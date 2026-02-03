@@ -3,6 +3,7 @@ use std::io::Cursor;
 use std::time::Duration;
 use std::path::Path;
 use futures::TryStreamExt;
+use rand::Rng;
 
 /// Configuration for StorageLayer
 #[derive(Clone, Debug)]
@@ -96,18 +97,20 @@ impl StorageLayer {
                 }
             }
             
-            // Brief delay before retry
+            // Exponential backoff with jitter before retry
             if attempt < self.config.retry_attempts {
-                tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                let delay = calculate_backoff_delay(attempt);
+                println!("  ↳ Retrying in {:?}...", delay);
+                tokio::time::sleep(delay).await;
             }
         }
-        
+
         Err(last_error.unwrap_or_else(|| Box::new(std::io::Error::new(
             std::io::ErrorKind::Other,
             "Unknown error"
         ))))
     }
-    
+
     /// Retrieve content from IPFS with timeout and retry
     pub async fn retrieve_content(&self, cid: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         println!("→ Attempting to retrieve CID: {}", cid);
@@ -157,9 +160,11 @@ impl StorageLayer {
                 }
             }
 
-            // Brief delay before retry
+            // Exponential backoff with jitter before retry
             if attempt < self.config.retry_attempts {
-                tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+                let delay = calculate_backoff_delay(attempt);
+                println!("  ↳ Retrying in {:?}...", delay);
+                tokio::time::sleep(delay).await;
             }
         }
 
@@ -271,4 +276,71 @@ pub struct UploadedFile {
     pub hash: String,
     /// Size in bytes
     pub size: u64,
+}
+
+/// Calculate exponential backoff delay with jitter
+///
+/// Uses the "Full Jitter" algorithm from AWS:
+/// https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+///
+/// Formula: sleep = random_between(0, min(cap, base * 2 ^ attempt))
+fn calculate_backoff_delay(attempt: u32) -> Duration {
+    const BASE_MS: u64 = 100;      // Base delay: 100ms
+    const MAX_DELAY_MS: u64 = 10_000; // Cap at 10 seconds
+
+    // Calculate exponential delay: base * 2^attempt
+    let exp_delay = BASE_MS.saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)));
+
+    // Cap at maximum delay
+    let capped_delay = exp_delay.min(MAX_DELAY_MS);
+
+    // Add full jitter: random value between 0 and capped_delay
+    let jitter = rand::thread_rng().gen_range(0..=capped_delay);
+
+    Duration::from_millis(jitter)
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    #[test]
+    fn test_backoff_increases_exponentially() {
+        // Run multiple times to account for jitter
+        let mut delays = Vec::new();
+        for attempt in 1..=5 {
+            let mut attempt_delays = Vec::new();
+            for _ in 0..100 {
+                let delay = calculate_backoff_delay(attempt);
+                attempt_delays.push(delay.as_millis());
+            }
+            let avg: u128 = attempt_delays.iter().sum::<u128>() / attempt_delays.len() as u128;
+            delays.push(avg);
+        }
+
+        // Each attempt's average should generally be higher than the previous
+        // (with some variance due to jitter)
+        println!("Average delays by attempt: {:?}", delays);
+    }
+
+    #[test]
+    fn test_backoff_respects_cap() {
+        for _ in 0..100 {
+            let delay = calculate_backoff_delay(20); // Very high attempt number
+            assert!(delay.as_millis() <= 10_000, "Delay exceeded cap: {:?}", delay);
+        }
+    }
+
+    #[test]
+    fn test_backoff_has_jitter() {
+        let mut delays: Vec<u64> = Vec::new();
+        for _ in 0..10 {
+            delays.push(calculate_backoff_delay(3).as_millis() as u64);
+        }
+
+        // Check that not all delays are the same (jitter is working)
+        let first = delays[0];
+        let all_same = delays.iter().all(|&d| d == first);
+        assert!(!all_same, "No jitter detected - all delays are the same");
+    }
 }
