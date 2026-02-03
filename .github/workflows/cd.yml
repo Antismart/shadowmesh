@@ -147,19 +147,49 @@ jobs:
           echo "🚀 Deploying to staging environment"
           echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ github.sha }}"
 
-      # Add your deployment steps here, for example:
-      # - name: Deploy to Kubernetes
-      #   uses: azure/k8s-deploy@v4
-      #   with:
-      #     manifests: k8s/staging/
-      #     images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ github.sha }}
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
 
-      # - name: Deploy to AWS ECS
-      #   uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-      #   with:
-      #     task-definition: task-definition.json
-      #     service: shadowmesh-gateway
-      #     cluster: staging-cluster
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > ~/.kube/config
+        if: ${{ secrets.KUBE_CONFIG_STAGING != '' }}
+
+      - name: Deploy to Kubernetes
+        run: |
+          cd k8s/overlays/staging
+
+          # Update image tag
+          kustomize edit set image ghcr.io/shadowmesh/gateway=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ github.sha }}
+
+          # Apply manifests
+          kubectl apply -k .
+
+          # Wait for rollout
+          kubectl rollout status deployment/staging-shadowmesh-gateway -n shadowmesh-staging --timeout=300s
+        if: ${{ secrets.KUBE_CONFIG_STAGING != '' }}
+
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests against staging..."
+          # Wait for service to be ready
+          sleep 30
+
+          # Basic health check
+          curl -f https://staging.shadowmesh.example.com/health || exit 1
+
+          echo "Smoke tests passed!"
+        if: ${{ secrets.KUBE_CONFIG_STAGING != '' }}
+        continue-on-error: true
+
+      - name: Rollback on failure
+        if: failure() && ${{ secrets.KUBE_CONFIG_STAGING != '' }}
+        run: |
+          echo "Deployment failed, rolling back..."
+          kubectl rollout undo deployment/staging-shadowmesh-gateway -n shadowmesh-staging
 
       - name: Staging deployment complete
         run: |
@@ -186,8 +216,48 @@ jobs:
           echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ github.sha }}"
           echo "⚠️  This is a production deployment!"
 
-      # Add your production deployment steps here
-      # Similar to staging but with production configuration
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > ~/.kube/config
+        if: ${{ secrets.KUBE_CONFIG_PRODUCTION != '' }}
+
+      - name: Deploy to Kubernetes
+        run: |
+          cd k8s/overlays/production
+
+          # Update image tag
+          kustomize edit set image ghcr.io/shadowmesh/gateway=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ github.sha }}
+
+          # Apply manifests
+          kubectl apply -k .
+
+          # Wait for rollout with longer timeout for production
+          kubectl rollout status deployment/prod-shadowmesh-gateway -n shadowmesh-production --timeout=600s
+        if: ${{ secrets.KUBE_CONFIG_PRODUCTION != '' }}
+
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests against production..."
+          sleep 30
+
+          # Health check
+          curl -f https://gateway.shadowmesh.io/health || exit 1
+
+          echo "Production smoke tests passed!"
+        if: ${{ secrets.KUBE_CONFIG_PRODUCTION != '' }}
+        continue-on-error: true
+
+      - name: Rollback on failure
+        if: failure() && ${{ secrets.KUBE_CONFIG_PRODUCTION != '' }}
+        run: |
+          echo "Production deployment failed, rolling back..."
+          kubectl rollout undo deployment/prod-shadowmesh-gateway -n shadowmesh-production
 
       - name: Production deployment complete
         run: |
