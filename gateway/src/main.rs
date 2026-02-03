@@ -17,6 +17,7 @@ mod middleware;
 mod production;
 mod rate_limit;
 mod redis_client;
+mod signaling;
 mod telemetry;
 mod upload;
 
@@ -231,6 +232,22 @@ async fn main() {
         println!("ℹ️  API key management disabled (set SHADOWMESH_ADMIN_KEY to enable)");
     }
 
+    // Initialize WebRTC signaling server
+    let signaling_config = signaling::SignalingConfig::default();
+    let signaling_state: signaling::SignalingState =
+        Arc::new(signaling::SignalingServer::new(signaling_config));
+    println!("✓ WebRTC signaling server enabled at /signaling/ws");
+
+    // Start background cleanup task for stale signaling connections
+    let signaling_cleanup = signaling_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            signaling_cleanup.cleanup_stale().await;
+        }
+    });
+
     // Create rate limiter (distributed when Redis available)
     let rate_limiter = if config.rate_limit.enabled {
         let rate_config = rate_limit::RateLimitConfig {
@@ -275,7 +292,9 @@ async fn main() {
         .route("/ipfs/*path", get(ipfs_content_path_handler))
         .with_state(state)
         // API key management routes (separate state)
-        .nest("/api/keys", api_keys::api_keys_router(api_key_state));
+        .nest("/api/keys", api_keys::api_keys_router(api_key_state))
+        // WebRTC signaling server
+        .nest("/signaling", signaling::signaling_router(signaling_state));
 
     // Add middleware layers
     if config.security.cors_enabled {
