@@ -232,7 +232,7 @@ impl Config {
             },
             security: SecurityConfig {
                 cors_enabled: true,
-                allowed_origins: vec!["*".to_string()],
+                allowed_origins: vec![],  // Deny all by default - must be explicitly configured
                 max_request_size_mb: 100,
             },
             monitoring: MonitoringConfig {
