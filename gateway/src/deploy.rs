@@ -215,13 +215,22 @@ pub async fn deploy_zip(
                     .as_ref()
                     .map(|f| f.trim_end_matches(".zip").to_string())
                     .unwrap_or_else(|| format!("deploy-{}", &cid[..8]));
-                
+
                 let deployment = crate::dashboard::Deployment::new(
                     deployment_name,
                     cid.clone(),
                     upload_result.total_size,
                     files.len(),
                 );
+
+                // Save to Redis if available
+                if let Some(ref redis) = state.redis {
+                    if let Err(e) = deployment.save_to_redis(redis).await {
+                        tracing::warn!("Failed to save deployment to Redis: {}", e);
+                    }
+                }
+
+                // Also keep in-memory for immediate access
                 write_lock(&state.deployments).insert(0, deployment);
 
                 return Json(DeployResponse {
@@ -266,9 +275,10 @@ pub async fn deploy_zip(
 }
 
 /// Deploy from a tarball (.tar.gz)
+#[allow(dead_code)]
 pub async fn deploy_tarball(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
+    State(_state): State<AppState>,
+    _multipart: Multipart,
 ) -> Response {
     // For now, suggest using ZIP
     (
