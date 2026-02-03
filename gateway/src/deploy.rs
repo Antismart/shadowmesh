@@ -10,17 +10,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use serde::{Deserialize, Serialize};
-use std::io::{Cursor, Read};
-use std::path::PathBuf;
+use serde::Serialize;
+use std::io::Cursor;
 use std::sync::Arc;
 use tempfile::TempDir;
 use zip::ZipArchive;
 
 use crate::{AppState, lock_utils::write_lock};
-
-/// Maximum deployment size (100 MB for projects)
-const MAX_DEPLOY_SIZE: usize = 100 * 1024 * 1024;
 
 /// Deploy response returned after successful website deployment
 #[derive(Debug, Serialize)]
@@ -125,12 +121,13 @@ pub async fn deploy_zip(
             }
         };
 
-        // Check size limit
-        if data.len() > MAX_DEPLOY_SIZE {
+        // Check size limit (configurable via config.toml)
+        let max_deploy_size = state.config.deploy.max_size_bytes();
+        if data.len() > max_deploy_size {
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(DeployError::new(
-                    format!("Deployment too large. Maximum size is {} MB", MAX_DEPLOY_SIZE / 1024 / 1024),
+                    format!("Deployment too large. Maximum size is {} MB", state.config.deploy.max_size_mb),
                     "FILE_TOO_LARGE"
                 ))
             ).into_response();
@@ -396,14 +393,16 @@ fn extract_zip(data: &[u8]) -> Result<TempDir, String> {
 /// Deployment info endpoint - get info about deployment limits
 #[derive(Debug, Serialize)]
 pub struct DeployInfo {
-    pub max_size_mb: usize,
+    pub max_size_mb: u64,
     pub supported_formats: Vec<&'static str>,
     pub example_command: &'static str,
 }
 
-pub async fn deploy_info() -> Json<DeployInfo> {
+pub async fn deploy_info(
+    State(state): State<AppState>,
+) -> Json<DeployInfo> {
     Json(DeployInfo {
-        max_size_mb: MAX_DEPLOY_SIZE / 1024 / 1024,
+        max_size_mb: state.config.deploy.max_size_mb,
         supported_formats: vec!["zip"],
         example_command: "cd my-site && zip -r ../site.zip . && curl -X POST http://localhost:8080/api/deploy -F 'file=@../site.zip'",
     })
