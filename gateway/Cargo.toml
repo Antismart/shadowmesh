@@ -34,6 +34,21 @@ urlencoding = "2.1"
 dotenvy = "0.15"
 rand = "0.8"
 
+# Redis for persistence and distributed rate limiting
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager", "aio"] }
+
+# OpenTelemetry for distributed tracing
+opentelemetry = "0.21"
+opentelemetry-otlp = { version = "0.14", features = ["tonic"] }
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
+tracing-opentelemetry = "0.22"
+
+# Config hot-reload
+notify = "6.1"
+
+# API key hashing
+sha2 = "0.10"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 hyper = { workspace = true }

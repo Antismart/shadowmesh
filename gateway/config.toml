@@ -38,3 +38,24 @@ reset_timeout_seconds = 30
 [deploy]
 # Maximum deployment size in MB
 max_size_mb = 100
+
+[redis]
+# Enable Redis for persistence and distributed rate limiting
+# Set to true and provide url for multi-pod deployments
+enabled = false
+# Redis connection URL (can also use REDIS_URL env var)
+# url = "redis://127.0.0.1:6379"
+# Key prefix for all ShadowMesh keys
+key_prefix = "shadowmesh:"
+
+[telemetry]
+# Enable OpenTelemetry distributed tracing
+enabled = false
+# Jaeger agent endpoint (UDP) - can also use JAEGER_ENDPOINT env var
+# jaeger_endpoint = "localhost:6831"
+# OTLP endpoint (HTTP/gRPC) - can also use OTEL_EXPORTER_OTLP_ENDPOINT env var
+# otlp_endpoint = "http://localhost:4317"
+# Service name for tracing
+service_name = "shadowmesh-gateway"
+# Sampling rate (0.0 to 1.0, 1.0 = 100% of traces)
+sample_rate = 1.0
