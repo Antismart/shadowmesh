@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use zip::ZipArchive;
 
-use crate::AppState;
+use crate::{AppState, lock_utils::write_lock};
 
 /// Maximum deployment size (100 MB for projects)
 const MAX_DEPLOY_SIZE: usize = 100 * 1024 * 1024;
@@ -225,7 +225,7 @@ pub async fn deploy_zip(
                     upload_result.total_size,
                     files.len(),
                 );
-                state.deployments.write().unwrap().insert(0, deployment);
+                write_lock(&state.deployments).insert(0, deployment);
 
                 return Json(DeployResponse {
                     success: true,
