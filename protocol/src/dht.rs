@@ -67,6 +67,7 @@ pub enum DHTResult {
 }
 
 /// DHT Manager for content operations
+#[allow(dead_code)]
 pub struct DHTManager {
     /// Local peer ID
     local_peer_id: PeerId,

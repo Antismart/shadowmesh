@@ -43,6 +43,7 @@ pub struct FragmentLocation {
 }
 
 /// Replication manager
+#[allow(dead_code)]
 pub struct ReplicationManager {
     /// Target replication factor
     replication_factor: usize,

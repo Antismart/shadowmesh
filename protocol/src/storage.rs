@@ -92,10 +92,7 @@ impl StorageLayer {
                         "✗ IPFS add attempt {}/{} failed: {}",
                         attempt, self.config.retry_attempts, e
                     );
-                    last_error = Some(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e.to_string(),
-                    )));
+                    last_error = Some(Box::new(std::io::Error::other(e.to_string())));
                 }
                 Err(_) => {
                     println!(
@@ -117,12 +114,7 @@ impl StorageLayer {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Unknown error",
-            ))
-        }))
+        Err(last_error.unwrap_or_else(|| Box::new(std::io::Error::other("Unknown error"))))
     }
 
     /// Retrieve content from IPFS with timeout and retry
@@ -164,10 +156,7 @@ impl StorageLayer {
                         "✗ IPFS cat attempt {}/{} failed: {}",
                         attempt, self.config.retry_attempts, e
                     );
-                    last_error = Some(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e.to_string(),
-                    ))
+                    last_error = Some(Box::new(std::io::Error::other(e.to_string()))
                         as Box<dyn std::error::Error + Send + Sync>);
                 }
                 Err(_) => {
@@ -192,10 +181,8 @@ impl StorageLayer {
         }
 
         Err(last_error.unwrap_or_else(|| {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Unknown error",
-            )) as Box<dyn std::error::Error + Send + Sync>
+            Box::new(std::io::Error::other("Unknown error"))
+                as Box<dyn std::error::Error + Send + Sync>
         }))
     }
 
@@ -258,10 +245,10 @@ impl StorageLayer {
                     total_size,
                 })
             }
-            Ok(Err(e)) => Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to add directory: {}", e),
-            )) as Box<dyn std::error::Error + Send + Sync>),
+            Ok(Err(e)) => Err(Box::new(std::io::Error::other(format!(
+                "Failed to add directory: {}",
+                e
+            ))) as Box<dyn std::error::Error + Send + Sync>),
             Err(_) => Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "Directory upload timed out",

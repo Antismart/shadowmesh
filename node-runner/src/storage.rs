@@ -162,7 +162,7 @@ impl StorageManager {
         let content = self.content.read().await;
 
         let data = serde_json::to_string_pretty(&(&*fragments, &*content))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
 
         let metadata_path = self.data_dir.join("metadata").join("index.json");
         fs::write(&metadata_path, data).await?;
@@ -375,13 +375,8 @@ impl StorageManager {
         }
 
         // Delete fragments
-        let mut freed_bytes = 0u64;
         for hash in &content.fragments {
-            if let Ok(()) = self.delete_fragment(hash).await {
-                if let Some(frag) = self.fragments.read().await.get(hash) {
-                    freed_bytes += frag.size;
-                }
-            }
+            let _ = self.delete_fragment(hash).await;
         }
 
         // Remove from metadata
@@ -529,6 +524,7 @@ impl StorageManager {
     }
 
     /// Ensure fragment subdirectory exists
+    #[allow(dead_code)]
     async fn ensure_fragment_dir(&self, hash: &str) -> Result<(), std::io::Error> {
         let subdir = &hash[..2.min(hash.len())];
         let dir = self.data_dir.join("fragments").join(subdir);

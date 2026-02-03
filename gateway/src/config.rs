@@ -23,6 +23,7 @@ pub struct Config {
 
 /// Validation errors for configuration
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::enum_variant_names)]
 pub enum ConfigValidationError {
     #[error("Invalid port: {0}")]
     InvalidPort(u16),

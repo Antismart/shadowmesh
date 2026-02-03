@@ -147,7 +147,7 @@ pub struct OnionRouter {
 impl OnionRouter {
     /// Create a new onion router with the given keys (one per hop)
     pub fn new(keys: &[[u8; KEY_SIZE]]) -> Self {
-        let layers = keys.iter().map(|key| CryptoManager::new(key)).collect();
+        let layers = keys.iter().map(CryptoManager::new).collect();
 
         Self { layers }
     }

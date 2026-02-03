@@ -1,6 +1,8 @@
 // Dashboard utilities and helpers
 // Additional dashboard-related functionality can be added here
 
+#![allow(dead_code)]
+
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]

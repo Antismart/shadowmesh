@@ -439,10 +439,7 @@ impl RegionalPeerSelector {
     }
 
     pub fn add_peer_to_region(&mut self, peer_id: PeerId, region: String) {
-        self.regions
-            .entry(region)
-            .or_insert_with(Vec::new)
-            .push(peer_id);
+        self.regions.entry(region).or_default().push(peer_id);
     }
 
     /// Get peers in same region (for low latency)

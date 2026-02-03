@@ -1291,6 +1291,7 @@ impl Deployment {
             status: "Ready".to_string(),
         }
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn new_github(
         name: String,
         cid: String,

@@ -13,7 +13,7 @@ pub const DEFAULT_CONFIG_PATH: &str = "node-config.toml";
 pub const DEFAULT_DATA_DIR: &str = ".shadowmesh";
 
 /// Node runner configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeConfig {
     /// Node identity configuration
     #[serde(default)]
@@ -34,18 +34,6 @@ pub struct NodeConfig {
     /// Performance configuration
     #[serde(default)]
     pub performance: PerformanceConfig,
-}
-
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self {
-            identity: IdentityConfig::default(),
-            storage: StorageConfig::default(),
-            network: NetworkConfig::default(),
-            dashboard: DashboardConfig::default(),
-            performance: PerformanceConfig::default(),
-        }
-    }
 }
 
 /// Node identity configuration

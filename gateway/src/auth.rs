@@ -139,13 +139,7 @@ fn extract_bearer_token(req: &Request<Body>) -> Option<String> {
     req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            if value.starts_with("Bearer ") {
-                Some(value[7..].to_string())
-            } else {
-                None
-            }
-        })
+        .and_then(|value| value.strip_prefix("Bearer ").map(|s| s.to_string()))
 }
 
 /// API Key authentication middleware

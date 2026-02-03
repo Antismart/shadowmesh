@@ -266,6 +266,7 @@ impl CreatedHandshake {
 /// Ephemeral keypair for a single circuit hop
 /// These are generated fresh for each circuit and discarded after
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct EphemeralHopKeypair {
     /// The keypair
     keypair: X25519Keypair,
@@ -662,6 +663,7 @@ impl Default for ZkRelayConfig {
 /// Zero-Knowledge Relay Client
 ///
 /// Used by clients to build circuits and send requests anonymously.
+#[allow(dead_code)]
 pub struct ZkRelayClient {
     /// Client's secret for key derivation
     secret: [u8; KEY_SIZE],
@@ -965,6 +967,7 @@ impl ZkRelayClient {
 /// Zero-Knowledge Relay Node
 ///
 /// Used by relay nodes to forward cells without knowing content.
+#[allow(dead_code)]
 pub struct ZkRelayNode {
     /// Node's keypair seed
     node_secret: [u8; KEY_SIZE],
@@ -1331,6 +1334,7 @@ pub struct BlindResponse {
 }
 
 /// Traffic analysis resistance through padding
+#[allow(dead_code)]
 pub struct TrafficPadder {
     /// Minimum cell size
     min_size: usize,

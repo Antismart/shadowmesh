@@ -543,9 +543,7 @@ impl PathHealth {
             0.0
         };
 
-        (1.0 - failure_penalty - censorship_penalty + recency_bonus)
-            .max(0.0)
-            .min(1.0)
+        (1.0 - failure_penalty - censorship_penalty + recency_bonus).clamp(0.0, 1.0)
     }
 }
 
@@ -725,7 +723,7 @@ impl AdaptiveRouter {
             .filter(|r| !self.config.avoid_regions.contains(&r.region))
             .filter(|r| {
                 r.asn
-                    .map_or(true, |asn| !self.config.avoid_asns.contains(&asn))
+                    .is_none_or(|asn| !self.config.avoid_asns.contains(&asn))
             })
             .collect();
 
@@ -824,15 +822,16 @@ impl AdaptiveRouter {
 
         // Select guard (entry) node first
         for (relay, _) in &scored {
-            if relay.is_guard && self.is_path_ok(&selected, relay.peer_id, blocked, path_health) {
-                if !self.config.require_geo_diversity || !used_regions.contains(&relay.region) {
-                    selected.push(relay.peer_id);
-                    used_regions.insert(relay.region);
-                    if let Some(asn) = relay.asn {
-                        used_asns.insert(asn);
-                    }
-                    break;
+            if relay.is_guard
+                && self.is_path_ok(&selected, relay.peer_id, blocked, path_health)
+                && (!self.config.require_geo_diversity || !used_regions.contains(&relay.region))
+            {
+                selected.push(relay.peer_id);
+                used_regions.insert(relay.region);
+                if let Some(asn) = relay.asn {
+                    used_asns.insert(asn);
                 }
+                break;
             }
         }
 
@@ -1036,9 +1035,9 @@ impl AdaptiveRouter {
     }
 
     /// Record a successful delivery
-    pub fn record_success(&self, route_id: &[u8; 16], latency_ms: u64, bytes: u64) {
+    pub fn record_success(&self, route_id: &[u8; 16], _latency_ms: u64, _bytes: u64) {
         // Update route stats
-        if let Some(mut route) = self.active_routes.write().unwrap().get_mut(route_id) {
+        if let Some(route) = self.active_routes.write().unwrap().get_mut(route_id) {
             route.use_count += 1;
         }
 
@@ -1060,10 +1059,7 @@ impl AdaptiveRouter {
             routes.get(route_id).cloned()
         };
 
-        let route = match route {
-            Some(r) => r,
-            None => return None,
-        };
+        let route = route?;
 
         // Record failure for the specific path segment
         if hop_index < route.relays.len() - 1 {
