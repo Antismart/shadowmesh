@@ -6,9 +6,9 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{
-    RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState,
-    RtcIceCandidate, RtcIceCandidateInit, RtcPeerConnection,
-    RtcPeerConnectionIceEvent, RtcSessionDescriptionInit, RtcSdpType,
+    RtcConfiguration, RtcDataChannel, RtcDataChannelEvent, RtcDataChannelState, RtcIceCandidate,
+    RtcIceCandidateInit, RtcPeerConnection, RtcPeerConnectionIceEvent, RtcSdpType,
+    RtcSessionDescriptionInit,
 };
 
 /// WebRTC connection state
@@ -21,13 +21,19 @@ pub enum WebRtcState {
     Failed,
 }
 
+/// Type alias for ICE candidate callback
+type IceCandidateCallback = Rc<RefCell<Option<Box<dyn Fn(String, Option<String>, Option<u16>)>>>>;
+
+/// Type alias for message callback
+type MessageCallback = Rc<RefCell<Option<Box<dyn Fn(Vec<u8>)>>>>;
+
 /// WebRTC peer connection wrapper
 pub struct WebRtcConnection {
     pc: RtcPeerConnection,
     data_channel: Rc<RefCell<Option<RtcDataChannel>>>,
     state: Rc<RefCell<WebRtcState>>,
-    on_ice_candidate: Rc<RefCell<Option<Box<dyn Fn(String, Option<String>, Option<u16>)>>>>,
-    on_message: Rc<RefCell<Option<Box<dyn Fn(Vec<u8>)>>>>,
+    on_ice_candidate: IceCandidateCallback,
+    on_message: MessageCallback,
 }
 
 impl WebRtcConnection {
@@ -40,21 +46,30 @@ impl WebRtcConnection {
         let ice_servers = js_sys::Array::new();
         for server in stun_servers {
             let ice_server = js_sys::Object::new();
-            js_sys::Reflect::set(&ice_server, &"urls".into(), &JsValue::from_str(server))
-                .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Failed to set ICE server: {:?}", e)))?;
+            js_sys::Reflect::set(&ice_server, &"urls".into(), &JsValue::from_str(server)).map_err(
+                |e| {
+                    SdkError::new(
+                        codes::WEBRTC_ERROR,
+                        &format!("Failed to set ICE server: {:?}", e),
+                    )
+                },
+            )?;
             ice_servers.push(&ice_server);
         }
         config.set_ice_servers(&ice_servers);
 
         // Create peer connection
-        let pc = RtcPeerConnection::new_with_configuration(&config)
-            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Failed to create PeerConnection: {:?}", e)))?;
+        let pc = RtcPeerConnection::new_with_configuration(&config).map_err(|e| {
+            SdkError::new(
+                codes::WEBRTC_ERROR,
+                &format!("Failed to create PeerConnection: {:?}", e),
+            )
+        })?;
 
         let state = Rc::new(RefCell::new(WebRtcState::New));
         let data_channel = Rc::new(RefCell::new(None));
-        let on_ice_candidate: Rc<RefCell<Option<Box<dyn Fn(String, Option<String>, Option<u16>)>>>> =
-            Rc::new(RefCell::new(None));
-        let on_message: Rc<RefCell<Option<Box<dyn Fn(Vec<u8>)>>>> = Rc::new(RefCell::new(None));
+        let on_ice_candidate: IceCandidateCallback = Rc::new(RefCell::new(None));
+        let on_message: MessageCallback = Rc::new(RefCell::new(None));
 
         // Set up ICE candidate handler
         let on_ice = on_ice_candidate.clone();
@@ -97,7 +112,7 @@ impl WebRtcConnection {
     fn setup_data_channel_handlers(
         channel: &RtcDataChannel,
         state: Rc<RefCell<WebRtcState>>,
-        on_message: Rc<RefCell<Option<Box<dyn Fn(Vec<u8>)>>>>,
+        on_message: MessageCallback,
     ) {
         let state_open = state.clone();
         let onopen = Closure::wrap(Box::new(move |_: web_sys::Event| {
@@ -165,16 +180,28 @@ impl WebRtcConnection {
         // Create offer
         let offer = wasm_bindgen_futures::JsFuture::from(self.pc.create_offer())
             .await
-            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Failed to create offer: {:?}", e)))?;
+            .map_err(|e| {
+                SdkError::new(
+                    codes::WEBRTC_ERROR,
+                    &format!("Failed to create offer: {:?}", e),
+                )
+            })?;
 
         // Set local description
         let offer_obj = offer.unchecked_into::<RtcSessionDescriptionInit>();
         wasm_bindgen_futures::JsFuture::from(self.pc.set_local_description(&offer_obj))
             .await
-            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Failed to set local description: {:?}", e)))?;
+            .map_err(|e| {
+                SdkError::new(
+                    codes::WEBRTC_ERROR,
+                    &format!("Failed to set local description: {:?}", e),
+                )
+            })?;
 
         // Get SDP string
-        let local_desc = self.pc.local_description()
+        let local_desc = self
+            .pc
+            .local_description()
             .ok_or_else(|| SdkError::new(codes::WEBRTC_ERROR, "No local description"))?;
 
         Ok(local_desc.sdp())
@@ -185,25 +212,42 @@ impl WebRtcConnection {
         *self.state.borrow_mut() = WebRtcState::Connecting;
 
         // Set remote description (the offer)
-        let mut remote_desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
-        remote_desc.sdp(offer_sdp);
+        let remote_desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
+        remote_desc.set_sdp(offer_sdp);
         wasm_bindgen_futures::JsFuture::from(self.pc.set_remote_description(&remote_desc))
             .await
-            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Failed to set remote description: {:?}", e)))?;
+            .map_err(|e| {
+                SdkError::new(
+                    codes::WEBRTC_ERROR,
+                    &format!("Failed to set remote description: {:?}", e),
+                )
+            })?;
 
         // Create answer
         let answer = wasm_bindgen_futures::JsFuture::from(self.pc.create_answer())
             .await
-            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Failed to create answer: {:?}", e)))?;
+            .map_err(|e| {
+                SdkError::new(
+                    codes::WEBRTC_ERROR,
+                    &format!("Failed to create answer: {:?}", e),
+                )
+            })?;
 
         // Set local description
         let answer_obj = answer.unchecked_into::<RtcSessionDescriptionInit>();
         wasm_bindgen_futures::JsFuture::from(self.pc.set_local_description(&answer_obj))
             .await
-            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Failed to set local description: {:?}", e)))?;
+            .map_err(|e| {
+                SdkError::new(
+                    codes::WEBRTC_ERROR,
+                    &format!("Failed to set local description: {:?}", e),
+                )
+            })?;
 
         // Get SDP string
-        let local_desc = self.pc.local_description()
+        let local_desc = self
+            .pc
+            .local_description()
             .ok_or_else(|| SdkError::new(codes::WEBRTC_ERROR, "No local description"))?;
 
         Ok(local_desc.sdp())
@@ -211,11 +255,16 @@ impl WebRtcConnection {
 
     /// Set remote answer (for initiator)
     pub async fn set_remote_answer(&self, answer_sdp: &str) -> Result<(), SdkError> {
-        let mut remote_desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
-        remote_desc.sdp(answer_sdp);
+        let remote_desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
+        remote_desc.set_sdp(answer_sdp);
         wasm_bindgen_futures::JsFuture::from(self.pc.set_remote_description(&remote_desc))
             .await
-            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Failed to set remote description: {:?}", e)))?;
+            .map_err(|e| {
+                SdkError::new(
+                    codes::WEBRTC_ERROR,
+                    &format!("Failed to set remote description: {:?}", e),
+                )
+            })?;
         Ok(())
     }
 
@@ -226,22 +275,32 @@ impl WebRtcConnection {
         sdp_mid: Option<&str>,
         sdp_mline_index: Option<u16>,
     ) -> Result<(), SdkError> {
-        let mut init = RtcIceCandidateInit::new(candidate);
+        let init = RtcIceCandidateInit::new(candidate);
         if let Some(mid) = sdp_mid {
-            init.sdp_mid(Some(mid));
+            init.set_sdp_mid(Some(mid));
         }
         if let Some(index) = sdp_mline_index {
-            init.sdp_m_line_index(Some(index));
+            init.set_sdp_m_line_index(Some(index));
         }
 
-        let ice_candidate = RtcIceCandidate::new(&init)
-            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Invalid ICE candidate: {:?}", e)))?;
+        let ice_candidate = RtcIceCandidate::new(&init).map_err(|e| {
+            SdkError::new(
+                codes::WEBRTC_ERROR,
+                &format!("Invalid ICE candidate: {:?}", e),
+            )
+        })?;
 
         wasm_bindgen_futures::JsFuture::from(
-            self.pc.add_ice_candidate_with_opt_rtc_ice_candidate(Some(&ice_candidate))
+            self.pc
+                .add_ice_candidate_with_opt_rtc_ice_candidate(Some(&ice_candidate)),
         )
         .await
-        .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Failed to add ICE candidate: {:?}", e)))?;
+        .map_err(|e| {
+            SdkError::new(
+                codes::WEBRTC_ERROR,
+                &format!("Failed to add ICE candidate: {:?}", e),
+            )
+        })?;
 
         Ok(())
     }
@@ -249,14 +308,16 @@ impl WebRtcConnection {
     /// Send data over the data channel
     pub fn send(&self, data: &[u8]) -> Result<(), SdkError> {
         let channel = self.data_channel.borrow();
-        let channel = channel.as_ref()
+        let channel = channel
+            .as_ref()
             .ok_or_else(|| SdkError::new(codes::NOT_CONNECTED, "Data channel not ready"))?;
 
         if channel.ready_state() != RtcDataChannelState::Open {
             return Err(SdkError::new(codes::NOT_CONNECTED, "Data channel not open"));
         }
 
-        channel.send_with_u8_array(data)
+        channel
+            .send_with_u8_array(data)
             .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Send failed: {:?}", e)))?;
 
         Ok(())
