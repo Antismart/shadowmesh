@@ -4,6 +4,9 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use std::time::Instant;
+
+use crate::metrics;
 
 /// Maximum request size check middleware
 pub fn max_request_size(max_size_mb: u64) -> impl Fn(Request<Body>, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> + Clone {
@@ -82,4 +85,66 @@ pub async fn request_id(
     );
 
     response
+}
+
+/// Request logging middleware - logs requests and records metrics
+pub async fn request_logging(
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let start = Instant::now();
+    let method = req.method().to_string();
+    let uri = req.uri().path().to_string();
+    let request_id = req.extensions().get::<String>().cloned();
+
+    // Track in-flight requests
+    metrics::HTTP_REQUESTS_IN_FLIGHT.inc();
+
+    let response = next.run(req).await;
+
+    metrics::HTTP_REQUESTS_IN_FLIGHT.dec();
+
+    let duration = start.elapsed();
+    let status = response.status().as_u16();
+
+    // Normalize endpoint for metrics (avoid high cardinality)
+    let endpoint = normalize_endpoint(&uri);
+
+    // Record metrics
+    metrics::record_request(&method, &endpoint, status, duration.as_secs_f64());
+
+    // Log the request
+    tracing::info!(
+        request_id = ?request_id,
+        method = %method,
+        path = %uri,
+        status = %status,
+        duration_ms = %duration.as_millis(),
+        "request completed"
+    );
+
+    response
+}
+
+/// Normalize endpoint paths to reduce cardinality in metrics
+/// e.g., /api/deployments/QmXxx -> /api/deployments/:cid
+fn normalize_endpoint(path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').collect();
+
+    let normalized: Vec<&str> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            // Check if this looks like a CID or UUID
+            if part.starts_with("Qm") || part.starts_with("bafy") || part.len() > 30 {
+                ":cid"
+            } else if uuid::Uuid::parse_str(part).is_ok() {
+                ":id"
+            } else {
+                part
+            }
+        })
+        .collect();
+
+    normalized.join("/")
 }
