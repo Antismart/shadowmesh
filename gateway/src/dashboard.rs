@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
 };
 use serde::{Deserialize, Serialize};
-use crate::AppState;
+use crate::{AppState, lock_utils::{read_lock, write_lock}};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ use std::process::Command;
 use uuid::Uuid;
 
 pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let deployments = state.deployments.read().unwrap();
+    let deployments = read_lock(&state.deployments);
     let mut grouped: BTreeMap<String, Vec<&Deployment>> = BTreeMap::new();
     for deployment in deployments.iter() {
         let key = if deployment.source == "github" {
@@ -662,7 +662,7 @@ pub async fn redeploy_github(
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
     let deployment = {
-        let deployments = state.deployments.read().unwrap();
+        let deployments = read_lock(&state.deployments);
         deployments.iter().find(|d| d.cid == cid).cloned()
     };
 
@@ -682,7 +682,7 @@ pub async fn redeploy_github(
 
     match deploy_github_project(&state, &repo_url, &branch).await {
         Ok(payload) => {
-            let mut deployments = state.deployments.write().unwrap();
+            let mut deployments = write_lock(&state.deployments);
             deployments.retain(|d| d.cid != cid);
             (StatusCode::OK, Json(payload)).into_response()
         }
@@ -691,7 +691,7 @@ pub async fn redeploy_github(
 }
 
 pub async fn get_deployments(State(state): State<AppState>) -> impl IntoResponse {
-    let deployments = state.deployments.read().unwrap();
+    let deployments = read_lock(&state.deployments);
     Json(deployments.clone())
 }
 
@@ -699,7 +699,7 @@ pub async fn delete_deployment(
     State(state): State<AppState>,
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
-    let mut deployments = state.deployments.write().unwrap();
+    let mut deployments = write_lock(&state.deployments);
     let before = deployments.len();
     deployments.retain(|d| d.cid != cid);
 
@@ -714,7 +714,7 @@ pub async fn deployment_logs(
     State(state): State<AppState>,
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
-    let deployments = state.deployments.read().unwrap();
+    let deployments = read_lock(&state.deployments);
     if let Some(deployment) = deployments.iter().find(|d| d.cid == cid) {
         (StatusCode::OK, Json(json!({
             "success": true,
@@ -777,7 +777,7 @@ pub async fn github_login(State(state): State<AppState>) -> impl IntoResponse {
         .unwrap_or_else(|_| format!("http://localhost:{}/api/github/callback", state.config.server.port));
 
     let csrf_state = Uuid::new_v4().to_string();
-    *state.github_oauth_state.write().unwrap() = Some(csrf_state.clone());
+    *write_lock(&state.github_oauth_state) = Some(csrf_state.clone());
 
     let url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope=read:user%20repo&state={}",
@@ -805,7 +805,7 @@ pub async fn github_callback(
     let redirect_uri = std::env::var("GITHUB_REDIRECT_URL")
         .unwrap_or_else(|_| format!("http://localhost:{}/api/github/callback", state.config.server.port));
 
-    if let Some(expected_state) = state.github_oauth_state.read().unwrap().clone() {
+    if let Some(expected_state) = read_lock(&state.github_oauth_state).clone() {
         if Some(expected_state) != query.state {
             return (StatusCode::BAD_REQUEST, Json(json!({"success": false, "error": "Invalid OAuth state"}))).into_response();
         }
@@ -850,17 +850,17 @@ pub async fn github_callback(
         Err(_) => return (StatusCode::BAD_GATEWAY, Json(json!({"success": false, "error": "Failed to parse user"}))).into_response(),
     };
 
-    *state.github_auth.write().unwrap() = Some(GithubAuth {
+    *write_lock(&state.github_auth) = Some(GithubAuth {
         token: token_body.access_token,
         user,
     });
-    *state.github_oauth_state.write().unwrap() = None;
+    *write_lock(&state.github_oauth_state) = None;
 
     Redirect::to("/dashboard").into_response()
 }
 
 pub async fn github_status(State(state): State<AppState>) -> impl IntoResponse {
-    let auth = state.github_auth.read().unwrap().clone();
+    let auth = read_lock(&state.github_auth).clone();
     if let Some(auth) = auth {
         Json(json!({"connected": true, "user": auth.user}))
     } else {
@@ -869,7 +869,7 @@ pub async fn github_status(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 pub async fn github_repos(State(state): State<AppState>) -> impl IntoResponse {
-    let auth = state.github_auth.read().unwrap().clone();
+    let auth = read_lock(&state.github_auth).clone();
     let auth = match auth {
         Some(auth) => auth,
         None => return (StatusCode::UNAUTHORIZED, Json(json!({"error": "GitHub not connected"}))).into_response(),
@@ -1022,7 +1022,7 @@ async fn deploy_github_project(
         build_outcome.build_status,
         Some(build_outcome.build_logs),
     );
-    state.deployments.write().unwrap().insert(0, deployment);
+    write_lock(&state.deployments).insert(0, deployment);
 
     Ok(json!({
         "success": true,
