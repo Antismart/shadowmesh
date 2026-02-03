@@ -15,6 +15,10 @@ pub struct Config {
     pub circuit_breaker: CircuitBreakerConfig,
     #[serde(default)]
     pub deploy: DeployConfig,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
+    #[serde(default)]
+    pub redis: RedisConfig,
 }
 
 /// Validation errors for configuration
@@ -142,9 +146,7 @@ pub struct DeployConfig {
 
 impl Default for DeployConfig {
     fn default() -> Self {
-        Self {
-            max_size_mb: 100,
-        }
+        Self { max_size_mb: 100 }
     }
 }
 
@@ -154,9 +156,65 @@ impl DeployConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct TelemetryConfig {
+    /// Enable OpenTelemetry tracing
+    pub enabled: bool,
+    /// Service name for tracing
+    pub service_name: String,
+    /// OTLP endpoint (e.g., http://localhost:4317)
+    pub otlp_endpoint: Option<String>,
+    /// Sampling rate (0.0 to 1.0)
+    pub sample_rate: f64,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            service_name: "shadowmesh-gateway".to_string(),
+            otlp_endpoint: None,
+            sample_rate: 1.0,
+        }
+    }
+}
+
+impl TelemetryConfig {
+    /// Get OTLP endpoint from config or environment
+    pub fn get_otlp_endpoint(&self) -> Option<String> {
+        std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .or_else(|| self.otlp_endpoint.clone())
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct RedisConfig {
+    /// Redis URL (e.g., redis://127.0.0.1:6379)
+    pub url: Option<String>,
+    /// Key prefix for all Redis keys
+    pub key_prefix: String,
+}
+
+impl Default for RedisConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            key_prefix: "shadowmesh:".to_string(),
+        }
+    }
+}
+
+impl RedisConfig {
+    /// Get Redis URL from config or environment
+    pub fn get_url(&self) -> Option<String> {
+        std::env::var("REDIS_URL").ok().or_else(|| self.url.clone())
+    }
+}
+
 impl Config {
     /// Load configuration from file and environment variables
-    /// 
+    ///
     /// Priority (highest to lowest):
     /// 1. Environment variables (SHADOWMESH_SERVER_PORT, etc.)
     /// 2. Config file specified by SHADOWMESH_CONFIG_PATH
@@ -187,7 +245,7 @@ impl Config {
         builder = builder.add_source(
             config::Environment::with_prefix("SHADOWMESH")
                 .separator("_")
-                .try_parsing(true)
+                .try_parsing(true),
         );
 
         let config = builder.build()?;
@@ -218,7 +276,9 @@ impl Config {
 
         // Validate IPFS URL
         if !self.ipfs.api_url.starts_with("http://") && !self.ipfs.api_url.starts_with("https://") {
-            return Err(ConfigValidationError::InvalidIpfsUrl(self.ipfs.api_url.clone()));
+            return Err(ConfigValidationError::InvalidIpfsUrl(
+                self.ipfs.api_url.clone(),
+            ));
         }
 
         Ok(())
@@ -234,25 +294,35 @@ impl Config {
     /// Print configuration summary
     pub fn print_summary(&self) {
         println!("📋 Configuration Summary:");
-        println!("   Server: {}:{} ({} workers)", self.server.host, self.server.port, self.server.workers);
-        println!("   Cache: {} MB (TTL: {}s)", self.cache.max_size_mb, self.cache.ttl_seconds);
+        println!(
+            "   Server: {}:{} ({} workers)",
+            self.server.host, self.server.port, self.server.workers
+        );
+        println!(
+            "   Cache: {} MB (TTL: {}s)",
+            self.cache.max_size_mb, self.cache.ttl_seconds
+        );
         if self.rate_limit.enabled {
-            println!("   Rate Limit: {} req/s (burst: {})", 
-                self.rate_limit.requests_per_second, 
-                self.rate_limit.burst_size);
+            println!(
+                "   Rate Limit: {} req/s (burst: {})",
+                self.rate_limit.requests_per_second, self.rate_limit.burst_size
+            );
         } else {
             println!("   Rate Limit: disabled");
         }
-        println!("   IPFS: {} (timeout: {}s, retries: {})", 
-            self.ipfs.api_url, 
-            self.ipfs.timeout_seconds,
-            self.ipfs.retry_attempts);
-        println!("   Security: CORS={}, Max Request={}MB", 
-            self.security.cors_enabled, 
-            self.security.max_request_size_mb);
+        println!(
+            "   IPFS: {} (timeout: {}s, retries: {})",
+            self.ipfs.api_url, self.ipfs.timeout_seconds, self.ipfs.retry_attempts
+        );
+        println!(
+            "   Security: CORS={}, Max Request={}MB",
+            self.security.cors_enabled, self.security.max_request_size_mb
+        );
         if self.monitoring.metrics_enabled {
-            println!("   Monitoring: enabled (health interval: {}s)", 
-                self.monitoring.health_check_interval_seconds);
+            println!(
+                "   Monitoring: enabled (health interval: {}s)",
+                self.monitoring.health_check_interval_seconds
+            );
         }
     }
 
@@ -279,7 +349,7 @@ impl Config {
             },
             security: SecurityConfig {
                 cors_enabled: true,
-                allowed_origins: vec![],  // Deny all by default - must be explicitly configured
+                allowed_origins: vec![], // Deny all by default - must be explicitly configured
                 max_request_size_mb: 100,
             },
             monitoring: MonitoringConfig {
@@ -288,6 +358,8 @@ impl Config {
             },
             circuit_breaker: CircuitBreakerConfig::default(),
             deploy: DeployConfig::default(),
+            telemetry: TelemetryConfig::default(),
+            redis: RedisConfig::default(),
         }
     }
 }
