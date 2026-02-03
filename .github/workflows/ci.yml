@@ -46,6 +46,52 @@ jobs:
       - name: Build release
         run: cargo build --release --workspace
 
+  # Integration tests
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build gateway
+        run: cargo build --release -p gateway
+
+      - name: Start gateway for integration tests
+        run: |
+          ./target/release/gateway &
+          sleep 5
+
+      - name: Run health check
+        run: |
+          curl -f http://localhost:8081/health || exit 1
+
+      - name: Run metrics check
+        run: |
+          curl -f http://localhost:8081/metrics/prometheus | grep -q "http_requests_total" || exit 1
+
+      - name: Run API info check
+        run: |
+          curl -f http://localhost:8081/api/deploy/info | grep -q "max_size_mb" || exit 1
+
+      - name: Cleanup
+        if: always()
+        run: pkill gateway || true
+
   # SDK build and lint
   sdk:
     name: SDK CI
