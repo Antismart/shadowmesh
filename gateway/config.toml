@@ -22,7 +22,7 @@ cors_enabled = true
 # CORS allowed origins - use specific origins in production!
 # Override with SHADOWMESH_SECURITY_ALLOWED_ORIGINS env var
 # Example: allowed_origins = ["https://example.com", "https://app.example.com"]
-allowed_origins = ["*"]
+allowed_origins = []
 max_request_size_mb = 100
 
 [monitoring]
