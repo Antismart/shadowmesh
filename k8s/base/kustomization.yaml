@@ -9,6 +9,7 @@ resources:
   - ingress.yaml
   - rbac.yaml
   - hpa.yaml
+  - pdb.yaml
 
 commonLabels:
   app.kubernetes.io/name: shadowmesh-gateway

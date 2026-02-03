@@ -1,0 +1,11 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: shadowmesh-gateway-pdb
+  labels:
+    app: shadowmesh-gateway
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: shadowmesh-gateway
