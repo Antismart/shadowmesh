@@ -31,18 +31,18 @@ impl FragmentManager {
     /// Split content into fragments
     pub fn fragment_content(data: &[u8], name: String) -> ContentManifest {
         let total_size = data.len() as u64;
-        
+
         let mut fragments = Vec::new();
         let mut hasher = Hasher::new();
-        
+
         for chunk in data.chunks(CHUNK_SIZE) {
             let fragment_hash = blake3::hash(chunk).to_hex().to_string();
             fragments.push(fragment_hash);
             hasher.update(chunk);
         }
-        
+
         let content_hash = hasher.finalize().to_hex().to_string();
-        
+
         ContentManifest {
             content_hash,
             fragments,
@@ -64,15 +64,13 @@ impl FragmentManager {
             hash,
         }
     }
-    
+
     /// Reassemble fragments into original content
     pub fn reassemble_fragments(fragments: Vec<ContentFragment>) -> Vec<u8> {
         let mut sorted = fragments;
         sorted.sort_by_key(|f| f.index);
-        
-        sorted.into_iter()
-            .flat_map(|f| f.data)
-            .collect()
+
+        sorted.into_iter().flat_map(|f| f.data).collect()
     }
 
     /// Verify a fragment's hash
@@ -90,7 +88,7 @@ mod tests {
     fn test_fragment_and_reassemble() {
         let original_data = vec![0u8; 512 * 1024]; // 512KB
         let manifest = FragmentManager::fragment_content(&original_data, "test.bin".to_string());
-        
+
         assert_eq!(manifest.fragments.len(), 2); // Should be 2 chunks
         assert_eq!(manifest.metadata.size, 512 * 1024);
     }

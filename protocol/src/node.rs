@@ -1,9 +1,10 @@
 use libp2p::{
-    identity, noise,
+    gossipsub::{Behaviour as Gossipsub, Config as GossipsubConfig, MessageAuthenticity},
+    identity,
+    kad::{store::MemoryStore, Behaviour as Kademlia},
+    noise,
     swarm::NetworkBehaviour,
     tcp, yamux, PeerId, Swarm, Transport,
-    kad::{store::MemoryStore, Behaviour as Kademlia},
-    gossipsub::{Behaviour as Gossipsub, Config as GossipsubConfig, MessageAuthenticity},
 };
 use std::error::Error;
 
@@ -43,7 +44,10 @@ impl ShadowNode {
         )?;
 
         // Create behaviour and swarm
-        let behaviour = ShadowBehaviour { kademlia, gossipsub };
+        let behaviour = ShadowBehaviour {
+            kademlia,
+            gossipsub,
+        };
         let swarm = Swarm::new(
             transport,
             behaviour,
@@ -64,10 +68,10 @@ impl ShadowNode {
     pub async fn start(&mut self) -> Result<(), Box<dyn Error>> {
         // Listen on all interfaces
         self.swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-        
+
         // Bootstrap to network (connect to known peers)
         // TODO: Add bootstrap nodes
-        
+
         Ok(())
     }
 }

@@ -206,7 +206,10 @@ impl PeerDiscovery {
 
         self.stats.total_discovered += 1;
 
-        let peer = self.peers.entry(peer_id).or_insert_with(|| PeerInfo::new(peer_id));
+        let peer = self
+            .peers
+            .entry(peer_id)
+            .or_insert_with(|| PeerInfo::new(peer_id));
         peer.addresses = addresses;
         peer.last_seen = Instant::now();
         peer.state = PeerState::Discovered;
@@ -257,12 +260,12 @@ impl PeerDiscovery {
         self.connected.retain(|p| p != peer_id);
         self.stats.currently_connected = self.connected.len();
         self.stats.total_disconnections += 1;
-        
+
         // Then set banned state
         if let Some(peer) = self.peers.get_mut(peer_id) {
             peer.state = PeerState::Banned;
         }
-        
+
         if !self.banned.contains(peer_id) {
             self.banned.push(*peer_id);
             self.stats.banned_peers = self.banned.len();
@@ -273,7 +276,7 @@ impl PeerDiscovery {
     pub fn unban_peer(&mut self, peer_id: &PeerId) {
         self.banned.retain(|p| p != peer_id);
         self.stats.banned_peers = self.banned.len();
-        
+
         if let Some(peer) = self.peers.get_mut(peer_id) {
             peer.state = PeerState::Disconnected;
             peer.failed_attempts = 0;
@@ -527,7 +530,7 @@ mod tests {
             let peer_id = create_test_peer();
             discovery.add_peer(peer_id, vec![]);
             discovery.peer_connected(peer_id);
-            
+
             // Vary scores
             if let Some(peer) = discovery.get_peer_mut(&peer_id) {
                 peer.score = (i as f64) * 20.0;

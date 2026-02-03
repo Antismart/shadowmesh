@@ -165,11 +165,7 @@ impl ReplicationManager {
     fn update_replication_status(&mut self, cid: &str) {
         if let Some(fragments) = self.content_fragments.get(cid) {
             // Find minimum replica count across all fragments
-            let min_replicas = fragments
-                .iter()
-                .map(|f| f.holders.len())
-                .min()
-                .unwrap_or(0);
+            let min_replicas = fragments.iter().map(|f| f.holders.len()).min().unwrap_or(0);
 
             // Collect all unique holders
             let mut all_holders: HashSet<PeerId> = HashSet::new();
@@ -292,7 +288,11 @@ impl ReplicationManager {
     /// Get replication health summary
     pub fn get_health_summary(&self) -> ReplicationHealth {
         let total = self.replication_status.len();
-        let healthy = self.replication_status.values().filter(|s| s.healthy).count();
+        let healthy = self
+            .replication_status
+            .values()
+            .filter(|s| s.healthy)
+            .count();
         let critical = self
             .replication_status
             .values()

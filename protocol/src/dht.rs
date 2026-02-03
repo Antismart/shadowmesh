@@ -95,8 +95,8 @@ pub struct PeerState {
 /// Types of DHT queries
 #[derive(Debug, Clone)]
 pub enum QueryType {
-    Announce(String),   // CID being announced
-    Lookup(String),     // CID being looked up
+    Announce(String), // CID being announced
+    Lookup(String),   // CID being looked up
     FindPeers,
     Bootstrap,
 }
@@ -252,9 +252,8 @@ impl DHTManager {
             .unwrap()
             .as_secs();
 
-        self.local_records.retain(|_, record| {
-            record.created_at + record.ttl_seconds > now
-        });
+        self.local_records
+            .retain(|_, record| record.created_at + record.ttl_seconds > now);
     }
 }
 
@@ -312,17 +311,26 @@ mod tests {
         let mut manager = DHTManager::new(local_peer);
 
         manager.register_peer(remote_peer, vec![]);
-        assert_eq!(manager.known_peers.get(&remote_peer).unwrap().reputation, 50);
+        assert_eq!(
+            manager.known_peers.get(&remote_peer).unwrap().reputation,
+            50
+        );
 
         // Record successes
         for _ in 0..10 {
             manager.record_success(&remote_peer, 100);
         }
-        assert_eq!(manager.known_peers.get(&remote_peer).unwrap().reputation, 60);
+        assert_eq!(
+            manager.known_peers.get(&remote_peer).unwrap().reputation,
+            60
+        );
 
         // Record failure
         manager.record_failure(&remote_peer);
-        assert_eq!(manager.known_peers.get(&remote_peer).unwrap().reputation, 55);
+        assert_eq!(
+            manager.known_peers.get(&remote_peer).unwrap().reputation,
+            55
+        );
     }
 
     #[test]

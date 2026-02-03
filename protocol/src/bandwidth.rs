@@ -162,7 +162,8 @@ impl BandwidthTracker {
             .unwrap()
             .as_secs();
 
-        let entry = self.peer_bandwidth
+        let entry = self
+            .peer_bandwidth
             .entry(peer_id.to_string())
             .or_insert_with(|| PeerBandwidth {
                 peer_id: peer_id.to_string(),
@@ -178,7 +179,8 @@ impl BandwidthTracker {
             .unwrap()
             .as_secs();
 
-        let entry = self.peer_bandwidth
+        let entry = self
+            .peer_bandwidth
             .entry(peer_id.to_string())
             .or_insert_with(|| PeerBandwidth {
                 peer_id: peer_id.to_string(),

@@ -90,15 +90,15 @@ impl FailureType {
     /// Get severity weight for this failure type
     pub fn severity_weight(&self) -> f64 {
         match self {
-            FailureType::ConnectionReset => 1.0,    // Strong indicator
-            FailureType::ContentTampering => 1.0,   // Strong indicator
-            FailureType::TlsFailure => 0.8,         // Often censorship
-            FailureType::DnsFailure => 0.8,         // Often censorship
-            FailureType::Timeout => 0.6,            // Could be network
-            FailureType::ConnectionRefused => 0.4,  // Usually not censorship
-            FailureType::HttpError(_) => 0.3,       // Rarely censorship
-            FailureType::NetworkError => 0.2,       // Generic
-            FailureType::PeerUnreachable => 0.5,    // Could be either
+            FailureType::ConnectionReset => 1.0,   // Strong indicator
+            FailureType::ContentTampering => 1.0,  // Strong indicator
+            FailureType::TlsFailure => 0.8,        // Often censorship
+            FailureType::DnsFailure => 0.8,        // Often censorship
+            FailureType::Timeout => 0.6,           // Could be network
+            FailureType::ConnectionRefused => 0.4, // Usually not censorship
+            FailureType::HttpError(_) => 0.3,      // Rarely censorship
+            FailureType::NetworkError => 0.2,      // Generic
+            FailureType::PeerUnreachable => 0.5,   // Could be either
         }
     }
 }
@@ -137,48 +137,47 @@ impl GeoRegion {
     pub fn from_country_code(code: &str) -> Self {
         match code.to_uppercase().as_str() {
             // North America (23 countries)
-            "US" | "CA" | "MX" | "GT" | "CU" | "HT" | "DO" | "HN" | "NI" | "SV" 
-            | "CR" | "PA" | "JM" | "TT" | "BS" | "BB" | "LC" | "GD" | "VC" | "AG" 
-            | "DM" | "KN" | "BZ" => GeoRegion::NorthAmerica,
-            
+            "US" | "CA" | "MX" | "GT" | "CU" | "HT" | "DO" | "HN" | "NI" | "SV" | "CR" | "PA"
+            | "JM" | "TT" | "BS" | "BB" | "LC" | "GD" | "VC" | "AG" | "DM" | "KN" | "BZ" => {
+                GeoRegion::NorthAmerica
+            }
+
             // South America (12 countries)
-            "BR" | "AR" | "CL" | "CO" | "PE" | "VE" | "EC" | "BO" | "PY" | "UY" 
-            | "GY" | "SR" => GeoRegion::SouthAmerica,
-            
+            "BR" | "AR" | "CL" | "CO" | "PE" | "VE" | "EC" | "BO" | "PY" | "UY" | "GY" | "SR" => {
+                GeoRegion::SouthAmerica
+            }
+
             // Europe (44 countries)
-            "GB" | "DE" | "FR" | "NL" | "SE" | "NO" | "FI" | "CH" | "AT" | "BE" 
-            | "IT" | "ES" | "PT" | "PL" | "CZ" | "RO" | "UA" | "IE" | "DK" | "HU"
-            | "SK" | "HR" | "SI" | "RS" | "BG" | "GR" | "LT" | "LV" | "EE" | "IS"
-            | "LU" | "MT" | "CY" | "AL" | "MK" | "BA" | "ME" | "MD" | "BY" | "XK"
-            | "AD" | "MC" | "SM" | "LI" => GeoRegion::Europe,
-            
+            "GB" | "DE" | "FR" | "NL" | "SE" | "NO" | "FI" | "CH" | "AT" | "BE" | "IT" | "ES"
+            | "PT" | "PL" | "CZ" | "RO" | "UA" | "IE" | "DK" | "HU" | "SK" | "HR" | "SI" | "RS"
+            | "BG" | "GR" | "LT" | "LV" | "EE" | "IS" | "LU" | "MT" | "CY" | "AL" | "MK" | "BA"
+            | "ME" | "MD" | "BY" | "XK" | "AD" | "MC" | "SM" | "LI" => GeoRegion::Europe,
+
             // Africa (54 countries)
-            "ZA" | "NG" | "KE" | "EG" | "MA" | "GH" | "ET" | "TZ" | "UG" | "DZ"
-            | "SD" | "AO" | "MZ" | "MG" | "CM" | "CI" | "NE" | "BF" | "ML" | "MW"
-            | "ZM" | "SN" | "TD" | "SO" | "ZW" | "GN" | "RW" | "BJ" | "TN" | "BI"
-            | "SS" | "TG" | "SL" | "LY" | "CG" | "LR" | "CF" | "MR" | "ER" | "NA"
-            | "GM" | "BW" | "GA" | "LS" | "GW" | "GQ" | "MU" | "SZ" | "DJ" | "KM"
-            | "CV" | "ST" | "SC" | "CD" => GeoRegion::Africa,
-            
+            "ZA" | "NG" | "KE" | "EG" | "MA" | "GH" | "ET" | "TZ" | "UG" | "DZ" | "SD" | "AO"
+            | "MZ" | "MG" | "CM" | "CI" | "NE" | "BF" | "ML" | "MW" | "ZM" | "SN" | "TD" | "SO"
+            | "ZW" | "GN" | "RW" | "BJ" | "TN" | "BI" | "SS" | "TG" | "SL" | "LY" | "CG" | "LR"
+            | "CF" | "MR" | "ER" | "NA" | "GM" | "BW" | "GA" | "LS" | "GW" | "GQ" | "MU" | "SZ"
+            | "DJ" | "KM" | "CV" | "ST" | "SC" | "CD" => GeoRegion::Africa,
+
             // Middle East (17 countries)
-            "AE" | "SA" | "IL" | "TR" | "IR" | "IQ" | "JO" | "LB" | "SY" | "YE"
-            | "OM" | "KW" | "QA" | "BH" | "PS" | "AM" | "GE" => GeoRegion::MiddleEast,
-            
+            "AE" | "SA" | "IL" | "TR" | "IR" | "IQ" | "JO" | "LB" | "SY" | "YE" | "OM" | "KW"
+            | "QA" | "BH" | "PS" | "AM" | "GE" => GeoRegion::MiddleEast,
+
             // Asia (48 countries)
-            "CN" | "JP" | "KR" | "IN" | "SG" | "HK" | "TW" | "TH" | "VN" | "ID" 
-            | "MY" | "PH" | "PK" | "BD" | "LK" | "NP" | "MM" | "KH" | "LA" | "MN"
-            | "KZ" | "UZ" | "TM" | "TJ" | "KG" | "AZ" | "AF" | "BT" | "MV" | "BN"
-            | "TL" | "MO" | "KP" => GeoRegion::Asia,
-            
+            "CN" | "JP" | "KR" | "IN" | "SG" | "HK" | "TW" | "TH" | "VN" | "ID" | "MY" | "PH"
+            | "PK" | "BD" | "LK" | "NP" | "MM" | "KH" | "LA" | "MN" | "KZ" | "UZ" | "TM" | "TJ"
+            | "KG" | "AZ" | "AF" | "BT" | "MV" | "BN" | "TL" | "MO" | "KP" => GeoRegion::Asia,
+
             // Oceania (14 countries)
-            "AU" | "NZ" | "PG" | "FJ" | "SB" | "VU" | "WS" | "KI" | "TO" | "FM"
-            | "PW" | "MH" | "NR" | "TV" => GeoRegion::Oceania,
-            
+            "AU" | "NZ" | "PG" | "FJ" | "SB" | "VU" | "WS" | "KI" | "TO" | "FM" | "PW" | "MH"
+            | "NR" | "TV" => GeoRegion::Oceania,
+
             // Unknown
             _ => GeoRegion::Unknown,
         }
     }
-    
+
     /// Get approximate latitude range for the region (for distance estimation)
     pub fn latitude_range(&self) -> (f64, f64) {
         match self {
@@ -192,7 +191,7 @@ impl GeoRegion {
             GeoRegion::Unknown => (-90.0, 90.0),
         }
     }
-    
+
     /// Get approximate longitude range for the region
     pub fn longitude_range(&self) -> (f64, f64) {
         match self {
@@ -206,68 +205,68 @@ impl GeoRegion {
             GeoRegion::Unknown => (-180.0, 180.0),
         }
     }
-    
+
     /// Estimate network distance between two regions (in arbitrary units)
     /// Used for routing optimization
     pub fn distance_to(&self, other: &GeoRegion) -> u32 {
         if self == other {
             return 0;
         }
-        
+
         // Distance matrix based on typical network latencies
         match (self, other) {
             // Adjacent regions have lower distance
             (GeoRegion::NorthAmerica, GeoRegion::SouthAmerica) => 2,
             (GeoRegion::SouthAmerica, GeoRegion::NorthAmerica) => 2,
-            
+
             (GeoRegion::NorthAmerica, GeoRegion::Europe) => 2,
             (GeoRegion::Europe, GeoRegion::NorthAmerica) => 2,
-            
+
             (GeoRegion::Europe, GeoRegion::Africa) => 2,
             (GeoRegion::Africa, GeoRegion::Europe) => 2,
-            
+
             (GeoRegion::Europe, GeoRegion::MiddleEast) => 1,
             (GeoRegion::MiddleEast, GeoRegion::Europe) => 1,
-            
+
             (GeoRegion::MiddleEast, GeoRegion::Asia) => 2,
             (GeoRegion::Asia, GeoRegion::MiddleEast) => 2,
-            
+
             (GeoRegion::MiddleEast, GeoRegion::Africa) => 2,
             (GeoRegion::Africa, GeoRegion::MiddleEast) => 2,
-            
+
             (GeoRegion::Asia, GeoRegion::Oceania) => 2,
             (GeoRegion::Oceania, GeoRegion::Asia) => 2,
-            
+
             (GeoRegion::NorthAmerica, GeoRegion::Asia) => 3,
             (GeoRegion::Asia, GeoRegion::NorthAmerica) => 3,
-            
+
             (GeoRegion::NorthAmerica, GeoRegion::Oceania) => 3,
             (GeoRegion::Oceania, GeoRegion::NorthAmerica) => 3,
-            
+
             (GeoRegion::Europe, GeoRegion::Asia) => 3,
             (GeoRegion::Asia, GeoRegion::Europe) => 3,
-            
+
             // Distant regions
             (GeoRegion::SouthAmerica, GeoRegion::Asia) => 4,
             (GeoRegion::Asia, GeoRegion::SouthAmerica) => 4,
-            
+
             (GeoRegion::SouthAmerica, GeoRegion::Oceania) => 4,
             (GeoRegion::Oceania, GeoRegion::SouthAmerica) => 4,
-            
+
             (GeoRegion::Africa, GeoRegion::Oceania) => 4,
             (GeoRegion::Oceania, GeoRegion::Africa) => 4,
-            
+
             (GeoRegion::SouthAmerica, GeoRegion::Africa) => 3,
             (GeoRegion::Africa, GeoRegion::SouthAmerica) => 3,
-            
+
             // Unknown regions get high distance
             (GeoRegion::Unknown, _) | (_, GeoRegion::Unknown) => 5,
-            
+
             // Default for any other combination
             _ => 3,
         }
     }
-    
+
     /// Get a human-readable name for the region
     pub fn name(&self) -> &'static str {
         match self {
@@ -281,7 +280,7 @@ impl GeoRegion {
             GeoRegion::Unknown => "Unknown",
         }
     }
-    
+
     /// Get all known regions (excluding Unknown)
     pub fn all() -> &'static [GeoRegion] {
         &[
@@ -544,7 +543,9 @@ impl PathHealth {
             0.0
         };
 
-        (1.0 - failure_penalty - censorship_penalty + recency_bonus).max(0.0).min(1.0)
+        (1.0 - failure_penalty - censorship_penalty + recency_bonus)
+            .max(0.0)
+            .min(1.0)
     }
 }
 
@@ -708,7 +709,10 @@ impl AdaptiveRouter {
     }
 
     /// Compute a route to a destination
-    pub fn compute_route(&self, destination: Option<PeerId>) -> Result<ComputedRoute, RoutingError> {
+    pub fn compute_route(
+        &self,
+        destination: Option<PeerId>,
+    ) -> Result<ComputedRoute, RoutingError> {
         let start = Instant::now();
         let relays = self.relays.read().unwrap();
         let blocked = self.blocked_paths.read().unwrap();
@@ -719,7 +723,10 @@ impl AdaptiveRouter {
             .values()
             .filter(|r| r.is_healthy())
             .filter(|r| !self.config.avoid_regions.contains(&r.region))
-            .filter(|r| r.asn.map_or(true, |asn| !self.config.avoid_asns.contains(&asn)))
+            .filter(|r| {
+                r.asn
+                    .map_or(true, |asn| !self.config.avoid_asns.contains(&asn))
+            })
             .collect();
 
         if available.len() < self.config.min_hops {
@@ -778,7 +785,10 @@ impl AdaptiveRouter {
         }
 
         // Store route
-        self.active_routes.write().unwrap().insert(route.id, route.clone());
+        self.active_routes
+            .write()
+            .unwrap()
+            .insert(route.id, route.clone());
 
         // Generate backup routes
         self.generate_backup_routes(&route)?;
@@ -1018,7 +1028,10 @@ impl AdaptiveRouter {
             }
         }
 
-        self.backup_routes.write().unwrap().insert(primary.id, backups);
+        self.backup_routes
+            .write()
+            .unwrap()
+            .insert(primary.id, backups);
         Ok(())
     }
 
@@ -1105,7 +1118,10 @@ impl AdaptiveRouter {
                 }
 
                 // Promote backup to active
-                self.active_routes.write().unwrap().insert(backup.id, backup.clone());
+                self.active_routes
+                    .write()
+                    .unwrap()
+                    .insert(backup.id, backup.clone());
 
                 return Some(backup.clone());
             }
@@ -1145,7 +1161,9 @@ impl AdaptiveRouter {
     /// Get path health
     pub fn get_path_health(&self, from: PeerId, to: PeerId) -> Option<(f64, CensorshipStatus)> {
         let path_health = self.path_health.read().unwrap();
-        path_health.get(&(from, to)).map(|h| (h.health_score(), h.censorship_status))
+        path_health
+            .get(&(from, to))
+            .map(|h| (h.health_score(), h.censorship_status))
     }
 
     /// Get all relays with censorship issues
@@ -1153,7 +1171,12 @@ impl AdaptiveRouter {
         let path_health = self.path_health.read().unwrap();
         path_health
             .iter()
-            .filter(|(_, h)| matches!(h.censorship_status, CensorshipStatus::Confirmed | CensorshipStatus::Suspected))
+            .filter(|(_, h)| {
+                matches!(
+                    h.censorship_status,
+                    CensorshipStatus::Confirmed | CensorshipStatus::Suspected
+                )
+            })
             .map(|((from, to), h)| (*from, *to, h.censorship_status))
             .collect()
     }
@@ -1193,7 +1216,10 @@ pub enum RoutingError {
 impl std::fmt::Display for RoutingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RoutingError::InsufficientRelays { required, available } => {
+            RoutingError::InsufficientRelays {
+                required,
+                available,
+            } => {
                 write!(f, "Need {} relays, only {} available", required, available)
             }
             RoutingError::NoPathFound => write!(f, "No path found to destination"),
@@ -1335,7 +1361,10 @@ mod tests {
         router.register_relay(create_relay_info("DE", false, true));
 
         let result = router.compute_route(None);
-        assert!(matches!(result, Err(RoutingError::InsufficientRelays { .. })));
+        assert!(matches!(
+            result,
+            Err(RoutingError::InsufficientRelays { .. })
+        ));
     }
 
     #[test]

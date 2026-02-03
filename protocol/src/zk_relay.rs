@@ -117,25 +117,25 @@ impl X25519Keypair {
     }
 
     /// Derive a symmetric key from shared secret using HKDF-like construction
-    /// 
+    ///
     /// # Arguments
     /// * `peer_public` - The peer's X25519 public key
     /// * `context` - Additional context for key derivation (circuit_id, hop_index, etc.)
-    /// 
+    ///
     /// # Returns
     /// A 32-byte symmetric key suitable for ChaCha20Poly1305
     pub fn derive_symmetric_key(
-        &self, 
+        &self,
         peer_public: &X25519PublicKey,
-        context: &[u8]
+        context: &[u8],
     ) -> [u8; KEY_SIZE] {
         let shared_secret = self.diffie_hellman(peer_public);
-        
+
         // Use BLAKE3 for key derivation (similar to HKDF)
         let mut hasher = Hasher::new_keyed(shared_secret.as_bytes());
         hasher.update(b"shadowmesh-circuit-key-v1");
         hasher.update(context);
-        
+
         // Include both public keys in sorted order for key confirmation
         // Sorting ensures both parties derive the same key regardless of who calls this
         let self_public = self.public.as_bytes();
@@ -146,11 +146,11 @@ impl X25519Keypair {
             hasher.update(peer_public);
             hasher.update(self_public);
         }
-        
+
         let derived = hasher.finalize();
         let mut key = [0u8; KEY_SIZE];
         key.copy_from_slice(&derived.as_bytes()[..KEY_SIZE]);
-        
+
         key
     }
 }
@@ -183,9 +183,9 @@ impl CreateHandshake {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         let padding: [u8; 32] = rand::random();
-        
+
         Self {
             client_public_key,
             circuit_id,
@@ -223,7 +223,7 @@ impl CreatedHandshake {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        
+
         // Key confirmation: hash of the derived key
         let mut hasher = Hasher::new();
         hasher.update(b"shadowmesh-key-confirm-v1");
@@ -231,7 +231,7 @@ impl CreatedHandshake {
         let hash = hasher.finalize();
         let mut key_confirmation = [0u8; 16];
         key_confirmation.copy_from_slice(&hash.as_bytes()[..16]);
-        
+
         Self {
             relay_public_key,
             key_confirmation,
@@ -245,10 +245,10 @@ impl CreatedHandshake {
         hasher.update(b"shadowmesh-key-confirm-v1");
         hasher.update(shared_key);
         let hash = hasher.finalize();
-        
+
         let mut expected = [0u8; 16];
         expected.copy_from_slice(&hash.as_bytes()[..16]);
-        
+
         self.key_confirmation == expected
     }
 
@@ -291,7 +291,7 @@ impl EphemeralHopKeypair {
     pub fn derive_symmetric_key(
         &self,
         peer_public: &X25519PublicKey,
-        context: &[u8]
+        context: &[u8],
     ) -> [u8; KEY_SIZE] {
         self.keypair.derive_symmetric_key(peer_public, context)
     }
@@ -450,7 +450,7 @@ impl Circuit {
         let mut id = [0u8; 32];
         let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
         id[..12].copy_from_slice(&nonce);
-        
+
         // Add random bytes
         let mut hasher = Hasher::new();
         hasher.update(&nonce);
@@ -481,7 +481,7 @@ impl Circuit {
     pub fn add_hop(&mut self, peer_id: PeerId) {
         let hop_id = Self::generate_hop_id(&self.id, self.hops.len());
         let ephemeral_keypair = EphemeralHopKeypair::generate();
-        
+
         self.hops.push(CircuitHop {
             peer_id,
             ephemeral_keypair,
@@ -494,7 +494,7 @@ impl Circuit {
     /// Add a hop with a pre-generated keypair (for testing)
     pub fn add_hop_with_keypair(&mut self, peer_id: PeerId, keypair: EphemeralHopKeypair) {
         let hop_id = Self::generate_hop_id(&self.id, self.hops.len());
-        
+
         self.hops.push(CircuitHop {
             peer_id,
             ephemeral_keypair: keypair,
@@ -506,20 +506,21 @@ impl Circuit {
 
     /// Complete handshake for a hop (called after receiving CREATED)
     pub fn complete_hop_handshake(
-        &mut self, 
-        hop_index: usize, 
+        &mut self,
+        hop_index: usize,
         relay_public_key: X25519PublicKey,
-        context: &[u8]
+        context: &[u8],
     ) -> Result<[u8; KEY_SIZE], RelayError> {
-        let hop = self.hops.get_mut(hop_index)
-            .ok_or(RelayError::InvalidHop)?;
-        
+        let hop = self.hops.get_mut(hop_index).ok_or(RelayError::InvalidHop)?;
+
         // Derive symmetric key using ECDH
-        let symmetric_key = hop.ephemeral_keypair.derive_symmetric_key(&relay_public_key, context);
-        
+        let symmetric_key = hop
+            .ephemeral_keypair
+            .derive_symmetric_key(&relay_public_key, context);
+
         hop.relay_public_key = Some(relay_public_key);
         hop.symmetric_key = Some(symmetric_key);
-        
+
         Ok(symmetric_key)
     }
 
@@ -537,9 +538,7 @@ impl Circuit {
     /// Get keys for onion encryption (in hop order)
     /// Returns None if any hop hasn't completed handshake
     pub fn keys(&self) -> Option<Vec<[u8; KEY_SIZE]>> {
-        self.hops.iter()
-            .map(|h| h.symmetric_key)
-            .collect()
+        self.hops.iter().map(|h| h.symmetric_key).collect()
     }
 
     /// Check if all hops have completed handshake
@@ -549,9 +548,9 @@ impl Circuit {
 
     /// Get CREATE handshake for a specific hop
     pub fn get_create_handshake(&self, hop_index: usize) -> Option<CreateHandshake> {
-        self.hops.get(hop_index).map(|hop| {
-            CreateHandshake::new(hop.ephemeral_keypair.public_key_bytes(), self.id)
-        })
+        self.hops
+            .get(hop_index)
+            .map(|hop| CreateHandshake::new(hop.ephemeral_keypair.public_key_bytes(), self.id))
     }
 }
 
@@ -597,16 +596,16 @@ impl RelayCircuitState {
     ) -> (Self, CreatedHandshake) {
         // Generate ephemeral keypair for this circuit
         let ephemeral_keypair = EphemeralHopKeypair::generate();
-        
+
         // Derive symmetric key using ECDH
         // Context includes circuit_id + hop_index (0 for first hop)
         let mut context = Vec::new();
         context.extend_from_slice(&circuit_id);
         context.extend_from_slice(&0usize.to_le_bytes());
         let hop_key = ephemeral_keypair.derive_symmetric_key(&client_public_key, &context);
-        
+
         let now = Instant::now();
-        
+
         let state = Self {
             circuit_id,
             ephemeral_keypair: ephemeral_keypair.clone(),
@@ -617,13 +616,10 @@ impl RelayCircuitState {
             created_at: now,
             expires_at: now + lifetime,
         };
-        
+
         // Create response with key confirmation
-        let response = CreatedHandshake::new(
-            ephemeral_keypair.public_key_bytes(),
-            &hop_key,
-        );
-        
+        let response = CreatedHandshake::new(ephemeral_keypair.public_key_bytes(), &hop_key);
+
         (state, response)
     }
 
@@ -664,7 +660,7 @@ impl Default for ZkRelayConfig {
 }
 
 /// Zero-Knowledge Relay Client
-/// 
+///
 /// Used by clients to build circuits and send requests anonymously.
 pub struct ZkRelayClient {
     /// Client's secret for key derivation
@@ -695,7 +691,7 @@ impl ZkRelayClient {
     }
 
     /// Build a new circuit through the specified peers
-    /// 
+    ///
     /// This creates a circuit with ephemeral ECDH keypairs for each hop.
     /// The circuit is NOT ready until handshakes are completed via `process_created_response`.
     pub fn build_circuit(&mut self, peers: &[PeerId]) -> Result<CircuitId, RelayError> {
@@ -722,20 +718,27 @@ impl ZkRelayClient {
     }
 
     /// Get the CREATE cell for initiating circuit building
-    /// 
+    ///
     /// This returns the handshake data to send to the first hop.
     pub fn get_create_cell(&self, circuit_id: &CircuitId) -> Result<RelayCell, RelayError> {
-        let circuit = self.circuits.get(circuit_id)
+        let circuit = self
+            .circuits
+            .get(circuit_id)
             .ok_or(RelayError::CircuitNotFound)?;
-        
-        let handshake = circuit.get_create_handshake(0)
+
+        let handshake = circuit
+            .get_create_handshake(0)
             .ok_or(RelayError::InvalidHop)?;
-        
-        Ok(RelayCell::new(*circuit_id, CellType::Create, handshake.serialize()))
+
+        Ok(RelayCell::new(
+            *circuit_id,
+            CellType::Create,
+            handshake.serialize(),
+        ))
     }
 
     /// Process a CREATED response and derive the symmetric key for a hop
-    /// 
+    ///
     /// Returns the next EXTEND cell if there are more hops, or None if complete.
     pub fn process_created_response(
         &mut self,
@@ -743,53 +746,54 @@ impl ZkRelayClient {
         response: &CreatedHandshake,
         hop_index: usize,
     ) -> Result<Option<RelayCell>, RelayError> {
-        let circuit = self.circuits.get_mut(circuit_id)
+        let circuit = self
+            .circuits
+            .get_mut(circuit_id)
             .ok_or(RelayError::CircuitNotFound)?;
-        
+
         // Derive context for key derivation
         let mut context = Vec::new();
         context.extend_from_slice(circuit_id);
         context.extend_from_slice(&hop_index.to_le_bytes());
-        
+
         // Complete ECDH handshake for this hop
-        let symmetric_key = circuit.complete_hop_handshake(
-            hop_index,
-            response.relay_public_key,
-            &context,
-        )?;
-        
+        let symmetric_key =
+            circuit.complete_hop_handshake(hop_index, response.relay_public_key, &context)?;
+
         // Verify key confirmation
         if !response.verify_key(&symmetric_key) {
             return Err(RelayError::DecryptionFailed(
-                "Key confirmation failed".to_string()
+                "Key confirmation failed".to_string(),
             ));
         }
-        
+
         // Check if there are more hops to extend to
         let next_hop_index = hop_index + 1;
         if next_hop_index < circuit.hops.len() {
             // Create EXTEND cell for next hop
-            let next_handshake = circuit.get_create_handshake(next_hop_index)
+            let next_handshake = circuit
+                .get_create_handshake(next_hop_index)
                 .ok_or(RelayError::InvalidHop)?;
-            
+
             let extend_request = ExtendRequest {
                 next_peer: circuit.hops[next_hop_index].peer_id,
                 handshake: next_handshake.serialize(),
             };
-            
-            let extend_payload = bincode::serialize(&extend_request)
-                .map_err(|_| RelayError::InvalidPayload)?;
-            
+
+            let extend_payload =
+                bincode::serialize(&extend_request).map_err(|_| RelayError::InvalidPayload)?;
+
             // Encrypt EXTEND for all completed hops (onion layers)
             let mut payload = extend_payload;
             for i in (0..=hop_index).rev() {
                 if let Some(key) = circuit.hops[i].symmetric_key {
                     let manager = CryptoManager::new(&key);
-                    payload = manager.encrypt_raw(&payload)
+                    payload = manager
+                        .encrypt_raw(&payload)
                         .map_err(|e| RelayError::EncryptionFailed(e.to_string()))?;
                 }
             }
-            
+
             Ok(Some(RelayCell::new(*circuit_id, CellType::Extend, payload)))
         } else {
             // All hops complete - circuit is ready
@@ -799,10 +803,10 @@ impl ZkRelayClient {
     }
 
     /// Build circuit synchronously for testing (uses mock keys)
-    /// 
+    ///
     /// This method simulates the full ECDH handshake by generating mock relay keys.
     /// In production, use `build_circuit` + `process_created_response` for async handshakes.
-    /// 
+    ///
     /// # Warning
     /// This method is intended for testing only. The keys generated are not from real
     /// relay nodes and won't work with actual relay infrastructure.
@@ -818,16 +822,19 @@ impl ZkRelayClient {
 
         for (i, peer) in peers.iter().enumerate() {
             circuit.add_hop(*peer);
-            
+
             // Simulate completed handshake with deterministic key
             let mut context = Vec::new();
             context.extend_from_slice(&circuit_id);
             context.extend_from_slice(&i.to_le_bytes());
-            
+
             let hop = circuit.hops.last_mut().unwrap();
             let mock_relay_public: X25519PublicKey = rand::random();
             hop.relay_public_key = Some(mock_relay_public);
-            hop.symmetric_key = Some(hop.ephemeral_keypair.derive_symmetric_key(&mock_relay_public, &context));
+            hop.symmetric_key = Some(
+                hop.ephemeral_keypair
+                    .derive_symmetric_key(&mock_relay_public, &context),
+            );
         }
 
         circuit.ready = true;
@@ -872,8 +879,9 @@ impl ZkRelayClient {
                 bincode::serialize(&relay_payload).map_err(|_| RelayError::InvalidPayload)?;
 
             // Get the symmetric key (must be set after handshake)
-            let key = hop.symmetric_key
-                .ok_or_else(|| RelayError::CircuitBuildFailed("Hop key not established".to_string()))?;
+            let key = hop.symmetric_key.ok_or_else(|| {
+                RelayError::CircuitBuildFailed("Hop key not established".to_string())
+            })?;
 
             // Encrypt for this hop
             let manager = CryptoManager::new(&key);
@@ -900,9 +908,10 @@ impl ZkRelayClient {
         let mut data = cell.payload.clone();
 
         for hop in &circuit.hops {
-            let key = hop.symmetric_key
-                .ok_or_else(|| RelayError::DecryptionFailed("Hop key not established".to_string()))?;
-            
+            let key = hop.symmetric_key.ok_or_else(|| {
+                RelayError::DecryptionFailed("Hop key not established".to_string())
+            })?;
+
             let manager = CryptoManager::new(&key);
             data = manager
                 .decrypt_raw(&data)
@@ -948,13 +957,13 @@ impl ZkRelayClient {
 
         // Generate random padding
         let padding: Vec<u8> = (0..512).map(|_| rand::random()).collect();
-        
+
         Some(RelayCell::new(*circuit_id, CellType::Padding, padding))
     }
 }
 
 /// Zero-Knowledge Relay Node
-/// 
+///
 /// Used by relay nodes to forward cells without knowing content.
 pub struct ZkRelayNode {
     /// Node's keypair seed
@@ -1006,13 +1015,13 @@ impl ZkRelayNode {
     }
 
     /// Process an incoming cell
-    /// 
+    ///
     /// This is the core relay function. The node:
     /// 1. Looks up circuit state
     /// 2. Decrypts exactly one layer
     /// 3. Reads next hop from payload
     /// 4. Forwards to next hop (or processes if exit)
-    /// 
+    ///
     /// The node NEVER sees the actual content - only encrypted inner layers.
     pub fn process_cell(
         &self,
@@ -1039,7 +1048,7 @@ impl ZkRelayNode {
 
         // Parse the CREATE handshake from client
         let handshake = CreateHandshake::deserialize(&cell.payload)?;
-        
+
         // Perform ECDH key exchange
         let (state, created_response) = RelayCircuitState::from_handshake(
             cell.circuit_id,
@@ -1058,9 +1067,9 @@ impl ZkRelayNode {
 
         // Respond with Created cell containing our public key
         let response = RelayCell::new(
-            cell.circuit_id, 
-            CellType::Created, 
-            created_response.serialize()
+            cell.circuit_id,
+            CellType::Created,
+            created_response.serialize(),
         );
         Ok(RelayAction::Respond(response))
     }
@@ -1096,7 +1105,8 @@ impl ZkRelayNode {
         state.next_hop = Some(extend_request.next_peer);
 
         // Forward create cell to next hop
-        let create_cell = RelayCell::new(cell.circuit_id, CellType::Create, extend_request.handshake);
+        let create_cell =
+            RelayCell::new(cell.circuit_id, CellType::Create, extend_request.handshake);
 
         Ok(RelayAction::Forward {
             cell: create_cell,
@@ -1175,8 +1185,7 @@ impl ZkRelayNode {
                         .encrypt_raw(&cell.payload)
                         .map_err(|e| RelayError::EncryptionFailed(e.to_string()))?;
 
-                    let response_cell =
-                        RelayCell::new(cell.circuit_id, CellType::Relay, encrypted);
+                    let response_cell = RelayCell::new(cell.circuit_id, CellType::Relay, encrypted);
 
                     Ok(RelayAction::Forward {
                         cell: response_cell,
@@ -1247,7 +1256,10 @@ pub enum RelayAction {
     /// Respond directly to sender
     Respond(RelayCell),
     /// Exit node processing (retrieve content)
-    Exit { data: Vec<u8>, circuit_id: CircuitId },
+    Exit {
+        data: Vec<u8>,
+        circuit_id: CircuitId,
+    },
     /// Drop the cell (padding, etc.)
     Drop,
 }
@@ -1262,7 +1274,7 @@ pub struct ExtendRequest {
 }
 
 /// Blind relay wrapper for content
-/// 
+///
 /// This wraps actual content requests so that even exit nodes
 /// only see content hashes, not the content itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1592,12 +1604,12 @@ mod tests {
         // Test that two parties can derive the same symmetric key
         let alice = X25519Keypair::generate();
         let bob = X25519Keypair::generate();
-        
+
         let context = b"test-circuit-context";
-        
+
         let alice_key = alice.derive_symmetric_key(&bob.public_key_bytes(), context);
         let bob_key = bob.derive_symmetric_key(&alice.public_key_bytes(), context);
-        
+
         // Keys should be the same (ECDH property)
         assert_eq!(alice_key, bob_key);
     }
@@ -1606,11 +1618,11 @@ mod tests {
     fn test_create_handshake_serialization() {
         let keypair = X25519Keypair::generate();
         let circuit_id: CircuitId = rand::random();
-        
+
         let handshake = CreateHandshake::new(keypair.public_key_bytes(), circuit_id);
         let serialized = handshake.serialize();
         let deserialized = CreateHandshake::deserialize(&serialized).unwrap();
-        
+
         assert_eq!(deserialized.circuit_id, circuit_id);
         assert_eq!(deserialized.client_public_key, keypair.public_key_bytes());
     }
@@ -1619,12 +1631,12 @@ mod tests {
     fn test_created_handshake_key_verification() {
         let shared_key: [u8; KEY_SIZE] = rand::random();
         let relay_keypair = X25519Keypair::generate();
-        
+
         let response = CreatedHandshake::new(relay_keypair.public_key_bytes(), &shared_key);
-        
+
         // Correct key should verify
         assert!(response.verify_key(&shared_key));
-        
+
         // Wrong key should not verify
         let wrong_key: [u8; KEY_SIZE] = rand::random();
         assert!(!response.verify_key(&wrong_key));
@@ -1636,32 +1648,34 @@ mod tests {
         let secret = [42u8; KEY_SIZE];
         let mut client = ZkRelayClient::new(secret);
         let peers = create_test_peers(3);
-        
+
         // Step 1: Client initiates circuit
         let circuit_id = client.build_circuit(&peers).unwrap();
-        
+
         // Circuit should exist but not be ready (no handshakes complete)
         assert_eq!(client.active_circuits(), 1);
-        
+
         // Step 2: Get CREATE cell for first hop
         let create_cell = client.get_create_cell(&circuit_id).unwrap();
         assert_eq!(create_cell.cell_type, CellType::Create);
-        
+
         // Step 3: Simulate relay processing CREATE
         let node_secret = [99u8; KEY_SIZE];
         let node = ZkRelayNode::new(node_secret);
-        
+
         let action = node.process_cell(create_cell, peers[0]).unwrap();
-        
+
         // Node should respond with CREATED containing its public key
         match action {
             RelayAction::Respond(cell) => {
                 assert_eq!(cell.cell_type, CellType::Created);
-                
+
                 // Step 4: Client processes CREATED response
                 let response = CreatedHandshake::deserialize(&cell.payload).unwrap();
-                let next_cell = client.process_created_response(&circuit_id, &response, 0).unwrap();
-                
+                let next_cell = client
+                    .process_created_response(&circuit_id, &response, 0)
+                    .unwrap();
+
                 // Should return EXTEND cell for next hop
                 assert!(next_cell.is_some());
                 assert_eq!(next_cell.unwrap().cell_type, CellType::Extend);
