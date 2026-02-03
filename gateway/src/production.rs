@@ -64,30 +64,25 @@ pub fn validate_production_config(config: &Config) -> ProductionValidation {
     // Critical: API keys must be configured in production
     let api_keys = env::var("SHADOWMESH_API_KEYS").unwrap_or_default();
     if api_keys.is_empty() {
-        validation.add_error(
-            "No API keys configured. Set SHADOWMESH_API_KEYS environment variable"
-        );
+        validation
+            .add_error("No API keys configured. Set SHADOWMESH_API_KEYS environment variable");
     }
 
     // Warning: Binding to 0.0.0.0 exposes to all interfaces
     if config.server.host == "0.0.0.0" {
-        validation.add_warning(
-            "Binding to 0.0.0.0 - ensure firewall/network security is configured"
-        );
+        validation
+            .add_warning("Binding to 0.0.0.0 - ensure firewall/network security is configured");
     }
 
     // Warning: GitHub OAuth for dashboard
     let github_id = env::var("GITHUB_CLIENT_ID").unwrap_or_default();
     if github_id.is_empty() {
-        validation.add_warning(
-            "GitHub OAuth not configured - dashboard GitHub features disabled"
-        );
+        validation.add_warning("GitHub OAuth not configured - dashboard GitHub features disabled");
     }
 
     // Warning: TLS reminder
-    validation.add_warning(
-        "Ensure TLS termination is handled by reverse proxy (nginx/traefik/ingress)"
-    );
+    validation
+        .add_warning("Ensure TLS termination is handled by reverse proxy (nginx/traefik/ingress)");
 
     validation
 }

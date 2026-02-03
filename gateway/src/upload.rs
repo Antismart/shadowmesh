@@ -94,31 +94,29 @@ pub struct BatchUploadError {
 /// Handle multipart form file upload
 ///
 /// Accepts multipart/form-data with a file field.
-/// 
+///
 /// Example using curl:
 /// ```bash
 /// curl -X POST http://localhost:8080/api/upload \
 ///   -F "file=@/path/to/file.html"
 /// ```
-pub async fn upload_multipart(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> Response {
+pub async fn upload_multipart(State(state): State<AppState>, mut multipart: Multipart) -> Response {
     // Check IPFS connection
     let Some(storage) = &state.storage else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(UploadError::new(
                 "Storage backend not available",
-                "STORAGE_UNAVAILABLE"
-            ))
-        ).into_response();
+                "STORAGE_UNAVAILABLE",
+            )),
+        )
+            .into_response();
     };
 
     // Process multipart fields
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
-        
+
         // We're looking for the "file" field
         if name != "file" {
             continue;
@@ -135,9 +133,10 @@ pub async fn upload_multipart(
                     StatusCode::BAD_REQUEST,
                     Json(UploadError::new(
                         format!("Failed to read upload: {}", e),
-                        "READ_ERROR"
-                    ))
-                ).into_response();
+                        "READ_ERROR",
+                    )),
+                )
+                    .into_response();
             }
         };
 
@@ -146,10 +145,14 @@ pub async fn upload_multipart(
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(UploadError::new(
-                    format!("File too large. Maximum size is {} MB", MAX_UPLOAD_SIZE / 1024 / 1024),
-                    "FILE_TOO_LARGE"
-                ))
-            ).into_response();
+                    format!(
+                        "File too large. Maximum size is {} MB",
+                        MAX_UPLOAD_SIZE / 1024 / 1024
+                    ),
+                    "FILE_TOO_LARGE",
+                )),
+            )
+                .into_response();
         }
 
         // Detect content type
@@ -160,12 +163,12 @@ pub async fn upload_multipart(
         // Store in IPFS
         let storage = Arc::clone(storage);
         let data_clone = data.clone();
-        
+
         let result = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(async {
-                storage.store_content(data_clone).await
-            })
-        }).await;
+            tokio::runtime::Handle::current()
+                .block_on(async { storage.store_content(data_clone).await })
+        })
+        .await;
 
         match result {
             Ok(Ok(cid)) => {
@@ -178,25 +181,28 @@ pub async fn upload_multipart(
                     size: data.len(),
                     content_type,
                     filename,
-                }).into_response();
+                })
+                .into_response();
             }
             Ok(Err(e)) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(UploadError::new(
                         format!("Failed to store content: {}", e),
-                        "STORAGE_ERROR"
-                    ))
-                ).into_response();
+                        "STORAGE_ERROR",
+                    )),
+                )
+                    .into_response();
             }
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(UploadError::new(
                         format!("Internal error: {}", e),
-                        "INTERNAL_ERROR"
-                    ))
-                ).into_response();
+                        "INTERNAL_ERROR",
+                    )),
+                )
+                    .into_response();
             }
         }
     }
@@ -205,9 +211,10 @@ pub async fn upload_multipart(
         StatusCode::BAD_REQUEST,
         Json(UploadError::new(
             "No file field found in multipart data",
-            "MISSING_FILE"
-        ))
-    ).into_response()
+            "MISSING_FILE",
+        )),
+    )
+        .into_response()
 }
 
 /// Handle JSON upload with base64-encoded data
@@ -228,9 +235,10 @@ pub async fn upload_json(
             StatusCode::SERVICE_UNAVAILABLE,
             Json(UploadError::new(
                 "Storage backend not available",
-                "STORAGE_UNAVAILABLE"
-            ))
-        ).into_response();
+                "STORAGE_UNAVAILABLE",
+            )),
+        )
+            .into_response();
     };
 
     // Decode base64 data
@@ -241,9 +249,10 @@ pub async fn upload_json(
                 StatusCode::BAD_REQUEST,
                 Json(UploadError::new(
                     format!("Invalid base64 data: {}", e),
-                    "INVALID_BASE64"
-                ))
-            ).into_response();
+                    "INVALID_BASE64",
+                )),
+            )
+                .into_response();
         }
     };
 
@@ -252,26 +261,31 @@ pub async fn upload_json(
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(UploadError::new(
-                format!("Content too large. Maximum size is {} MB", MAX_UPLOAD_SIZE / 1024 / 1024),
-                "FILE_TOO_LARGE"
-            ))
-        ).into_response();
+                format!(
+                    "Content too large. Maximum size is {} MB",
+                    MAX_UPLOAD_SIZE / 1024 / 1024
+                ),
+                "FILE_TOO_LARGE",
+            )),
+        )
+            .into_response();
     }
 
     // Detect content type
-    let content_type = request.content_type
+    let content_type = request
+        .content_type
         .or_else(|| infer::get(&data).map(|t| t.mime_type().to_string()))
         .unwrap_or_else(|| "application/octet-stream".to_string());
 
     // Store in IPFS
     let storage = Arc::clone(storage);
     let data_clone = data.clone();
-    
+
     let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(async {
-            storage.store_content(data_clone).await
-        })
-    }).await;
+        tokio::runtime::Handle::current()
+            .block_on(async { storage.store_content(data_clone).await })
+    })
+    .await;
 
     match result {
         Ok(Ok(cid)) => {
@@ -284,26 +298,25 @@ pub async fn upload_json(
                 size: data.len(),
                 content_type,
                 filename: request.filename,
-            }).into_response()
+            })
+            .into_response()
         }
-        Ok(Err(e)) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(UploadError::new(
-                    format!("Failed to store content: {}", e),
-                    "STORAGE_ERROR"
-                ))
-            ).into_response()
-        }
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(UploadError::new(
-                    format!("Internal error: {}", e),
-                    "INTERNAL_ERROR"
-                ))
-            ).into_response()
-        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(UploadError::new(
+                format!("Failed to store content: {}", e),
+                "STORAGE_ERROR",
+            )),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(UploadError::new(
+                format!("Internal error: {}", e),
+                "INTERNAL_ERROR",
+            )),
+        )
+            .into_response(),
     }
 }
 
@@ -326,9 +339,10 @@ pub async fn upload_raw(
             StatusCode::SERVICE_UNAVAILABLE,
             Json(UploadError::new(
                 "Storage backend not available",
-                "STORAGE_UNAVAILABLE"
-            ))
-        ).into_response();
+                "STORAGE_UNAVAILABLE",
+            )),
+        )
+            .into_response();
     };
 
     let data = body.to_vec();
@@ -338,10 +352,14 @@ pub async fn upload_raw(
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(UploadError::new(
-                format!("Content too large. Maximum size is {} MB", MAX_UPLOAD_SIZE / 1024 / 1024),
-                "FILE_TOO_LARGE"
-            ))
-        ).into_response();
+                format!(
+                    "Content too large. Maximum size is {} MB",
+                    MAX_UPLOAD_SIZE / 1024 / 1024
+                ),
+                "FILE_TOO_LARGE",
+            )),
+        )
+            .into_response();
     }
 
     // Get content type from header or detect
@@ -355,12 +373,12 @@ pub async fn upload_raw(
     // Store in IPFS
     let storage = Arc::clone(storage);
     let data_clone = data.clone();
-    
+
     let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(async {
-            storage.store_content(data_clone).await
-        })
-    }).await;
+        tokio::runtime::Handle::current()
+            .block_on(async { storage.store_content(data_clone).await })
+    })
+    .await;
 
     match result {
         Ok(Ok(cid)) => {
@@ -373,26 +391,25 @@ pub async fn upload_raw(
                 size: data.len(),
                 content_type,
                 filename: None,
-            }).into_response()
+            })
+            .into_response()
         }
-        Ok(Err(e)) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(UploadError::new(
-                    format!("Failed to store content: {}", e),
-                    "STORAGE_ERROR"
-                ))
-            ).into_response()
-        }
-        Err(e) => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(UploadError::new(
-                    format!("Internal error: {}", e),
-                    "INTERNAL_ERROR"
-                ))
-            ).into_response()
-        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(UploadError::new(
+                format!("Failed to store content: {}", e),
+                "STORAGE_ERROR",
+            )),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(UploadError::new(
+                format!("Internal error: {}", e),
+                "INTERNAL_ERROR",
+            )),
+        )
+            .into_response(),
     }
 }
 
@@ -414,9 +431,10 @@ pub async fn upload_batch(
             StatusCode::SERVICE_UNAVAILABLE,
             Json(UploadError::new(
                 "Storage backend not available",
-                "STORAGE_UNAVAILABLE"
-            ))
-        ).into_response();
+                "STORAGE_UNAVAILABLE",
+            )),
+        )
+            .into_response();
     };
 
     let total = request.files.len();
@@ -448,7 +466,8 @@ pub async fn upload_batch(
         }
 
         // Detect content type
-        let content_type = file.content_type
+        let content_type = file
+            .content_type
             .or_else(|| infer::get(&data).map(|t| t.mime_type().to_string()))
             .unwrap_or_else(|| "application/octet-stream".to_string());
 
@@ -456,12 +475,11 @@ pub async fn upload_batch(
         let storage = Arc::clone(storage);
         let data_len = data.len();
         let filename = file.filename.clone();
-        
+
         let result = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(async {
-                storage.store_content(data).await
-            })
-        }).await;
+            tokio::runtime::Handle::current().block_on(async { storage.store_content(data).await })
+        })
+        .await;
 
         match result {
             Ok(Ok(cid)) => {
@@ -500,5 +518,6 @@ pub async fn upload_batch(
         failed,
         total,
         succeeded,
-    }).into_response()
+    })
+    .into_response()
 }

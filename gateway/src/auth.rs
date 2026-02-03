@@ -110,8 +110,9 @@ impl AuthConfig {
             if public_route == "GET:/:cid" && method == "GET" {
                 // Match paths that are just a CID (single segment, starts with Qm or bafy)
                 let trimmed = path.trim_start_matches('/');
-                if !trimmed.contains('/') &&
-                   (trimmed.starts_with("Qm") || trimmed.starts_with("bafy")) {
+                if !trimmed.contains('/')
+                    && (trimmed.starts_with("Qm") || trimmed.starts_with("bafy"))
+                {
                     return true;
                 }
             }
@@ -193,7 +194,8 @@ pub async fn api_key_auth(
             (
                 StatusCode::UNAUTHORIZED,
                 Json(AuthError {
-                    error: "API key required. Provide via 'Authorization: Bearer <key>' header".to_string(),
+                    error: "API key required. Provide via 'Authorization: Bearer <key>' header"
+                        .to_string(),
                     code: "MISSING_API_KEY".to_string(),
                 }),
             )

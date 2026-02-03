@@ -46,9 +46,8 @@ impl ApiKey {
         let key_hash = hash_key(&raw_key);
         let id = uuid::Uuid::new_v4().to_string();
 
-        let expires_at = expires_in_days.map(|days| {
-            Utc::now() + chrono::Duration::days(days as i64)
-        });
+        let expires_at =
+            expires_in_days.map(|days| Utc::now() + chrono::Duration::days(days as i64));
 
         let api_key = Self {
             id,
@@ -140,7 +139,8 @@ impl ApiKeyStore {
     }
 
     pub fn get_by_id(&self, id: &str) -> Option<&ApiKey> {
-        self.id_to_hash.get(id)
+        self.id_to_hash
+            .get(id)
             .and_then(|hash| self.keys_by_hash.get(hash))
     }
 
@@ -227,9 +227,13 @@ impl ApiKeyManager {
         if let Some(redis) = &self.redis {
             // Store in Redis
             let redis_key = format!("{}{}", REDIS_KEY_PREFIX, key.id);
-            redis.set_json(&redis_key, &key, None).await
+            redis
+                .set_json(&redis_key, &key, None)
+                .await
                 .map_err(|e| ApiKeyError::Storage(e.to_string()))?;
-            redis.sadd(REDIS_KEYS_SET, &key.id).await
+            redis
+                .sadd(REDIS_KEYS_SET, &key.id)
+                .await
                 .map_err(|e| ApiKeyError::Storage(e.to_string()))?;
         }
 
@@ -246,7 +250,9 @@ impl ApiKeyManager {
     /// List all API keys
     pub async fn list_keys(&self) -> Result<Vec<ApiKeyInfo>, ApiKeyError> {
         if let Some(redis) = &self.redis {
-            let ids: Vec<String> = redis.smembers(REDIS_KEYS_SET).await
+            let ids: Vec<String> = redis
+                .smembers(REDIS_KEYS_SET)
+                .await
                 .map_err(|e| ApiKeyError::Storage(e.to_string()))?;
 
             let mut keys = Vec::new();
@@ -267,7 +273,9 @@ impl ApiKeyManager {
     pub async fn get_key(&self, id: &str) -> Result<Option<ApiKey>, ApiKeyError> {
         if let Some(redis) = &self.redis {
             let redis_key = format!("{}{}", REDIS_KEY_PREFIX, id);
-            redis.get_json(&redis_key).await
+            redis
+                .get_json(&redis_key)
+                .await
                 .map_err(|e| ApiKeyError::Storage(e.to_string()))
         } else {
             let store = self.local_store.read().unwrap();
@@ -324,7 +332,9 @@ impl ApiKeyManager {
             let redis_key = format!("{}{}", REDIS_KEY_PREFIX, id);
             if let Some(mut key) = self.get_key(id).await? {
                 key.enabled = false;
-                redis.set_json(&redis_key, &key, None).await
+                redis
+                    .set_json(&redis_key, &key, None)
+                    .await
                     .map_err(|e| ApiKeyError::Storage(e.to_string()))?;
 
                 // Update local store
@@ -354,9 +364,13 @@ impl ApiKeyManager {
     pub async fn delete_key(&self, id: &str) -> Result<bool, ApiKeyError> {
         if let Some(redis) = &self.redis {
             let redis_key = format!("{}{}", REDIS_KEY_PREFIX, id);
-            redis.delete(&redis_key).await
+            redis
+                .delete(&redis_key)
+                .await
                 .map_err(|e| ApiKeyError::Storage(e.to_string()))?;
-            redis.srem(REDIS_KEYS_SET, id).await
+            redis
+                .srem(REDIS_KEYS_SET, id)
+                .await
                 .map_err(|e| ApiKeyError::Storage(e.to_string()))?;
         }
 
@@ -382,7 +396,9 @@ impl ApiKeyManager {
 
         if let Some(redis) = &self.redis {
             let redis_key = format!("{}{}", REDIS_KEY_PREFIX, id);
-            redis.set_json(&redis_key, &key, None).await
+            redis
+                .set_json(&redis_key, &key, None)
+                .await
                 .map_err(|e| ApiKeyError::Storage(e.to_string()))?;
         }
 
@@ -493,7 +509,11 @@ pub async fn create_api_key(
         return e.into_response();
     }
 
-    match state.manager.create_key(req.name, req.expires_in_days, req.scopes).await {
+    match state
+        .manager
+        .create_key(req.name, req.expires_in_days, req.scopes)
+        .await
+    {
         Ok((key, raw_key)) => (
             StatusCode::CREATED,
             Json(CreateKeyResponse {
@@ -660,7 +680,11 @@ pub fn api_keys_router(state: ApiKeyState) -> Router {
 /// Hex encoding helper
 mod hex {
     pub fn encode(bytes: impl AsRef<[u8]>) -> String {
-        bytes.as_ref().iter().map(|b| format!("{:02x}", b)).collect()
+        bytes
+            .as_ref()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
     }
 }
 

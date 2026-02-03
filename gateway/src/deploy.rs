@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use zip::ZipArchive;
 
-use crate::{AppState, lock_utils::write_lock};
+use crate::{lock_utils::write_lock, AppState};
 
 /// Deploy response returned after successful website deployment
 #[derive(Debug, Serialize)]
@@ -77,30 +77,28 @@ impl DeployError {
 /// ```bash
 /// # Create a ZIP of your website
 /// cd my-website && zip -r ../site.zip .
-/// 
+///
 /// # Deploy to ShadowMesh
 /// curl -X POST http://localhost:8080/api/deploy \
 ///   -F "file=@site.zip"
 /// ```
-pub async fn deploy_zip(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> Response {
+pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart) -> Response {
     // Check IPFS connection
     let Some(storage) = &state.storage else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(DeployError::new(
                 "Storage backend not available",
-                "STORAGE_UNAVAILABLE"
-            ))
-        ).into_response();
+                "STORAGE_UNAVAILABLE",
+            )),
+        )
+            .into_response();
     };
 
     // Process multipart fields
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
-        
+
         if name != "file" {
             continue;
         }
@@ -115,9 +113,10 @@ pub async fn deploy_zip(
                     StatusCode::BAD_REQUEST,
                     Json(DeployError::new(
                         format!("Failed to read upload: {}", e),
-                        "READ_ERROR"
-                    ))
-                ).into_response();
+                        "READ_ERROR",
+                    )),
+                )
+                    .into_response();
             }
         };
 
@@ -127,10 +126,14 @@ pub async fn deploy_zip(
             return (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 Json(DeployError::new(
-                    format!("Deployment too large. Maximum size is {} MB", state.config.deploy.max_size_mb),
-                    "FILE_TOO_LARGE"
-                ))
-            ).into_response();
+                    format!(
+                        "Deployment too large. Maximum size is {} MB",
+                        state.config.deploy.max_size_mb
+                    ),
+                    "FILE_TOO_LARGE",
+                )),
+            )
+                .into_response();
         }
 
         // Verify it's a ZIP file
@@ -139,9 +142,10 @@ pub async fn deploy_zip(
                 StatusCode::BAD_REQUEST,
                 Json(DeployError::new(
                     "File must be a ZIP archive. Use: zip -r site.zip .",
-                    "INVALID_FORMAT"
-                ))
-            ).into_response();
+                    "INVALID_FORMAT",
+                )),
+            )
+                .into_response();
         }
 
         // Extract ZIP to temp directory
@@ -152,9 +156,10 @@ pub async fn deploy_zip(
                     StatusCode::BAD_REQUEST,
                     Json(DeployError::new(
                         format!("Failed to extract ZIP: {}", e),
-                        "EXTRACT_ERROR"
-                    ))
-                ).into_response();
+                        "EXTRACT_ERROR",
+                    )),
+                )
+                    .into_response();
             }
         };
 
@@ -167,36 +172,37 @@ pub async fn deploy_zip(
                 .and_then(|entries| {
                     entries
                         .filter_map(|e| e.ok())
-                        .find(|e| {
-                            e.path().is_dir() && e.path().join("index.html").exists()
-                        })
+                        .find(|e| e.path().is_dir() && e.path().join("index.html").exists())
                 })
                 .is_some();
 
             if !has_index {
-                println!("⚠️  No index.html found in deployment (site may not serve correctly at root)");
+                println!(
+                    "⚠️  No index.html found in deployment (site may not serve correctly at root)"
+                );
             }
         }
 
         // Upload directory to IPFS
         let storage = Arc::clone(storage);
         let temp_path = temp_dir.path().to_path_buf();
-        let temp_dir_name = temp_path.file_name()
+        let temp_dir_name = temp_path
+            .file_name()
             .and_then(|n| n.to_str())
             .map(|s| s.to_string())
             .unwrap_or_default();
-        
+
         let result = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(async {
-                storage.store_directory(&temp_path).await
-            })
-        }).await;
+            tokio::runtime::Handle::current()
+                .block_on(async { storage.store_directory(&temp_path).await })
+        })
+        .await;
 
         match result {
             Ok(Ok(upload_result)) => {
                 let port = state.config.server.port;
                 let cid = upload_result.root_cid.clone();
-                
+
                 // Strip the temp directory prefix from file paths
                 let prefix = format!("{}/", temp_dir_name);
                 let files: Vec<DeployedFile> = upload_result.files.iter()
@@ -242,25 +248,28 @@ pub async fn deploy_zip(
                     file_count: files.len(),
                     total_size: upload_result.total_size,
                     files,
-                }).into_response();
+                })
+                .into_response();
             }
             Ok(Err(e)) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(DeployError::new(
                         format!("Failed to deploy: {}", e),
-                        "DEPLOY_ERROR"
-                    ))
-                ).into_response();
+                        "DEPLOY_ERROR",
+                    )),
+                )
+                    .into_response();
             }
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(DeployError::new(
                         format!("Internal error: {}", e),
-                        "INTERNAL_ERROR"
-                    ))
-                ).into_response();
+                        "INTERNAL_ERROR",
+                    )),
+                )
+                    .into_response();
             }
         }
     }
@@ -269,25 +278,24 @@ pub async fn deploy_zip(
         StatusCode::BAD_REQUEST,
         Json(DeployError::new(
             "No file field found in multipart data",
-            "MISSING_FILE"
-        ))
-    ).into_response()
+            "MISSING_FILE",
+        )),
+    )
+        .into_response()
 }
 
 /// Deploy from a tarball (.tar.gz)
 #[allow(dead_code)]
-pub async fn deploy_tarball(
-    State(_state): State<AppState>,
-    _multipart: Multipart,
-) -> Response {
+pub async fn deploy_tarball(State(_state): State<AppState>, _multipart: Multipart) -> Response {
     // For now, suggest using ZIP
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(DeployError::new(
             "Tarball deployment coming soon. Please use ZIP format for now.",
-            "NOT_IMPLEMENTED"
-        ))
-    ).into_response()
+            "NOT_IMPLEMENTED",
+        )),
+    )
+        .into_response()
 }
 
 /// Check if data is a ZIP file
@@ -304,18 +312,19 @@ fn is_zip(data: &[u8]) -> bool {
 /// 3. Rejects any paths containing suspicious patterns
 fn extract_zip(data: &[u8]) -> Result<TempDir, String> {
     let cursor = Cursor::new(data);
-    let mut archive = ZipArchive::new(cursor)
-        .map_err(|e| format!("Invalid ZIP file: {}", e))?;
+    let mut archive = ZipArchive::new(cursor).map_err(|e| format!("Invalid ZIP file: {}", e))?;
 
-    let temp_dir = TempDir::new()
-        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    let temp_dir = TempDir::new().map_err(|e| format!("Failed to create temp directory: {}", e))?;
 
     // Get canonical path of temp directory for validation
-    let temp_dir_canonical = temp_dir.path().canonicalize()
+    let temp_dir_canonical = temp_dir
+        .path()
+        .canonicalize()
         .map_err(|e| format!("Failed to canonicalize temp directory: {}", e))?;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
+        let mut file = archive
+            .by_index(i)
             .map_err(|e| format!("Failed to read ZIP entry: {}", e))?;
 
         // Get the file name - enclosed_name() sanitizes basic traversal attempts
@@ -408,9 +417,7 @@ pub struct DeployInfo {
     pub example_command: &'static str,
 }
 
-pub async fn deploy_info(
-    State(state): State<AppState>,
-) -> Json<DeployInfo> {
+pub async fn deploy_info(State(state): State<AppState>) -> Json<DeployInfo> {
     Json(DeployInfo {
         max_size_mb: state.config.deploy.max_size_mb,
         supported_formats: vec!["zip"],

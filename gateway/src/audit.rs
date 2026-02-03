@@ -174,17 +174,14 @@ impl AuditLogger {
     /// Get recent audit events
     pub async fn get_recent(&self, limit: usize) -> Vec<AuditEvent> {
         let events = self.events.read().await;
-        events.iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        events.iter().rev().take(limit).cloned().collect()
     }
 
     /// Get events for a specific resource
     pub async fn get_for_resource(&self, resource: &str, limit: usize) -> Vec<AuditEvent> {
         let events = self.events.read().await;
-        events.iter()
+        events
+            .iter()
             .rev()
             .filter(|e| e.resource.as_deref() == Some(resource))
             .take(limit)
@@ -195,7 +192,8 @@ impl AuditLogger {
     /// Get events by action type
     pub async fn get_by_action(&self, action: AuditAction, limit: usize) -> Vec<AuditEvent> {
         let events = self.events.read().await;
-        events.iter()
+        events
+            .iter()
             .rev()
             .filter(|e| e.action == action)
             .take(limit)
@@ -268,8 +266,8 @@ pub async fn log_deploy_delete(
     request_id: Option<&str>,
     client_ip: Option<&str>,
 ) {
-    let mut event = AuditEvent::new(AuditAction::DeployDelete, AuditOutcome::Success, actor)
-        .with_resource(cid);
+    let mut event =
+        AuditEvent::new(AuditAction::DeployDelete, AuditOutcome::Success, actor).with_resource(cid);
 
     if let Some(rid) = request_id {
         event = event.with_request_id(rid);
@@ -336,10 +334,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_event_creation() {
-        let event = AuditEvent::new(AuditAction::DeployCreate, AuditOutcome::Success, "test-actor")
-            .with_resource("QmTest123")
-            .with_size(1024)
-            .with_request_id("req-123");
+        let event = AuditEvent::new(
+            AuditAction::DeployCreate,
+            AuditOutcome::Success,
+            "test-actor",
+        )
+        .with_resource("QmTest123")
+        .with_size(1024)
+        .with_request_id("req-123");
 
         assert_eq!(event.action, AuditAction::DeployCreate);
         assert_eq!(event.outcome, AuditOutcome::Success);
@@ -358,7 +360,8 @@ mod tests {
                 AuditAction::FileUpload,
                 AuditOutcome::Success,
                 format!("actor-{}", i),
-            ).with_resource(format!("cid-{}", i));
+            )
+            .with_resource(format!("cid-{}", i));
 
             logger.log(event).await;
         }
@@ -398,12 +401,24 @@ mod tests {
         let logger = AuditLogger::new(100);
 
         // Log events for different resources
-        logger.log(AuditEvent::new(AuditAction::DeployCreate, AuditOutcome::Success, "a")
-            .with_resource("cid-1")).await;
-        logger.log(AuditEvent::new(AuditAction::DeployDelete, AuditOutcome::Success, "b")
-            .with_resource("cid-1")).await;
-        logger.log(AuditEvent::new(AuditAction::DeployCreate, AuditOutcome::Success, "c")
-            .with_resource("cid-2")).await;
+        logger
+            .log(
+                AuditEvent::new(AuditAction::DeployCreate, AuditOutcome::Success, "a")
+                    .with_resource("cid-1"),
+            )
+            .await;
+        logger
+            .log(
+                AuditEvent::new(AuditAction::DeployDelete, AuditOutcome::Success, "b")
+                    .with_resource("cid-1"),
+            )
+            .await;
+        logger
+            .log(
+                AuditEvent::new(AuditAction::DeployCreate, AuditOutcome::Success, "c")
+                    .with_resource("cid-2"),
+            )
+            .await;
 
         let cid1_events = logger.get_for_resource("cid-1", 10).await;
         assert_eq!(cid1_events.len(), 2);

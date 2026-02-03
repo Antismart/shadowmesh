@@ -49,7 +49,9 @@ impl ConfigWatcher {
             if path.exists() {
                 watcher
                     .watch(path, RecursiveMode::NonRecursive)
-                    .map_err(|e| ConfigWatchError::WatchPath(path_str.to_string(), e.to_string()))?;
+                    .map_err(|e| {
+                        ConfigWatchError::WatchPath(path_str.to_string(), e.to_string())
+                    })?;
                 tracing::info!(path = %path_str, "Watching config file for changes");
             } else if let Some(parent) = path.parent() {
                 if parent.exists() {
@@ -265,9 +267,7 @@ pub mod handler {
     /// POST /api/admin/reload - Trigger configuration reload
     ///
     /// Requires admin authentication
-    pub async fn reload_config_handler(
-        config: Arc<RwLock<Config>>,
-    ) -> impl IntoResponse {
+    pub async fn reload_config_handler(config: Arc<RwLock<Config>>) -> impl IntoResponse {
         match Config::load() {
             Ok(new_config) => {
                 let mut current = config.write().await;

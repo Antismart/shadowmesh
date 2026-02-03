@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    http::{Request, header, StatusCode},
+    http::{header, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -9,7 +9,13 @@ use std::time::Instant;
 use crate::metrics;
 
 /// Maximum request size check middleware
-pub fn max_request_size(max_size_mb: u64) -> impl Fn(Request<Body>, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> + Clone {
+pub fn max_request_size(
+    max_size_mb: u64,
+) -> impl Fn(
+    Request<Body>,
+    Next,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>
+       + Clone {
     move |req: Request<Body>, next: Next| {
         let max_bytes = max_size_mb * 1024 * 1024;
         Box::pin(async move {
@@ -20,8 +26,9 @@ pub fn max_request_size(max_size_mb: u64) -> impl Fn(Request<Body>, Next) -> std
                         if len > max_bytes {
                             return (
                                 StatusCode::PAYLOAD_TOO_LARGE,
-                                format!("Request body too large. Max size: {} MB", max_size_mb)
-                            ).into_response();
+                                format!("Request body too large. Max size: {} MB", max_size_mb),
+                            )
+                                .into_response();
                         }
                     }
                 }
@@ -31,10 +38,7 @@ pub fn max_request_size(max_size_mb: u64) -> impl Fn(Request<Body>, Next) -> std
     }
 }
 
-pub async fn security_headers(
-    req: Request<Body>,
-    next: Next,
-) -> Response {
+pub async fn security_headers(req: Request<Body>, next: Next) -> Response {
     let path = req.uri().path().to_string();
     let mut response = next.run(req).await;
 
@@ -66,10 +70,7 @@ pub async fn security_headers(
     response
 }
 
-pub async fn request_id(
-    mut req: Request<Body>,
-    next: Next,
-) -> Response {
+pub async fn request_id(mut req: Request<Body>, next: Next) -> Response {
     let request_id = uuid::Uuid::new_v4().to_string();
     req.extensions_mut().insert(request_id.clone());
 
@@ -82,10 +83,7 @@ pub async fn request_id(
 }
 
 /// Request logging middleware - logs requests and records metrics
-pub async fn request_logging(
-    req: Request<Body>,
-    next: Next,
-) -> Response {
+pub async fn request_logging(req: Request<Body>, next: Next) -> Response {
     let start = Instant::now();
     let method = req.method().to_string();
     let uri = req.uri().path().to_string();

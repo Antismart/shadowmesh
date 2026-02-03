@@ -11,13 +11,10 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 use serde::Serialize;
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{net::SocketAddr, sync::Arc};
 
+use crate::rate_limit::{RateLimitConfig, RateLimiter};
 use crate::redis_client::RedisClient;
-use crate::rate_limit::{RateLimiter, RateLimitConfig};
 
 /// Distributed rate limiter using Redis
 #[derive(Clone)]
@@ -102,7 +99,10 @@ impl DistributedRateLimiter {
                 }
             }
             Err(e) => {
-                tracing::warn!("Redis rate limit check failed: {}, falling back to local", e);
+                tracing::warn!(
+                    "Redis rate limit check failed: {}, falling back to local",
+                    e
+                );
                 // Return Ok to fall through to local rate limiting
                 Ok(())
             }
@@ -124,12 +124,19 @@ impl DistributedRateLimiter {
             let key_hash = format!("key:{}", &key[..key.len().min(8)]);
             (key_hash, "api_key", self.config.key_requests_per_second)
         } else {
-            (format!("ip:{}", client_ip), "ip", self.config.ip_requests_per_second)
+            (
+                format!("ip:{}", client_ip),
+                "ip",
+                self.config.ip_requests_per_second,
+            )
         };
 
         // Try Redis first if available
         if let Some(ref redis) = self.redis {
-            match self.check_redis_limit(redis, &identifier, max_requests).await {
+            match self
+                .check_redis_limit(redis, &identifier, max_requests)
+                .await
+            {
                 Ok(()) => {
                     // Request allowed, continue
                     return Ok(next.run(req).await);

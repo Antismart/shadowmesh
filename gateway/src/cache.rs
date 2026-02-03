@@ -1,5 +1,5 @@
 //! Content caching for the ShadowMesh gateway
-//! 
+//!
 //! Provides in-memory LRU caching for frequently accessed content.
 
 use std::collections::HashMap;
@@ -50,11 +50,11 @@ impl ContentCache {
     pub fn get(&self, cid: &str) -> Option<(Vec<u8>, String)> {
         let entries = self.entries.read().ok()?;
         let entry = entries.get(cid)?;
-        
+
         if entry.is_expired() {
             return None;
         }
-        
+
         Some((entry.data.clone(), entry.content_type.clone()))
     }
 
@@ -70,7 +70,7 @@ impl ContentCache {
             if entries.len() >= self.max_entries {
                 self.evict_expired(&mut entries);
             }
-            
+
             // Still at capacity? Remove oldest entry
             if entries.len() >= self.max_entries {
                 if let Some(oldest_key) = entries
@@ -81,13 +81,16 @@ impl ContentCache {
                     entries.remove(&oldest_key);
                 }
             }
-            
-            entries.insert(cid, CacheEntry {
-                data,
-                content_type,
-                created_at: Instant::now(),
-                ttl,
-            });
+
+            entries.insert(
+                cid,
+                CacheEntry {
+                    data,
+                    content_type,
+                    created_at: Instant::now(),
+                    ttl,
+                },
+            );
         }
     }
 
@@ -114,7 +117,7 @@ impl ContentCache {
                 (e.len(), expired)
             })
             .unwrap_or((0, 0));
-        
+
         CacheStats {
             total_entries: total,
             expired_entries: expired,
@@ -148,16 +151,16 @@ mod tests {
     #[test]
     fn test_cache_set_get() {
         let cache = ContentCache::new();
-        
+
         cache.set(
             "test-cid".to_string(),
             b"test data".to_vec(),
             "text/plain".to_string(),
         );
-        
+
         let result = cache.get("test-cid");
         assert!(result.is_some());
-        
+
         let (data, content_type) = result.unwrap();
         assert_eq!(data, b"test data");
         assert_eq!(content_type, "text/plain");
@@ -172,10 +175,14 @@ mod tests {
     #[test]
     fn test_cache_remove() {
         let cache = ContentCache::new();
-        
-        cache.set("test".to_string(), vec![1, 2, 3], "application/octet-stream".to_string());
+
+        cache.set(
+            "test".to_string(),
+            vec![1, 2, 3],
+            "application/octet-stream".to_string(),
+        );
         assert!(cache.get("test").is_some());
-        
+
         cache.remove("test");
         assert!(cache.get("test").is_none());
     }
@@ -183,12 +190,12 @@ mod tests {
     #[test]
     fn test_cache_expiration() {
         let cache = ContentCache::with_config(100, Duration::from_millis(1));
-        
+
         cache.set("test".to_string(), vec![1, 2, 3], "text/plain".to_string());
-        
+
         // Wait for expiration
         std::thread::sleep(Duration::from_millis(10));
-        
+
         assert!(cache.get("test").is_none());
     }
 }

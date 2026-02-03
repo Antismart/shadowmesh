@@ -38,7 +38,7 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             ip_requests_per_second: 100,
-            key_requests_per_second: 1000,  // 10x for authenticated clients
+            key_requests_per_second: 1000, // 10x for authenticated clients
             burst_size: 50,
             window: Duration::from_secs(1),
         }
@@ -175,9 +175,9 @@ impl RateLimiter {
             }
 
             // Calculate retry time
-            let remaining = window.as_secs().saturating_sub(
-                now.duration_since(client_limit.window_start).as_secs()
-            );
+            let remaining = window
+                .as_secs()
+                .saturating_sub(now.duration_since(client_limit.window_start).as_secs());
             return Err((remaining.max(1), identifier.to_string()));
         }
 
@@ -212,7 +212,11 @@ impl RateLimiter {
             let key_hash = format!("key:{}", &key[..key.len().min(8)]);
             (key_hash, "api_key", self.config.key_requests_per_second)
         } else {
-            (format!("ip:{}", client_ip), "ip", self.config.ip_requests_per_second)
+            (
+                format!("ip:{}", client_ip),
+                "ip",
+                self.config.ip_requests_per_second,
+            )
         };
 
         // Choose the appropriate limits map
@@ -229,10 +233,13 @@ impl RateLimiter {
             max_requests,
             self.config.burst_size,
             self.config.window,
-        ).await {
+        )
+        .await
+        {
             Ok(()) => {
                 // Periodically cleanup old entries
-                if rand::random::<u8>() < 10 {  // ~4% chance
+                if rand::random::<u8>() < 10 {
+                    // ~4% chance
                     let ip_limits = self.ip_limits.clone();
                     let key_limits = self.key_limits.clone();
                     tokio::spawn(async move {
@@ -255,16 +262,15 @@ impl RateLimiter {
 
                 let _response = (
                     StatusCode::TOO_MANY_REQUESTS,
-                    [
-                        (header::RETRY_AFTER, retry_after.to_string()),
-                    ],
+                    [(header::RETRY_AFTER, retry_after.to_string())],
                     Json(RateLimitError {
                         error: "Rate limit exceeded".to_string(),
                         code: "RATE_LIMIT_EXCEEDED".to_string(),
                         retry_after_seconds: retry_after,
                         limit_type: limit_type.to_string(),
                     }),
-                ).into_response();
+                )
+                    .into_response();
 
                 Err(StatusCode::TOO_MANY_REQUESTS)
             }
@@ -289,13 +295,9 @@ mod tests {
         let config = RateLimitConfig::default();
 
         // First request should succeed
-        let result = RateLimiter::check_limit(
-            &limits,
-            "test-client",
-            5,
-            config.burst_size,
-            config.window,
-        ).await;
+        let result =
+            RateLimiter::check_limit(&limits, "test-client", 5, config.burst_size, config.window)
+                .await;
         assert!(result.is_ok());
 
         // Should allow up to limit
@@ -306,7 +308,8 @@ mod tests {
                 5,
                 config.burst_size,
                 config.window,
-            ).await;
+            )
+            .await;
             assert!(result.is_ok());
         }
     }
@@ -317,15 +320,18 @@ mod tests {
 
         // Client A uses all their requests
         for _ in 0..5 {
-            let _ = RateLimiter::check_limit(&limits, "client-a", 5, 0, Duration::from_secs(1)).await;
+            let _ =
+                RateLimiter::check_limit(&limits, "client-a", 5, 0, Duration::from_secs(1)).await;
         }
 
         // Client A should be rate limited
-        let result = RateLimiter::check_limit(&limits, "client-a", 5, 0, Duration::from_secs(1)).await;
+        let result =
+            RateLimiter::check_limit(&limits, "client-a", 5, 0, Duration::from_secs(1)).await;
         assert!(result.is_err());
 
         // Client B should still be allowed
-        let result = RateLimiter::check_limit(&limits, "client-b", 5, 0, Duration::from_secs(1)).await;
+        let result =
+            RateLimiter::check_limit(&limits, "client-b", 5, 0, Duration::from_secs(1)).await;
         assert!(result.is_ok());
     }
 

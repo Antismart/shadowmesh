@@ -38,12 +38,7 @@ mod auth_tests {
                 return true;
             }
 
-            let public_routes = vec![
-                "GET:/health",
-                "GET:/metrics",
-                "GET:/",
-                "GET:/dashboard",
-            ];
+            let public_routes = vec!["GET:/health", "GET:/metrics", "GET:/", "GET:/dashboard"];
 
             let route_key = format!("{}:{}", method, path);
             public_routes.contains(&route_key.as_str())
@@ -85,7 +80,10 @@ mod auth_tests {
             }
         }
 
-        assert_eq!(extract_bearer("Bearer test-key"), Some("test-key".to_string()));
+        assert_eq!(
+            extract_bearer("Bearer test-key"),
+            Some("test-key".to_string())
+        );
         assert_eq!(extract_bearer("Basic xyz"), None);
         assert_eq!(extract_bearer("bearer test"), None); // Case sensitive
     }
@@ -146,7 +144,8 @@ mod circuit_breaker_tests {
 
         fn record_success(&self) {
             if self.state() == CircuitState::HalfOpen {
-                self.state.store(CircuitState::Closed as u8, Ordering::SeqCst);
+                self.state
+                    .store(CircuitState::Closed as u8, Ordering::SeqCst);
             }
             self.failure_count.store(0, Ordering::SeqCst);
         }
@@ -270,12 +269,20 @@ mod rate_limit_tests {
     #[test]
     fn test_x_forwarded_for_parsing() {
         fn extract_client_ip(header: &str) -> String {
-            header.split(',').next().unwrap_or("unknown").trim().to_string()
+            header
+                .split(',')
+                .next()
+                .unwrap_or("unknown")
+                .trim()
+                .to_string()
         }
 
         assert_eq!(extract_client_ip("192.168.1.1"), "192.168.1.1");
         assert_eq!(extract_client_ip("192.168.1.1, 10.0.0.1"), "192.168.1.1");
-        assert_eq!(extract_client_ip("  192.168.1.1  ,  10.0.0.1  "), "192.168.1.1");
+        assert_eq!(
+            extract_client_ip("  192.168.1.1  ,  10.0.0.1  "),
+            "192.168.1.1"
+        );
     }
 
     #[test]
@@ -480,7 +487,10 @@ mod content_type_tests {
         assert_eq!(detect_content_type("unknown", html), "text/html");
 
         let not_html = b"This is just plain text";
-        assert_eq!(detect_content_type("unknown", not_html), "application/octet-stream");
+        assert_eq!(
+            detect_content_type("unknown", not_html),
+            "application/octet-stream"
+        );
     }
 }
 
