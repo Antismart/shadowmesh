@@ -209,6 +209,7 @@ impl CircuitBreaker {
 }
 
 /// Error returned when circuit is open
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CircuitOpenError {
     pub circuit_name: String,
