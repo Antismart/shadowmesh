@@ -50,6 +50,7 @@ impl AuthConfig {
     }
 
     /// Create disabled auth config (all routes public)
+    #[allow(dead_code)]
     pub fn disabled() -> Self {
         Self {
             valid_keys: HashSet::new(),
