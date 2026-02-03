@@ -11,6 +11,10 @@ pub struct Config {
     pub ipfs: IpfsConfig,
     pub security: SecurityConfig,
     pub monitoring: MonitoringConfig,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
+    #[serde(default)]
+    pub deploy: DeployConfig,
 }
 
 /// Validation errors for configuration
@@ -104,6 +108,49 @@ pub struct MonitoringConfig {
 impl MonitoringConfig {
     pub fn health_check_interval(&self) -> Duration {
         Duration::from_secs(self.health_check_interval_seconds)
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct CircuitBreakerConfig {
+    /// Number of consecutive failures before opening circuit
+    pub failure_threshold: u32,
+    /// Seconds to wait before testing recovery
+    pub reset_timeout_seconds: u64,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: 5,
+            reset_timeout_seconds: 30,
+        }
+    }
+}
+
+impl CircuitBreakerConfig {
+    pub fn reset_timeout(&self) -> Duration {
+        Duration::from_secs(self.reset_timeout_seconds)
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DeployConfig {
+    /// Maximum deployment size in MB
+    pub max_size_mb: u64,
+}
+
+impl Default for DeployConfig {
+    fn default() -> Self {
+        Self {
+            max_size_mb: 100,
+        }
+    }
+}
+
+impl DeployConfig {
+    pub fn max_size_bytes(&self) -> usize {
+        (self.max_size_mb * 1024 * 1024) as usize
     }
 }
 
@@ -239,6 +286,8 @@ impl Config {
                 metrics_enabled: true,
                 health_check_interval_seconds: 30,
             },
+            circuit_breaker: CircuitBreakerConfig::default(),
+            deploy: DeployConfig::default(),
         }
     }
 }
