@@ -1,10 +1,14 @@
 //! ShadowMesh Gateway
 
+mod audit;
+mod auth;
 mod cache;
+mod circuit_breaker;
 mod config;
 mod dashboard;
 mod deploy;
 mod error;
+mod metrics;
 mod middleware;
 mod rate_limit;
 mod upload;
@@ -63,13 +67,28 @@ pub struct AppState {
     pub deployments: Arc<RwLock<Vec<Deployment>>>,
     pub github_auth: Arc<RwLock<Option<dashboard::GithubAuth>>>,
     pub github_oauth_state: Arc<RwLock<Option<String>>>,
+    /// Circuit breaker for IPFS operations
+    pub ipfs_circuit_breaker: Arc<circuit_breaker::CircuitBreaker>,
+    /// Audit logger for security events
+    pub audit_logger: Arc<audit::AuditLogger>,
 }
 
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
     let _ = dotenvy::from_filename("gateway/.env");
-    tracing_subscriber::fmt::init();
+
+    // Initialize structured logging
+    init_logging();
+
+    // Register Prometheus metrics
+    metrics::register_metrics();
+
+    // Validate GitHub OAuth environment variables
+    validate_github_env();
+
+    // Load authentication configuration
+    let auth_config = Arc::new(auth::AuthConfig::from_env());
 
     // Load configuration
     let config = match Config::load() {
@@ -83,6 +102,9 @@ async fn main() {
             Arc::new(Config::default())
         }
     };
+
+    // Warn about security configuration
+    validate_security_config(&config);
 
     // Initialize content cache
     let cache = Arc::new(ContentCache::with_config(
@@ -103,17 +125,31 @@ async fn main() {
     let storage = match StorageLayer::with_config(storage_config).await {
         Ok(s) => {
             println!("✅ Connected to IPFS daemon at {}", config.ipfs.api_url);
-            println!("   Timeout: {}s, Retries: {}", 
-                config.ipfs.timeout_seconds, 
+            println!("   Timeout: {}s, Retries: {}",
+                config.ipfs.timeout_seconds,
                 config.ipfs.retry_attempts);
+            metrics::set_ipfs_connected(true);
             Some(Arc::new(s))
         }
         Err(e) => {
             println!("⚠️  IPFS daemon not available: {}", e);
             println!("   Running in demo mode");
+            metrics::set_ipfs_connected(false);
             None
         }
     };
+
+    // Create circuit breaker for IPFS operations
+    // Opens after 5 consecutive failures, resets after 30 seconds
+    let ipfs_circuit_breaker = Arc::new(circuit_breaker::CircuitBreaker::new(
+        "ipfs",
+        5,  // failure threshold
+        Duration::from_secs(30),  // reset timeout
+    ));
+
+    // Create audit logger for security events
+    let audit_logger = Arc::new(audit::AuditLogger::new(10000)); // Keep last 10k events
+    println!("✓ Audit logging enabled");
 
     let state = AppState {
         storage,
@@ -124,6 +160,8 @@ async fn main() {
         deployments: Arc::new(RwLock::new(Vec::new())),
         github_auth: Arc::new(RwLock::new(None)),
         github_oauth_state: Arc::new(RwLock::new(None)),
+        ipfs_circuit_breaker,
+        audit_logger,
     };
 
     // Create rate limiter
@@ -140,6 +178,7 @@ async fn main() {
         .route("/dashboard", get(dashboard::dashboard_handler))
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/metrics/prometheus", get(prometheus_metrics_handler))
         // Deploy endpoints (Vercel-like)
         .route("/api/deploy", post(deploy::deploy_zip))
         .route("/api/deploy/info", get(deploy::deploy_info))
@@ -164,10 +203,11 @@ async fn main() {
 
     // Add middleware layers
     if config.security.cors_enabled {
-        let cors = if config.security.allowed_origins.contains(&"*".to_string()) {
+        let allowed_origins = config.security.get_allowed_origins();
+        let cors = if allowed_origins.contains(&"*".to_string()) {
             CorsLayer::permissive()
         } else {
-            let origins: Vec<_> = config.security.allowed_origins
+            let origins: Vec<_> = allowed_origins
                 .iter()
                 .filter_map(|o| o.parse().ok())
                 .collect();
@@ -180,6 +220,7 @@ async fn main() {
     }
 
     app = app
+        .layer(axum_middleware::from_fn(middleware::request_logging))
         .layer(axum_middleware::from_fn(middleware::security_headers))
         .layer(axum_middleware::from_fn(middleware::request_id))
         .layer(axum_middleware::from_fn(
@@ -194,6 +235,20 @@ async fn main() {
                 async move { limiter.check_rate_limit(req, next).await }
             },
         ));
+    }
+
+    // Add API key authentication middleware
+    if auth_config.is_enabled() {
+        let auth_config_clone = auth_config.clone();
+        app = app.layer(axum_middleware::from_fn(
+            move |req, next| {
+                let auth = auth_config_clone.clone();
+                async move { auth::api_key_auth(auth, req, next).await }
+            },
+        ));
+        println!("🔐 API authentication enabled");
+    } else {
+        println!("⚠️  API authentication DISABLED - all endpoints are public");
     }
 
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
@@ -614,20 +669,37 @@ async fn ipfs_content_path_handler(
     }
 }
 
-// Unified content fetching logic
+// Unified content fetching logic with circuit breaker protection
 async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String>) -> Response {
     state.metrics.increment_requests();
 
-    // Check cache first
+    // Check cache first (bypasses circuit breaker)
     if let Some((data, content_type)) = state.cache.get(&cid) {
         state.metrics.increment_success();
         state.metrics.add_bytes(data.len() as u64);
+        metrics::record_cache_hit();
         return (
             [
                 (axum::http::header::CONTENT_TYPE, content_type),
                 (axum::http::header::HeaderName::from_static("x-cache"), "HIT".to_string()),
             ],
             data
+        ).into_response();
+    }
+
+    metrics::record_cache_miss();
+
+    // Check circuit breaker before attempting IPFS operation
+    if !state.ipfs_circuit_breaker.allow_request() {
+        state.metrics.increment_error();
+        tracing::warn!(cid = %cid, "IPFS circuit breaker is open - failing fast");
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "IPFS service temporarily unavailable",
+                "code": "CIRCUIT_OPEN",
+                "retry_after_seconds": 30
+            }))
         ).into_response();
     }
 
@@ -642,22 +714,30 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
 
     let storage = Arc::clone(storage);
     let cid_clone = cid.clone();
-    
+    let start_time = std::time::Instant::now();
+
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
             storage.retrieve_content(&cid_clone).await
         })
     }).await;
 
+    let duration = start_time.elapsed();
+
     match result {
         Ok(Ok(data)) => {
+            // Record success with circuit breaker and metrics
+            state.ipfs_circuit_breaker.record_success();
+            metrics::record_ipfs_operation("retrieve", true, duration.as_secs_f64());
+
             let content_type = content_type_from_path(&cid, &data);
             let data = rewrite_html_assets(&data, &content_type, base_prefix.as_deref());
 
             state.cache.set(cid, data.clone(), content_type.clone());
-            
+
             state.metrics.increment_success();
             state.metrics.add_bytes(data.len() as u64);
+            metrics::record_bytes_served(data.len() as u64);
 
             (
                 [
@@ -668,14 +748,26 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
             ).into_response()
         }
         Ok(Err(e)) => {
+            // Record failure with circuit breaker
+            state.ipfs_circuit_breaker.record_failure();
+            metrics::record_ipfs_operation("retrieve", false, duration.as_secs_f64());
             state.metrics.increment_error();
+
+            tracing::warn!(cid = %cid, error = %e, "IPFS retrieval failed");
+
             (
                 axum::http::StatusCode::NOT_FOUND,
                 Html(format!(r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#, e))
             ).into_response()
         }
         Err(e) => {
+            // Record failure with circuit breaker (task panic/cancellation)
+            state.ipfs_circuit_breaker.record_failure();
+            metrics::record_ipfs_operation("retrieve", false, duration.as_secs_f64());
             state.metrics.increment_error();
+
+            tracing::error!(cid = %cid, error = %e, "IPFS retrieval task failed");
+
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 Html(format!(r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#, e))
@@ -835,4 +927,88 @@ async fn metrics_handler(State(state): State<AppState>) -> Json<MetricsResponse>
             ipfs_connected: state.storage.is_some(),
         },
     })
+}
+
+// ============================================
+// Prometheus Metrics Endpoint
+// ============================================
+
+async fn prometheus_metrics_handler() -> impl IntoResponse {
+    let body = metrics::encode_metrics();
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        body
+    )
+}
+
+// ============================================
+// Logging Initialization
+// ============================================
+
+fn init_logging() {
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    // Check if we should use JSON logging (for production)
+    let use_json = std::env::var("SHADOWMESH_LOG_FORMAT")
+        .map(|v| v.to_lowercase() == "json")
+        .unwrap_or(false);
+
+    if use_json {
+        // JSON format for production/log aggregation
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer().json())
+            .init();
+    } else {
+        // Pretty format for development
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt::layer().pretty())
+            .init();
+    }
+}
+
+// ============================================
+// Environment Validation Functions
+// ============================================
+
+/// Validate GitHub OAuth environment variables
+fn validate_github_env() {
+    let client_id = std::env::var("GITHUB_CLIENT_ID").ok();
+    let client_secret = std::env::var("GITHUB_CLIENT_SECRET").ok();
+
+    match (&client_id, &client_secret) {
+        (Some(id), Some(secret)) if !id.is_empty() && !secret.is_empty() => {
+            println!("✓ GitHub OAuth configured");
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            println!("⚠️  GitHub OAuth partially configured - both GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET required");
+            println!("   Dashboard GitHub integration will be disabled");
+        }
+        _ => {
+            println!("ℹ️  GitHub OAuth not configured");
+            println!("   Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET for GitHub integration");
+        }
+    }
+}
+
+/// Validate security configuration and warn about insecure settings
+fn validate_security_config(config: &Config) {
+    // Warn about permissive CORS
+    if config.security.cors_enabled && config.security.allowed_origins.contains(&"*".to_string()) {
+        println!("⚠️  SECURITY WARNING: CORS is set to allow all origins (*)");
+        println!("   This is NOT recommended for production!");
+        println!("   Set SHADOWMESH_SECURITY_ALLOWED_ORIGINS to specific origins");
+    }
+
+    // Warn about missing API keys
+    let api_keys = std::env::var("SHADOWMESH_API_KEYS").unwrap_or_default();
+    if api_keys.is_empty() {
+        println!("⚠️  SECURITY WARNING: No API keys configured");
+        println!("   All mutation endpoints are publicly accessible!");
+        println!("   Set SHADOWMESH_API_KEYS for production");
+    }
 }
