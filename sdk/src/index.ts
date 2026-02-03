@@ -110,7 +110,7 @@ export {
 } from './utils.js';
 
 // Legacy ShadowMesh class (for backwards compatibility)
-import { create } from '@web3-storage/w3up-client';
+import { create } from '@storacha/client';
 import fs from 'fs/promises';
 import path from 'path';
 
