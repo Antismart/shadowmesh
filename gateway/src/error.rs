@@ -6,6 +6,7 @@ use axum::{
 use serde_json::json;
 use thiserror::Error;
 
+#[allow(dead_code)]
 #[derive(Error, Debug)]
 pub enum GatewayError {
     #[error("IPFS error: {0}")]
