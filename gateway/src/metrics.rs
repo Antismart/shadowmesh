@@ -166,12 +166,14 @@ pub fn encode_metrics() -> String {
 }
 
 /// Helper for timing operations
+#[allow(dead_code)]
 pub struct Timer {
     start: Instant,
     histogram: &'static HistogramVec,
     labels: Vec<String>,
 }
 
+#[allow(dead_code)]
 impl Timer {
     pub fn new(histogram: &'static HistogramVec, labels: Vec<String>) -> Self {
         Self {
@@ -214,6 +216,7 @@ pub fn record_cache_miss() {
 }
 
 /// Update cache size
+#[allow(dead_code)]
 pub fn update_cache_size(entries: i64) {
     CACHE_SIZE_ENTRIES.set(entries);
 }
@@ -235,6 +238,7 @@ pub fn set_ipfs_connected(connected: bool) {
 }
 
 /// Record deployment
+#[allow(dead_code)]
 pub fn record_deployment(success: bool) {
     let status = if success { "success" } else { "error" };
     DEPLOYMENTS_TOTAL.with_label_values(&[status]).inc();
@@ -249,6 +253,7 @@ pub fn record_rate_limit_exceeded() {
 }
 
 /// Record auth failure
+#[allow(dead_code)]
 pub fn record_auth_failure(reason: &str) {
     AUTH_FAILURES_TOTAL.with_label_values(&[reason]).inc();
 }
