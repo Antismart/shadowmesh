@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shadowmesh-config
+data:
+  SHADOWMESH_IPFS_API_URL: "http://ipfs-service:5001"
+  SHADOWMESH_CACHE_MAX_SIZE_MB: "500"
+  SHADOWMESH_CACHE_TTL_SECONDS: "3600"
+  SHADOWMESH_RATE_LIMIT_ENABLED: "true"
+  SHADOWMESH_RATE_LIMIT_REQUESTS_PER_SECOND: "100"

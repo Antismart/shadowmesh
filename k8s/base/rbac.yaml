@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shadowmesh-gateway
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shadowmesh-gateway
+rules: []  # No special permissions needed
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shadowmesh-gateway
+subjects:
+  - kind: ServiceAccount
+    name: shadowmesh-gateway
+roleRef:
+  kind: Role
+  name: shadowmesh-gateway
+  apiGroup: rbac.authorization.k8s.io
