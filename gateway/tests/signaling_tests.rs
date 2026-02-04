@@ -84,7 +84,11 @@ mod signaling_state_tests {
             Ok(())
         }
 
-        async fn register_peer(&self, connection_id: &str, peer_id: &str) -> Result<(), &'static str> {
+        async fn register_peer(
+            &self,
+            connection_id: &str,
+            peer_id: &str,
+        ) -> Result<(), &'static str> {
             let mut connections = self.connections.write().await;
             let conn = connections
                 .get_mut(connection_id)
@@ -199,7 +203,12 @@ mod peer_discovery_tests {
             peers.insert(peer.peer_id.clone(), peer);
         }
 
-        async fn discover(&self, requester_id: &str, max_peers: usize, transport_filter: Option<&str>) -> Vec<PeerInfo> {
+        async fn discover(
+            &self,
+            requester_id: &str,
+            max_peers: usize,
+            transport_filter: Option<&str>,
+        ) -> Vec<PeerInfo> {
             let peers = self.peers.read().await;
             peers
                 .values()
@@ -224,19 +233,23 @@ mod peer_discovery_tests {
     async fn test_peer_discovery_excludes_self() {
         let registry = TestPeerRegistry::new();
 
-        registry.register(PeerInfo {
-            peer_id: "peer-1".to_string(),
-            multiaddrs: vec![],
-            transports: vec!["webrtc".to_string()],
-            last_seen: 0,
-        }).await;
+        registry
+            .register(PeerInfo {
+                peer_id: "peer-1".to_string(),
+                multiaddrs: vec![],
+                transports: vec!["webrtc".to_string()],
+                last_seen: 0,
+            })
+            .await;
 
-        registry.register(PeerInfo {
-            peer_id: "peer-2".to_string(),
-            multiaddrs: vec![],
-            transports: vec!["webrtc".to_string()],
-            last_seen: 0,
-        }).await;
+        registry
+            .register(PeerInfo {
+                peer_id: "peer-2".to_string(),
+                multiaddrs: vec![],
+                transports: vec!["webrtc".to_string()],
+                last_seen: 0,
+            })
+            .await;
 
         let discovered = registry.discover("peer-1", 10, None).await;
         assert_eq!(discovered.len(), 1);
@@ -247,19 +260,23 @@ mod peer_discovery_tests {
     async fn test_peer_discovery_with_transport_filter() {
         let registry = TestPeerRegistry::new();
 
-        registry.register(PeerInfo {
-            peer_id: "webrtc-peer".to_string(),
-            multiaddrs: vec![],
-            transports: vec!["webrtc".to_string()],
-            last_seen: 0,
-        }).await;
+        registry
+            .register(PeerInfo {
+                peer_id: "webrtc-peer".to_string(),
+                multiaddrs: vec![],
+                transports: vec!["webrtc".to_string()],
+                last_seen: 0,
+            })
+            .await;
 
-        registry.register(PeerInfo {
-            peer_id: "tcp-peer".to_string(),
-            multiaddrs: vec![],
-            transports: vec!["tcp".to_string()],
-            last_seen: 0,
-        }).await;
+        registry
+            .register(PeerInfo {
+                peer_id: "tcp-peer".to_string(),
+                multiaddrs: vec![],
+                transports: vec!["tcp".to_string()],
+                last_seen: 0,
+            })
+            .await;
 
         let webrtc_peers = registry.discover("requester", 10, Some("webrtc")).await;
         assert_eq!(webrtc_peers.len(), 1);
@@ -275,12 +292,14 @@ mod peer_discovery_tests {
         let registry = TestPeerRegistry::new();
 
         for i in 0..10 {
-            registry.register(PeerInfo {
-                peer_id: format!("peer-{}", i),
-                multiaddrs: vec![],
-                transports: vec!["webrtc".to_string()],
-                last_seen: 0,
-            }).await;
+            registry
+                .register(PeerInfo {
+                    peer_id: format!("peer-{}", i),
+                    multiaddrs: vec![],
+                    transports: vec!["webrtc".to_string()],
+                    last_seen: 0,
+                })
+                .await;
         }
 
         let discovered = registry.discover("requester", 5, None).await;
@@ -325,7 +344,13 @@ mod sdp_exchange_tests {
             }
         }
 
-        async fn create_session(&self, session_id: &str, initiator: &str, responder: &str, offer_sdp: &str) {
+        async fn create_session(
+            &self,
+            session_id: &str,
+            initiator: &str,
+            responder: &str,
+            offer_sdp: &str,
+        ) {
             let mut sessions = self.sessions.write().await;
             sessions.insert(
                 session_id.to_string(),
@@ -369,7 +394,9 @@ mod sdp_exchange_tests {
         let manager = TestSessionManager::new();
 
         // Create session with offer
-        manager.create_session("session-1", "peer-a", "peer-b", "v=0\r\n...offer...").await;
+        manager
+            .create_session("session-1", "peer-a", "peer-b", "v=0\r\n...offer...")
+            .await;
 
         let session = manager.get_session("session-1").await.unwrap();
         assert_eq!(session.state, SessionState::OfferSent);
@@ -377,7 +404,10 @@ mod sdp_exchange_tests {
         assert!(session.answer_sdp.is_none());
 
         // Set answer
-        manager.set_answer("session-1", "v=0\r\n...answer...").await.unwrap();
+        manager
+            .set_answer("session-1", "v=0\r\n...answer...")
+            .await
+            .unwrap();
 
         let session = manager.get_session("session-1").await.unwrap();
         assert_eq!(session.state, SessionState::AnswerReceived);
@@ -454,10 +484,11 @@ mod ice_candidate_tests {
 
     #[test]
     fn test_ice_candidate_with_metadata() {
-        let candidate = IceCandidate::parse("candidate:1 1 UDP 2122252543 192.168.1.100 12345 typ host")
-            .unwrap()
-            .with_sdp_mid("audio")
-            .with_mline_index(0);
+        let candidate =
+            IceCandidate::parse("candidate:1 1 UDP 2122252543 192.168.1.100 12345 typ host")
+                .unwrap()
+                .with_sdp_mid("audio")
+                .with_mline_index(0);
 
         assert_eq!(candidate.sdp_mid, Some("audio".to_string()));
         assert_eq!(candidate.sdp_mline_index, Some(0));
@@ -583,7 +614,11 @@ mod message_routing_tests {
             conns.get(peer_id).cloned()
         }
 
-        async fn route_message(&self, to_peer: &str, _message: &str) -> Result<String, &'static str> {
+        async fn route_message(
+            &self,
+            to_peer: &str,
+            _message: &str,
+        ) -> Result<String, &'static str> {
             self.get_connection(to_peer).await.ok_or("Peer not found")
         }
     }

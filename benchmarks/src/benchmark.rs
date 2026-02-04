@@ -59,18 +59,22 @@ fn bench_fragmentation(c: &mut Criterion) {
             })
         });
 
-        group.bench_with_input(BenchmarkId::new("fragment_with_hash", size), &data, |b, data| {
-            b.iter(|| {
-                let chunks: Vec<([u8; 32], &[u8])> = data
-                    .chunks(CHUNK_SIZE)
-                    .map(|chunk| {
-                        let hash = blake3::hash(chunk);
-                        (*hash.as_bytes(), chunk)
-                    })
-                    .collect();
-                black_box(chunks)
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("fragment_with_hash", size),
+            &data,
+            |b, data| {
+                b.iter(|| {
+                    let chunks: Vec<([u8; 32], &[u8])> = data
+                        .chunks(CHUNK_SIZE)
+                        .map(|chunk| {
+                            let hash = blake3::hash(chunk);
+                            (*hash.as_bytes(), chunk)
+                        })
+                        .collect();
+                    black_box(chunks)
+                })
+            },
+        );
     }
 
     group.finish();
@@ -99,12 +103,16 @@ fn bench_encryption(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(*size as u64));
 
-        group.bench_with_input(BenchmarkId::new("chacha20_encrypt", size), &data, |b, data| {
-            b.iter(|| {
-                let encrypted = cipher.encrypt(nonce, black_box(data.as_slice())).unwrap();
-                black_box(encrypted)
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("chacha20_encrypt", size),
+            &data,
+            |b, data| {
+                b.iter(|| {
+                    let encrypted = cipher.encrypt(nonce, black_box(data.as_slice())).unwrap();
+                    black_box(encrypted)
+                })
+            },
+        );
 
         // Prepare encrypted data for decryption benchmark
         let encrypted = cipher.encrypt(nonce, data.as_slice()).unwrap();
@@ -114,7 +122,9 @@ fn bench_encryption(c: &mut Criterion) {
             &encrypted,
             |b, encrypted| {
                 b.iter(|| {
-                    let decrypted = cipher.decrypt(nonce, black_box(encrypted.as_slice())).unwrap();
+                    let decrypted = cipher
+                        .decrypt(nonce, black_box(encrypted.as_slice()))
+                        .unwrap();
                     black_box(decrypted)
                 })
             },
@@ -198,12 +208,16 @@ fn bench_transport_overhead(c: &mut Criterion) {
             })
         });
 
-        group.bench_with_input(BenchmarkId::new("webrtc_overhead", size), &data, |b, data| {
-            b.iter(|| {
-                let total = simulate_webrtc_overhead(black_box(data.len()));
-                black_box(total)
-            })
-        });
+        group.bench_with_input(
+            BenchmarkId::new("webrtc_overhead", size),
+            &data,
+            |b, data| {
+                b.iter(|| {
+                    let total = simulate_webrtc_overhead(black_box(data.len()));
+                    black_box(total)
+                })
+            },
+        );
     }
 
     group.finish();
