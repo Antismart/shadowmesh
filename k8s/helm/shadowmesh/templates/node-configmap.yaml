@@ -1,0 +1,36 @@
+{{- if .Values.node.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "shadowmesh.fullname" . }}-node-config
+  labels:
+    {{- include "shadowmesh.node.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    [node]
+    data_dir = "{{ .Values.node.config.dataDir }}"
+    max_storage_gb = {{ .Values.node.config.maxStorageGb }}
+
+    [network]
+    listen_addr = "{{ .Values.node.config.listenAddr }}"
+    {{- if .Values.node.config.bootstrapPeers }}
+    bootstrap_peers = [{{ range $i, $peer := .Values.node.config.bootstrapPeers }}{{ if $i }}, {{ end }}"{{ $peer }}"{{ end }}]
+    {{- else }}
+    bootstrap_peers = []
+    {{- end }}
+
+    [replication]
+    factor = {{ .Values.node.config.replicationFactor }}
+    check_interval_secs = {{ .Values.node.config.replicationCheckIntervalSecs }}
+
+    [webrtc]
+    enabled = {{ .Values.node.config.webrtcEnabled }}
+    port = {{ .Values.node.config.webrtcPort }}
+
+    [webrtc.stun]
+    servers = [{{ range $i, $server := .Values.node.config.stunServers }}{{ if $i }}, {{ end }}"{{ $server }}"{{ end }}]
+
+    [dashboard]
+    enabled = {{ .Values.node.config.dashboardEnabled }}
+    port = {{ .Values.node.config.dashboardPort }}
+{{- end }}

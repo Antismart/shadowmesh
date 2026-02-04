@@ -1,0 +1,100 @@
+{{- if .Values.node.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "shadowmesh.fullname" . }}-node
+  labels:
+    {{- include "shadowmesh.node.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "shadowmesh.fullname" . }}-node
+  replicas: {{ .Values.node.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "shadowmesh.node.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/node-configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "shadowmesh.node.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: node
+          image: {{ include "shadowmesh.node.image" . }}
+          imagePullPolicy: {{ .Values.node.image.pullPolicy }}
+          ports:
+            - name: p2p
+              containerPort: 4001
+              protocol: TCP
+            - name: webrtc
+              containerPort: 4002
+              protocol: UDP
+            - name: dashboard
+              containerPort: {{ .Values.node.config.dashboardPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: dashboard
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: dashboard
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.node.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/shadowmesh
+              readOnly: true
+            - name: data
+              mountPath: {{ .Values.node.config.dataDir }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONFIG_PATH
+              value: /etc/shadowmesh/config.toml
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "shadowmesh.fullname" . }}-node-config
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.node.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          {{- toYaml .Values.node.persistence.accessModes | nindent 10 }}
+        {{- if .Values.node.persistence.storageClass }}
+        storageClassName: {{ .Values.node.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.node.persistence.size }}
+  {{- end }}
+{{- end }}

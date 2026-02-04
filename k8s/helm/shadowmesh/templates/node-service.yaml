@@ -1,0 +1,22 @@
+{{- if .Values.node.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shadowmesh.fullname" . }}-node
+  labels:
+    {{- include "shadowmesh.node.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.node.service.type }}
+  clusterIP: None  # Headless service for StatefulSet
+  ports:
+    - port: {{ .Values.node.service.p2pPort }}
+      targetPort: p2p
+      protocol: TCP
+      name: p2p
+    - port: {{ .Values.node.service.dashboardPort }}
+      targetPort: dashboard
+      protocol: TCP
+      name: dashboard
+  selector:
+    {{- include "shadowmesh.node.selectorLabels" . | nindent 4 }}
+{{- end }}

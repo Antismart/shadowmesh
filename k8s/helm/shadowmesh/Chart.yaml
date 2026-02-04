@@ -1,0 +1,18 @@
+apiVersion: v2
+name: shadowmesh
+description: A Helm chart for deploying ShadowMesh decentralized CDN
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - shadowmesh
+  - cdn
+  - decentralized
+  - p2p
+  - webrtc
+  - ipfs
+home: https://github.com/Antismart/shadowmesh
+sources:
+  - https://github.com/Antismart/shadowmesh
+maintainers:
+  - name: ShadowMesh Team

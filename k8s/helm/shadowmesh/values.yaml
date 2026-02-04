@@ -1,0 +1,158 @@
+# Default values for ShadowMesh
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Gateway configuration
+gateway:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: shadowmesh/gateway
+    tag: ""  # Defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: gateway.shadowmesh.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+
+  config:
+    # Server settings
+    host: "0.0.0.0"
+    port: 3000
+
+    # Cache settings
+    cacheMaxSizeMb: 512
+    cacheTtlSeconds: 3600
+
+    # Rate limiting
+    rateLimitEnabled: true
+    rateLimitRequestsPerSecond: 100
+    rateLimitBurstSize: 200
+
+    # CORS
+    corsEnabled: true
+    corsOrigins:
+      - "*"
+
+    # Signaling (WebRTC)
+    signalingEnabled: true
+    signalingMaxConnections: 1000
+    signalingSessionTimeoutSecs: 300
+
+    # Circuit breaker
+    circuitBreakerFailureThreshold: 5
+    circuitBreakerRecoveryTimeout: 30
+
+# Node runner configuration
+node:
+  enabled: true
+  replicaCount: 3
+
+  image:
+    repository: shadowmesh/node
+    tag: ""  # Defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    p2pPort: 4001
+    dashboardPort: 8080
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+
+  config:
+    # Storage settings
+    dataDir: /data
+    maxStorageGb: 10
+
+    # Network settings
+    listenAddr: /ip4/0.0.0.0/tcp/4001
+    bootstrapPeers: []
+
+    # Replication
+    replicationFactor: 3
+    replicationCheckIntervalSecs: 300
+
+    # WebRTC
+    webrtcEnabled: true
+    webrtcPort: 4002
+    stunServers:
+      - "stun:stun.l.google.com:19302"
+      - "stun:stun1.l.google.com:19302"
+
+    # Dashboard
+    dashboardEnabled: true
+    dashboardPort: 8080
+
+# Redis for distributed rate limiting (optional)
+redis:
+  enabled: false
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: false
+
+# ServiceMonitor for Prometheus (if using prometheus-operator)
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  scrapeTimeout: 10s
+  labels: {}
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Network policies
+networkPolicy:
+  enabled: false
+
+# Node selector, tolerations, and affinity
+nodeSelector: {}
+tolerations: []
+affinity: {}

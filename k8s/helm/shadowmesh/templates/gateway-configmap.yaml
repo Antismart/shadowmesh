@@ -1,0 +1,35 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "shadowmesh.fullname" . }}-gateway-config
+  labels:
+    {{- include "shadowmesh.gateway.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    [server]
+    host = "{{ .Values.gateway.config.host }}"
+    port = {{ .Values.gateway.config.port }}
+
+    [cache]
+    max_size_mb = {{ .Values.gateway.config.cacheMaxSizeMb }}
+    ttl_seconds = {{ .Values.gateway.config.cacheTtlSeconds }}
+
+    [rate_limit]
+    enabled = {{ .Values.gateway.config.rateLimitEnabled }}
+    requests_per_second = {{ .Values.gateway.config.rateLimitRequestsPerSecond }}
+    burst_size = {{ .Values.gateway.config.rateLimitBurstSize }}
+
+    [cors]
+    enabled = {{ .Values.gateway.config.corsEnabled }}
+    origins = [{{ range $i, $origin := .Values.gateway.config.corsOrigins }}{{ if $i }}, {{ end }}"{{ $origin }}"{{ end }}]
+
+    [signaling]
+    enabled = {{ .Values.gateway.config.signalingEnabled }}
+    max_connections = {{ .Values.gateway.config.signalingMaxConnections }}
+    session_timeout_secs = {{ .Values.gateway.config.signalingSessionTimeoutSecs }}
+
+    [circuit_breaker]
+    failure_threshold = {{ .Values.gateway.config.circuitBreakerFailureThreshold }}
+    recovery_timeout = {{ .Values.gateway.config.circuitBreakerRecoveryTimeout }}
+{{- end }}

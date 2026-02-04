@@ -1,0 +1,63 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your release is named {{ .Release.Name }}.
+
+{{- if .Values.gateway.enabled }}
+
+=== Gateway ===
+
+To access the gateway:
+
+{{- if .Values.gateway.ingress.enabled }}
+  The gateway is accessible at:
+  {{- range $host := .Values.gateway.ingress.hosts }}
+    http{{ if $.Values.gateway.ingress.tls }}s{{ end }}://{{ $host.host }}
+  {{- end }}
+{{- else if contains "NodePort" .Values.gateway.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "shadowmesh.fullname" . }}-gateway)
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo "Gateway URL: http://$NODE_IP:$NODE_PORT"
+{{- else if contains "LoadBalancer" .Values.gateway.service.type }}
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+  You can watch the status with:
+    kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "shadowmesh.fullname" . }}-gateway
+{{- else if contains "ClusterIP" .Values.gateway.service.type }}
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "shadowmesh.fullname" . }}-gateway {{ .Values.gateway.service.port }}:{{ .Values.gateway.service.port }}
+  echo "Gateway URL: http://127.0.0.1:{{ .Values.gateway.service.port }}"
+{{- end }}
+
+WebRTC Signaling WebSocket:
+  ws://{{ include "shadowmesh.fullname" . }}-gateway:{{ .Values.gateway.service.port }}/ws/signaling
+
+{{- end }}
+
+{{- if .Values.node.enabled }}
+
+=== P2P Nodes ===
+
+{{ .Values.node.replicaCount }} node(s) are being deployed as a StatefulSet.
+
+To check node status:
+  kubectl get pods -l app.kubernetes.io/component=node -n {{ .Release.Namespace }}
+
+To view node dashboard:
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "shadowmesh.fullname" . }}-node {{ .Values.node.service.dashboardPort }}:{{ .Values.node.service.dashboardPort }}
+  echo "Dashboard: http://127.0.0.1:{{ .Values.node.service.dashboardPort }}"
+
+{{- end }}
+
+=== Useful Commands ===
+
+# Check all pods
+kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+# View gateway logs
+kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/component=gateway -f
+
+# View node logs
+kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/component=node -f
+
+# Get metrics
+curl http://localhost:{{ .Values.gateway.service.port }}/metrics
+
+For more information, visit: https://github.com/Antismart/shadowmesh

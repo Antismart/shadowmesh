@@ -1,0 +1,29 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- if .Values.gateway.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "shadowmesh.fullname" . }}-gateway
+  labels:
+    {{- include "shadowmesh.gateway.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "shadowmesh.gateway.selectorLabels" . | nindent 6 }}
+{{- end }}
+---
+{{- if .Values.node.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "shadowmesh.fullname" . }}-node
+  labels:
+    {{- include "shadowmesh.node.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "shadowmesh.node.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- end }}
