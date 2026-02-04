@@ -456,9 +456,16 @@ checksum = "7d809780667f4410e7c41b07f52439b94d2bdf8528eeedc287fa38d3b7f95d82"
 name = "benchmarks"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "chacha20poly1305",
  "criterion",
+ "hex",
  "protocol",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
