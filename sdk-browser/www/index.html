@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShadowMesh Browser SDK Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(90deg, #00d4ff, #7c3aed);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            color: #888;
+            font-size: 1.1rem;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card h2 {
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+            color: #00d4ff;
+        }
+
+        .status-bar {
+            display: flex;
+            gap: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #666;
+        }
+
+        .status-dot.connected {
+            background: #00ff88;
+            box-shadow: 0 0 10px #00ff88;
+        }
+
+        .status-dot.disconnected {
+            background: #ff4444;
+        }
+
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #aaa;
+            font-size: 0.9rem;
+        }
+
+        input, textarea {
+            width: 100%;
+            padding: 0.75rem;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: #fff;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.9rem;
+        }
+
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(90deg, #00d4ff, #7c3aed);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(0, 212, 255, 0.3);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: #e0e0e0;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .log-container {
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 8px;
+            padding: 1rem;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+        }
+
+        .log-entry {
+            margin-bottom: 0.5rem;
+            padding: 0.25rem 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .log-entry .time {
+            color: #666;
+            margin-right: 0.5rem;
+        }
+
+        .log-entry.info { color: #00d4ff; }
+        .log-entry.success { color: #00ff88; }
+        .log-entry.error { color: #ff4444; }
+        .log-entry.warn { color: #ffaa00; }
+
+        .result-box {
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 1rem;
+            word-break: break-all;
+        }
+
+        .result-box.hidden {
+            display: none;
+        }
+
+        .peers-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .peer-badge {
+            background: rgba(0, 212, 255, 0.2);
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 3rem;
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        footer a {
+            color: #00d4ff;
+            text-decoration: none;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 0.5rem;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ShadowMesh</h1>
+            <p class="subtitle">Browser SDK Demo - WebRTC P2P Content Delivery</p>
+        </header>
+
+        <!-- Connection Status -->
+        <div class="card">
+            <h2>Connection Status</h2>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="status-dot" id="signaling-status"></span>
+                    <span>Signaling Server</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-dot" id="network-status"></span>
+                    <span>P2P Network</span>
+                </div>
+                <div class="status-item">
+                    <span>Peer ID: <code id="peer-id">-</code></span>
+                </div>
+                <div class="status-item">
+                    <span>Peers: <code id="peer-count">0</code></span>
+                </div>
+            </div>
+            <div class="button-group">
+                <button class="btn btn-primary" id="connect-btn" onclick="connect()">Connect</button>
+                <button class="btn btn-danger" id="disconnect-btn" onclick="disconnect()" disabled>Disconnect</button>
+            </div>
+        </div>
+
+        <!-- Configuration -->
+        <div class="card">
+            <h2>Configuration</h2>
+            <div class="form-group">
+                <label for="signaling-url">Signaling Server URL</label>
+                <input type="text" id="signaling-url" value="ws://localhost:3000/ws/signaling" placeholder="wss://gateway.example.com/ws/signaling">
+            </div>
+            <div class="form-group">
+                <label for="gateway-url">Gateway URL (HTTP fallback)</label>
+                <input type="text" id="gateway-url" value="http://localhost:3000" placeholder="https://gateway.example.com">
+            </div>
+        </div>
+
+        <!-- Peer Discovery -->
+        <div class="card">
+            <h2>Peer Discovery</h2>
+            <p style="color: #888; margin-bottom: 1rem;">Discover and connect to other peers in the network.</p>
+            <div class="peers-list" id="peers-list">
+                <span style="color: #666;">No peers discovered</span>
+            </div>
+            <div class="button-group">
+                <button class="btn btn-secondary" onclick="discoverPeers()" id="discover-btn" disabled>Discover Peers</button>
+            </div>
+        </div>
+
+        <!-- Fetch Content -->
+        <div class="card">
+            <h2>Fetch Content</h2>
+            <div class="form-group">
+                <label for="cid-input">Content ID (CID)</label>
+                <input type="text" id="cid-input" placeholder="bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi">
+            </div>
+            <div class="button-group">
+                <button class="btn btn-primary" onclick="fetchContent()" id="fetch-btn" disabled>Fetch via P2P</button>
+                <button class="btn btn-secondary" onclick="fetchHttpFallback()" id="fetch-http-btn">Fetch via HTTP</button>
+            </div>
+            <div class="result-box hidden" id="fetch-result">
+                <strong>Result:</strong>
+                <pre id="fetch-result-content"></pre>
+            </div>
+        </div>
+
+        <!-- Activity Log -->
+        <div class="card">
+            <h2>Activity Log</h2>
+            <div class="log-container" id="log-container">
+                <div class="log-entry info">
+                    <span class="time">[00:00:00]</span>
+                    ShadowMesh Browser SDK Demo loaded
+                </div>
+            </div>
+            <div class="button-group">
+                <button class="btn btn-secondary" onclick="clearLog()">Clear Log</button>
+            </div>
+        </div>
+
+        <footer>
+            <p>
+                ShadowMesh Browser SDK v<span id="sdk-version">0.1.0</span> |
+                <a href="https://github.com/Antismart/shadowmesh" target="_blank">GitHub</a> |
+                <a href="/docs/webrtc-setup.html" target="_blank">Documentation</a>
+            </p>
+        </footer>
+    </div>
+
+    <script type="module">
+        // Import the WASM module
+        // In production, this would be: import init, { ShadowMeshClient, ClientConfig } from '@shadowmesh/browser';
+
+        let client = null;
+        let connected = false;
+
+        // Expose functions to window for onclick handlers
+        window.connect = connect;
+        window.disconnect = disconnect;
+        window.discoverPeers = discoverPeers;
+        window.fetchContent = fetchContent;
+        window.fetchHttpFallback = fetchHttpFallback;
+        window.clearLog = clearLog;
+
+        function log(message, type = 'info') {
+            const container = document.getElementById('log-container');
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.innerHTML = `<span class="time">[${time}]</span> ${message}`;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function clearLog() {
+            const container = document.getElementById('log-container');
+            container.innerHTML = '';
+            log('Log cleared');
+        }
+
+        function updateUI() {
+            const connectBtn = document.getElementById('connect-btn');
+            const disconnectBtn = document.getElementById('disconnect-btn');
+            const discoverBtn = document.getElementById('discover-btn');
+            const fetchBtn = document.getElementById('fetch-btn');
+            const signalingStatus = document.getElementById('signaling-status');
+            const networkStatus = document.getElementById('network-status');
+
+            if (connected) {
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                discoverBtn.disabled = false;
+                fetchBtn.disabled = false;
+                signalingStatus.className = 'status-dot connected';
+                networkStatus.className = 'status-dot connected';
+            } else {
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                discoverBtn.disabled = true;
+                fetchBtn.disabled = true;
+                signalingStatus.className = 'status-dot disconnected';
+                networkStatus.className = 'status-dot disconnected';
+            }
+        }
+
+        async function connect() {
+            const signalingUrl = document.getElementById('signaling-url').value;
+            const gatewayUrl = document.getElementById('gateway-url').value;
+
+            log(`Connecting to signaling server: ${signalingUrl}...`);
+
+            try {
+                // Note: In production, you would use the actual WASM module
+                // const { ShadowMeshClient, ClientConfig } = await import('./pkg/shadowmesh_browser.js');
+                // await init();
+                // const config = new ClientConfig(signalingUrl);
+                // config.setGatewayUrl(gatewayUrl);
+                // client = new ShadowMeshClient(config);
+                // await client.connect();
+
+                // Demo mode - simulate connection
+                await simulateConnection();
+
+                connected = true;
+                document.getElementById('peer-id').textContent = generatePeerId();
+                updateUI();
+                log('Connected to ShadowMesh network', 'success');
+            } catch (error) {
+                log(`Connection failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function disconnect() {
+            log('Disconnecting from network...');
+
+            try {
+                if (client) {
+                    client.disconnect();
+                }
+                connected = false;
+                document.getElementById('peer-id').textContent = '-';
+                document.getElementById('peer-count').textContent = '0';
+                document.getElementById('peers-list').innerHTML = '<span style="color: #666;">No peers discovered</span>';
+                updateUI();
+                log('Disconnected', 'warn');
+            } catch (error) {
+                log(`Disconnect error: ${error.message}`, 'error');
+            }
+        }
+
+        async function discoverPeers() {
+            log('Discovering peers...');
+
+            try {
+                // In production: const peers = await client.discoverPeers();
+                const peers = await simulateDiscoverPeers();
+
+                const peersList = document.getElementById('peers-list');
+                if (peers.length > 0) {
+                    peersList.innerHTML = peers.map(peer =>
+                        `<span class="peer-badge" onclick="connectToPeer('${peer}')">${peer.slice(0, 12)}...</span>`
+                    ).join('');
+                    document.getElementById('peer-count').textContent = peers.length;
+                    log(`Discovered ${peers.length} peers`, 'success');
+                } else {
+                    peersList.innerHTML = '<span style="color: #666;">No peers available</span>';
+                    log('No peers found', 'warn');
+                }
+            } catch (error) {
+                log(`Peer discovery failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function fetchContent() {
+            const cid = document.getElementById('cid-input').value;
+            if (!cid) {
+                log('Please enter a CID', 'warn');
+                return;
+            }
+
+            log(`Fetching content via P2P: ${cid.slice(0, 20)}...`);
+            document.getElementById('fetch-btn').disabled = true;
+            document.getElementById('fetch-btn').innerHTML = '<span class="loading"></span>Fetching...';
+
+            try {
+                // In production: const data = await client.fetch(cid);
+                const data = await simulateFetch(cid, 'p2p');
+
+                showResult(data);
+                log(`Content fetched via P2P: ${data.length} bytes`, 'success');
+            } catch (error) {
+                log(`P2P fetch failed: ${error.message}`, 'error');
+            } finally {
+                document.getElementById('fetch-btn').disabled = false;
+                document.getElementById('fetch-btn').innerHTML = 'Fetch via P2P';
+            }
+        }
+
+        async function fetchHttpFallback() {
+            const cid = document.getElementById('cid-input').value;
+            const gatewayUrl = document.getElementById('gateway-url').value;
+
+            if (!cid) {
+                log('Please enter a CID', 'warn');
+                return;
+            }
+
+            log(`Fetching content via HTTP: ${gatewayUrl}/ipfs/${cid.slice(0, 20)}...`);
+
+            try {
+                const response = await fetch(`${gatewayUrl}/ipfs/${cid}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.arrayBuffer();
+                showResult(new Uint8Array(data));
+                log(`Content fetched via HTTP: ${data.byteLength} bytes`, 'success');
+            } catch (error) {
+                log(`HTTP fetch failed: ${error.message}`, 'error');
+            }
+        }
+
+        function showResult(data) {
+            const resultBox = document.getElementById('fetch-result');
+            const resultContent = document.getElementById('fetch-result-content');
+            resultBox.classList.remove('hidden');
+
+            // Try to decode as text, otherwise show hex
+            try {
+                const text = new TextDecoder().decode(data);
+                if (text.length < 1000) {
+                    resultContent.textContent = text;
+                } else {
+                    resultContent.textContent = text.slice(0, 1000) + '... (truncated)';
+                }
+            } catch {
+                resultContent.textContent = `Binary data: ${data.length} bytes`;
+            }
+        }
+
+        // Simulation functions for demo mode
+        function generatePeerId() {
+            return 'peer-' + Array.from(crypto.getRandomValues(new Uint8Array(8)))
+                .map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function simulateConnection() {
+            return new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        async function simulateDiscoverPeers() {
+            await new Promise(resolve => setTimeout(resolve, 300));
+            return [
+                generatePeerId(),
+                generatePeerId(),
+                generatePeerId(),
+            ];
+        }
+
+        async function simulateFetch(cid, method) {
+            await new Promise(resolve => setTimeout(resolve, 800));
+            return new TextEncoder().encode(`Demo content for CID: ${cid}\nFetched via: ${method}\nTimestamp: ${new Date().toISOString()}`);
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            log('Ready to connect to ShadowMesh network');
+            updateUI();
+        });
+    </script>
+</body>
+</html>
