@@ -100,7 +100,7 @@ jobs:
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ github.sha }}
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway@${{ steps.build.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
 
@@ -121,7 +121,7 @@ jobs:
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ github.sha }}
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway@${{ needs.docker-build.outputs.image-digest }}
           format: 'sarif'
           output: 'trivy-results.sarif'
         continue-on-error: true
