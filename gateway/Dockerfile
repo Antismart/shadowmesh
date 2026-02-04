@@ -12,6 +12,7 @@ COPY protocol ./protocol
 COPY gateway ./gateway
 COPY node-runner ./node-runner
 COPY benchmarks ./benchmarks
+COPY sdk-browser ./sdk-browser
 
 # Build release binary
 RUN cargo build --release -p gateway
