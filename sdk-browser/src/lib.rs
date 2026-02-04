@@ -1,6 +1,10 @@
 //! ShadowMesh Browser SDK
 //!
 //! WebRTC-enabled browser client for the ShadowMesh decentralized CDN.
+
+// Allow dead code - this is a library where many items are exported for JS use
+#![allow(dead_code)]
+#![allow(unused_imports)]
 //!
 //! # Example
 //!
