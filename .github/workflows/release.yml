@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.1.0)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: linux-amd64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: darwin-amd64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install protobuf
+
+      - name: Build gateway
+        run: cargo build --release --target ${{ matrix.target }} -p gateway
+
+      - name: Build node-runner
+        run: cargo build --release --target ${{ matrix.target }} -p node-runner
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/gateway dist/shadowmesh-gateway-${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/node-runner dist/shadowmesh-node-${{ matrix.name }}
+          chmod +x dist/*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.name }}
+          path: dist/
+
+  build-wasm:
+    name: Build WASM SDK
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        working-directory: sdk-browser
+        run: wasm-pack build --target web --out-dir pkg --release
+
+      - name: Package WASM
+        run: |
+          cd sdk-browser
+          tar -czvf ../shadowmesh-browser-wasm.tar.gz pkg/
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-sdk
+          path: shadowmesh-browser-wasm.tar.gz
+
+  create-release:
+    name: Create Release
+    needs: [build-binaries, build-wasm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir release
+          # Binaries
+          cp artifacts/binaries-linux-amd64/* release/
+          cp artifacts/binaries-darwin-amd64/* release/
+          cp artifacts/binaries-darwin-arm64/* release/
+          # WASM
+          cp artifacts/wasm-sdk/shadowmesh-browser-wasm.tar.gz release/
+          # Generate checksums
+          cd release && sha256sum * > checksums.txt
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ShadowMesh ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          files: release/*
+          body: |
+            ## ShadowMesh ${{ steps.version.outputs.version }}
+
+            ### Downloads
+
+            | Platform | Binary |
+            |----------|--------|
+            | Linux (x86_64) | `shadowmesh-gateway-linux-amd64`, `shadowmesh-node-linux-amd64` |
+            | macOS (Intel) | `shadowmesh-gateway-darwin-amd64`, `shadowmesh-node-darwin-amd64` |
+            | macOS (Apple Silicon) | `shadowmesh-gateway-darwin-arm64`, `shadowmesh-node-darwin-arm64` |
+            | Browser (WASM) | `shadowmesh-browser-wasm.tar.gz` |
+
+            ### Installation
+
+            ```bash
+            # Download and extract
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/shadowmesh-gateway-linux-amd64
+            chmod +x shadowmesh-gateway-linux-amd64
+            ./shadowmesh-gateway-linux-amd64
+            ```
+
+            ### WASM SDK
+
+            ```bash
+            # Extract WASM package
+            tar -xzvf shadowmesh-browser-wasm.tar.gz
+            # Import in your project
+            ```
+
+            See [changelog](CHANGELOG.md) for full release notes.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
