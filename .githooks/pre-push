@@ -1,0 +1,14 @@
+#!/bin/bash
+# Git pre-push hook - runs CI checks before pushing
+# Install with: git config core.hooksPath .githooks
+
+set -e
+
+echo "Running pre-push checks..."
+
+# Quick checks only (full tests can take too long)
+cargo fmt --all -- --check || { echo "❌ Format check failed. Run: cargo fmt --all"; exit 1; }
+cargo clippy --workspace --all-targets -- -D warnings -A dead_code -A unused || { echo "❌ Clippy failed"; exit 1; }
+cargo test --workspace || { echo "❌ Tests failed"; exit 1; }
+
+echo "✓ All pre-push checks passed!"
