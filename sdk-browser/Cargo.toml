@@ -44,6 +44,12 @@ web-sys = { version = "0.3", features = [
     "EventTarget",
     # Crypto
     "Crypto",
+    # Fetch API
+    "Response",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "RequestMode",
 ]}
 
 # Error handling for WASM
