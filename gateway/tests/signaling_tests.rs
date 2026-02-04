@@ -4,6 +4,7 @@
 //! and connection establishment.
 
 #![allow(dead_code)]
+#![allow(unused_imports)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
