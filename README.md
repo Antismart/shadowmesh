@@ -2,8 +2,11 @@
 
 **A privacy-first decentralized CDN powered by libp2p**
 
+[![CI](https://github.com/Antismart/shadowmesh/actions/workflows/ci.yml/badge.svg)](https://github.com/Antismart/shadowmesh/actions/workflows/ci.yml)
+[![CD](https://github.com/Antismart/shadowmesh/actions/workflows/cd.yml/badge.svg)](https://github.com/Antismart/shadowmesh/actions/workflows/cd.yml)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0+-blue.svg)](https://www.typescriptlang.org)
+[![WebRTC](https://img.shields.io/badge/webrtc-enabled-brightgreen.svg)](docs/webrtc-setup.md)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ShadowMesh is a decentralized content delivery network that combines IPFS-style content addressing with onion routing for enhanced privacy. Content is fragmented, encrypted, and distributed across a peer-to-peer network, making it resilient and censorship-resistant.
@@ -16,30 +19,35 @@ ShadowMesh is a decentralized content delivery network that combines IPFS-style 
 - **⚡ High Performance**: BLAKE3 hashing, ChaCha20-Poly1305 encryption, and multi-path routing
 - **🔄 Automatic Replication**: Content is replicated across multiple nodes for reliability
 - **📊 Bandwidth Tracking**: Built-in metrics and rate limiting for fair resource usage
+- **🌐 WebRTC Support**: Browser-to-node P2P connections via WebRTC DataChannels
+- **📱 Browser SDK**: WASM-based client for direct browser integration
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        ShadowMesh                                │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
-│  │   Gateway   │  │ Node Runner │  │     SDK     │             │
-│  │  (HTTP API) │  │  (P2P Node) │  │ (TypeScript)│             │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘             │
-│         │                │                │                     │
-│         └────────────────┼────────────────┘                     │
-│                          │                                      │
-│  ┌───────────────────────┴───────────────────────┐             │
-│  │              Protocol Layer                    │             │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐         │             │
-│  │  │ Crypto  │ │   DHT   │ │ Routing │         │             │
-│  │  └─────────┘ └─────────┘ └─────────┘         │             │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐         │             │
-│  │  │Fragment │ │Replicate│ │Bandwidth│         │             │
-│  │  └─────────┘ └─────────┘ └─────────┘         │             │
-│  └───────────────────────────────────────────────┘             │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                           ShadowMesh                                  │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                       │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐                │
+│  │   Browser   │   │   Gateway   │   │ Node Runner │                │
+│  │  (WASM SDK) │   │  (HTTP API) │   │  (P2P Node) │                │
+│  └──────┬──────┘   └──────┬──────┘   └──────┬──────┘                │
+│         │                 │                 │                        │
+│         │    WebRTC      ┌┴─────────────────┤                        │
+│         └───────────────►│   Signaling     │◄─── TCP/libp2p         │
+│                          └─────────────────┘                         │
+│                                  │                                   │
+│  ┌───────────────────────────────┴───────────────────────────────┐  │
+│  │                      Protocol Layer                            │  │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐             │  │
+│  │  │ Crypto  │ │   DHT   │ │ Routing │ │ WebRTC  │             │  │
+│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘             │  │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐             │  │
+│  │  │Fragment │ │Replicate│ │Bandwidth│ │Signaling│             │  │
+│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘             │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 🚀 Quick Start
@@ -94,6 +102,33 @@ const retrieved = await client.retrieve(cid);
 console.log(new TextDecoder().decode(retrieved));
 ```
 
+### Browser SDK (WebRTC)
+
+```javascript
+import init, { ShadowMeshClient, ClientConfig } from '@shadowmesh/browser';
+
+// Initialize WASM
+await init();
+
+// Configure client
+const config = new ClientConfig('wss://gateway.example.com/ws/signaling');
+config.setGatewayUrl('https://gateway.example.com');
+config.setMaxPeers(5);
+
+// Create and connect
+const client = new ShadowMeshClient(config);
+await client.connect();
+
+// Fetch content via P2P (with HTTP fallback)
+const data = await client.fetch('bafybeigdyrzt5sfp7...');
+console.log('Content:', new TextDecoder().decode(data));
+
+// Disconnect
+client.disconnect();
+```
+
+See [WebRTC Setup Guide](docs/webrtc-setup.md) for detailed configuration.
+
 ### CLI Usage
 
 ```bash
@@ -115,9 +150,10 @@ npx shadowmesh stats
 | Component | Description | Port |
 |-----------|-------------|------|
 | `protocol` | Core P2P protocol library | - |
-| `gateway` | HTTP API server | 3000 |
+| `gateway` | HTTP API server with signaling | 3000 |
 | `node-runner` | Full P2P node with dashboard | 8080 |
 | `sdk` | TypeScript client library | - |
+| `sdk-browser` | WASM browser SDK with WebRTC | - |
 | `benchmarks` | Performance benchmarks | - |
 
 ## 🔧 Configuration
@@ -172,7 +208,9 @@ port = 8080
 - [Architecture Guide](docs/architecture.md)
 - [API Reference](docs/api-reference.md)
 - [SDK Guide](docs/sdk-guide.md)
+- [WebRTC Setup Guide](docs/webrtc-setup.md)
 - [Deployment Guide](docs/deployment.md)
+- [Monitoring Runbook](docs/runbooks/monitoring-alerting.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## 🧪 Testing
