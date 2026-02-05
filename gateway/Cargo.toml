@@ -23,7 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tracing = "0.1"
 
 # Metrics
-prometheus = "0.13"
+prometheus = "0.14"
 lazy_static = "1.4"
 
 config = "0.14"
