@@ -23,7 +23,7 @@ cors_enabled = true
 # Override with SHADOWMESH_SECURITY_ALLOWED_ORIGINS env var
 # Example: allowed_origins = ["https://example.com", "https://app.example.com"]
 allowed_origins = []
-max_request_size_mb = 100
+max_request_size_mb = 10
 
 [monitoring]
 metrics_enabled = true
@@ -37,7 +37,7 @@ reset_timeout_seconds = 30
 
 [deploy]
 # Maximum deployment size in MB
-max_size_mb = 100
+max_size_mb = 50
 
 [redis]
 # Enable Redis for persistence and distributed rate limiting
