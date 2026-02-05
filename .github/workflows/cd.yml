@@ -97,12 +97,19 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
 
+      - name: Debug image info
+        run: |
+          echo "Image digest: ${{ steps.build.outputs.digest }}"
+          echo "Image tags: ${{ steps.meta.outputs.tags }}"
+          echo "Image version: ${{ steps.meta.outputs.version }}"
+
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway@${{ steps.build.outputs.digest }}
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ steps.meta.outputs.version }}
           format: spdx-json
           output-file: sbom.spdx.json
+        continue-on-error: true
 
       - name: Upload SBOM
         uses: actions/upload-artifact@v4
