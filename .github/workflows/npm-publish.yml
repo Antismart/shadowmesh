@@ -1,0 +1,169 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (leave empty to use package.json version)'
+        required: false
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  build-and-publish:
+    name: Build and Publish WASM SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk-browser
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-wasm-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build WASM package
+        run: |
+          wasm-pack build --target web --out-dir pkg --release
+          echo "Built WASM package:"
+          ls -la pkg/
+
+      - name: Update version from release tag
+        if: github.event_name == 'release'
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          # Remove 'v' prefix if present
+          VERSION="${VERSION#v}"
+          echo "Setting version to $VERSION"
+          cd pkg
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Update version from input
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.version != ''
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${VERSION#v}"
+          echo "Setting version to $VERSION"
+          cd pkg
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Copy package metadata
+        run: |
+          # Copy README and LICENSE to pkg
+          cp ../README.md pkg/ || true
+          cp ../LICENSE pkg/ || true
+
+          # Update package.json with full metadata
+          cd pkg
+          npm pkg set repository.type="git"
+          npm pkg set repository.url="https://github.com/Antismart/shadowmesh"
+          npm pkg set bugs.url="https://github.com/Antismart/shadowmesh/issues"
+          npm pkg set homepage="https://github.com/Antismart/shadowmesh#readme"
+          npm pkg set keywords='["shadowmesh", "webrtc", "p2p", "decentralized", "cdn", "wasm", "browser", "ipfs"]'
+
+      - name: Verify package
+        run: |
+          cd pkg
+          echo "Package contents:"
+          ls -la
+          echo ""
+          echo "Package.json:"
+          cat package.json
+          echo ""
+          npm pack --dry-run
+
+      - name: Publish to npm
+        run: |
+          cd pkg
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create publish summary
+        run: |
+          {
+            echo "## NPM Publish Summary"
+            echo ""
+            echo "**Package:** @shadowmesh/browser"
+            echo "**Version:** $(cd pkg && node -p 'require("./package.json").version')"
+            echo ""
+            echo "Install with:"
+            echo "\`\`\`bash"
+            echo "npm install @shadowmesh/browser"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Also publish to GitHub Packages
+  publish-github:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    needs: build-and-publish
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: sdk-browser
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Setup Node.js for GitHub Packages
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@shadowmesh'
+
+      - name: Build WASM package
+        run: wasm-pack build --target web --out-dir pkg --release
+
+      - name: Update version from release tag
+        if: github.event_name == 'release'
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          cd pkg
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Publish to GitHub Packages
+        run: |
+          cd pkg
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true  # Don't fail if GitHub Packages publish fails
