@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use crate::lock_utils::{read_lock, write_lock};
 use crate::redis_client::RedisClient;
 
 /// Stored API key metadata (key itself is never stored, only hash)
@@ -239,7 +240,7 @@ impl ApiKeyManager {
 
         // Also store locally for fast lookups
         {
-            let mut store = self.local_store.write().unwrap();
+            let mut store = write_lock(&self.local_store);
             store.add(key.clone());
         }
 
@@ -264,7 +265,7 @@ impl ApiKeyManager {
             }
             Ok(keys)
         } else {
-            let store = self.local_store.read().unwrap();
+            let store = read_lock(&self.local_store);
             Ok(store.list().iter().map(|k| ApiKeyInfo::from(*k)).collect())
         }
     }
@@ -278,7 +279,7 @@ impl ApiKeyManager {
                 .await
                 .map_err(|e| ApiKeyError::Storage(e.to_string()))
         } else {
-            let store = self.local_store.read().unwrap();
+            let store = read_lock(&self.local_store);
             Ok(store.get_by_id(id).cloned())
         }
     }
@@ -290,7 +291,7 @@ impl ApiKeyManager {
 
         // Check local store first for speed
         {
-            let store = self.local_store.read().unwrap();
+            let store = read_lock(&self.local_store);
             if let Some(key) = store.get_by_hash(&key_hash) {
                 if key.is_valid() {
                     return Some(key.clone());
@@ -308,7 +309,7 @@ impl ApiKeyManager {
                     if key.key_hash == key_hash && key.is_valid() {
                         // Update local store
                         {
-                            let mut store = self.local_store.write().unwrap();
+                            let mut store = write_lock(&self.local_store);
                             store.add(key.clone());
                         }
 
@@ -339,7 +340,7 @@ impl ApiKeyManager {
 
                 // Update local store
                 {
-                    let mut store = self.local_store.write().unwrap();
+                    let mut store = write_lock(&self.local_store);
                     if let Some(local_key) = store.get_by_id_mut(id) {
                         local_key.enabled = false;
                     }
@@ -349,7 +350,7 @@ impl ApiKeyManager {
                 return Ok(true);
             }
         } else {
-            let mut store = self.local_store.write().unwrap();
+            let mut store = write_lock(&self.local_store);
             if let Some(key) = store.get_by_id_mut(id) {
                 key.enabled = false;
                 tracing::info!(key_id = %id, "Revoked API key");
@@ -376,7 +377,7 @@ impl ApiKeyManager {
 
         // Remove from local store
         {
-            let mut store = self.local_store.write().unwrap();
+            let mut store = write_lock(&self.local_store);
             store.remove(id);
         }
 
@@ -404,7 +405,7 @@ impl ApiKeyManager {
 
         // Update local store
         {
-            let mut store = self.local_store.write().unwrap();
+            let mut store = write_lock(&self.local_store);
             store.update_hash(id, &old_hash, key.key_hash.clone());
             if let Some(local_key) = store.get_by_id_mut(id) {
                 local_key.key_hash = key.key_hash;
