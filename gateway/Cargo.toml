@@ -36,7 +36,7 @@ dotenvy = "0.15"
 rand = "0.8"
 
 # Redis for persistence and distributed rate limiting
-redis = { version = "0.25", features = ["tokio-comp", "connection-manager", "aio"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "aio"] }
 
 # OpenTelemetry for distributed tracing
 opentelemetry = "0.21"
