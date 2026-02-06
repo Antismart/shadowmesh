@@ -321,7 +321,7 @@ mod webrtc_connection_tests {
         }
 
         // Step 2: Browser discovers server
-        let discover = peer_a.create_discover(Some(10));
+        let _discover = peer_a.create_discover(Some(10));
 
         // Step 3: Browser sends offer to server
         let offer_sdp = r#"v=0
@@ -562,17 +562,17 @@ mod content_protocol_tests {
     #[test]
     fn test_large_content_fragmentation() {
         const FRAGMENT_SIZE: usize = 256 * 1024; // 256 KB
-        let content_size = 1024 * 1024; // 1 MB
-        let expected_fragments = (content_size + FRAGMENT_SIZE - 1) / FRAGMENT_SIZE;
+        let content_size: usize = 1024 * 1024; // 1 MB
+        let expected_fragments = content_size.div_ceil(FRAGMENT_SIZE);
 
         assert_eq!(expected_fragments, 4);
 
         // Simulate receiving all fragments
         let mut received_fragments: Vec<Option<Vec<u8>>> = vec![None; expected_fragments];
 
-        for i in 0..expected_fragments {
+        for (i, fragment) in received_fragments.iter_mut().enumerate() {
             let fragment_data = vec![i as u8; FRAGMENT_SIZE.min(content_size - i * FRAGMENT_SIZE)];
-            received_fragments[i] = Some(fragment_data);
+            *fragment = Some(fragment_data);
         }
 
         // Verify all fragments received
@@ -669,7 +669,7 @@ mod nat_traversal_tests {
     /// Test ICE candidate priority ordering
     #[test]
     fn test_candidate_priority_ordering() {
-        let candidates = vec![
+        let candidates = [
             IceCandidate::parse("candidate:1 1 UDP 2130706431 192.168.1.100 54321 typ host")
                 .unwrap(),
             IceCandidate::parse(
