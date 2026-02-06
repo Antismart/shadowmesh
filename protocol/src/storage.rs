@@ -1,9 +1,10 @@
-use futures::TryStreamExt;
-use ipfs_api_backend_hyper::{IpfsApi, IpfsClient, TryFromUri};
 use rand::Rng;
-use std::io::Cursor;
+use reqwest::multipart;
+use serde::Deserialize;
 use std::path::Path;
 use std::time::Duration;
+use tokio::fs;
+use walkdir::WalkDir;
 
 /// Configuration for StorageLayer
 #[derive(Clone, Debug)]
@@ -23,8 +24,72 @@ impl Default for StorageConfig {
     }
 }
 
+/// IPFS HTTP API client using reqwest
+#[derive(Clone)]
+pub struct IpfsHttpClient {
+    client: reqwest::Client,
+    base_url: String,
+}
+
+#[derive(Deserialize)]
+struct VersionResponse {
+    #[serde(rename = "Version")]
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct AddResponse {
+    #[serde(rename = "Name")]
+    #[allow(dead_code)]
+    name: String,
+    #[serde(rename = "Hash")]
+    hash: String,
+    #[serde(rename = "Size")]
+    #[allow(dead_code)]
+    size: String,
+}
+
+impl IpfsHttpClient {
+    fn new(base_url: &str, timeout: Duration) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("Failed to create HTTP client");
+        Self {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        }
+    }
+
+    async fn version(&self) -> Result<String, reqwest::Error> {
+        let url = format!("{}/api/v0/version", self.base_url);
+        let resp: VersionResponse = self.client.post(&url).send().await?.json().await?;
+        Ok(resp.version)
+    }
+
+    async fn add(&self, data: Vec<u8>) -> Result<AddResponse, reqwest::Error> {
+        let url = format!("{}/api/v0/add", self.base_url);
+        let part = multipart::Part::bytes(data).file_name("file");
+        let form = multipart::Form::new().part("file", part);
+        self.client.post(&url).multipart(form).send().await?.json().await
+    }
+
+    async fn cat(&self, cid: &str) -> Result<Vec<u8>, reqwest::Error> {
+        let url = format!("{}/api/v0/cat?arg={}", self.base_url, cid);
+        let resp = self.client.post(&url).send().await?;
+        Ok(resp.bytes().await?.to_vec())
+    }
+
+    async fn add_file(&self, name: String, data: Vec<u8>) -> Result<AddResponse, reqwest::Error> {
+        let url = format!("{}/api/v0/add?wrap-with-directory=true", self.base_url);
+        let part = multipart::Part::bytes(data).file_name(name);
+        let form = multipart::Form::new().part("file", part);
+        self.client.post(&url).multipart(form).send().await?.json().await
+    }
+}
+
 pub struct StorageLayer {
-    ipfs_client: IpfsClient,
+    ipfs_client: IpfsHttpClient,
     config: StorageConfig,
 }
 
@@ -45,21 +110,13 @@ impl StorageLayer {
 
     /// Create a new StorageLayer with full configuration
     pub async fn with_config(config: StorageConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        // Parse custom URL using TryFromUri trait
-        let client = if config.api_url == "http://127.0.0.1:5001" {
-            // Use default for standard localhost connection
-            IpfsClient::default()
-        } else {
-            // Parse custom URL
-            IpfsClient::from_str(&config.api_url)
-                .map_err(|e| format!("Invalid IPFS API URL '{}': {}", config.api_url, e))?
-        };
+        let client = IpfsHttpClient::new(&config.api_url, config.timeout);
 
         match client.version().await {
             Ok(version) => {
                 println!(
                     "✓ Connected to IPFS at {} (version: {})",
-                    config.api_url, version.version
+                    config.api_url, version
                 );
             }
             Err(e) => {
@@ -83,9 +140,7 @@ impl StorageLayer {
         let mut last_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
 
         for attempt in 1..=self.config.retry_attempts {
-            let cursor = Cursor::new(data.clone());
-
-            match tokio::time::timeout(self.config.timeout, self.ipfs_client.add(cursor)).await {
+            match tokio::time::timeout(self.config.timeout, self.ipfs_client.add(data.clone())).await {
                 Ok(Ok(response)) => return Ok(response.hash),
                 Ok(Err(e)) => {
                     println!(
@@ -127,26 +182,7 @@ impl StorageLayer {
         let mut last_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
 
         for attempt in 1..=self.config.retry_attempts {
-            let client = self.ipfs_client.clone();
-            let cid_owned = cid.to_string();
-            let timeout = self.config.timeout;
-
-            // Use block_in_place to handle the non-Send IPFS stream
-            let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    tokio::time::timeout(timeout, async {
-                        // Collect all chunks
-                        let chunks: Vec<_> = client.cat(&cid_owned).try_collect().await?;
-
-                        // Concatenate all chunks into single Vec
-                        let data: Vec<u8> = chunks.into_iter().flatten().collect();
-                        Ok::<Vec<u8>, ipfs_api_backend_hyper::Error>(data)
-                    })
-                    .await
-                })
-            });
-
-            match result {
+            match tokio::time::timeout(self.config.timeout, self.ipfs_client.cat(cid)).await {
                 Ok(Ok(data)) => {
                     println!("✓ Retrieved {} bytes", data.len());
                     return Ok(data);
@@ -208,56 +244,71 @@ impl StorageLayer {
             )));
         }
 
-        let client = self.ipfs_client.clone();
-        let path_owned = path_ref.to_path_buf();
         let timeout = self.config.timeout * 5; // Allow more time for directories
+        let mut files = Vec::new();
+        let mut total_size = 0u64;
+        let mut root_cid = String::new();
 
-        let result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                tokio::time::timeout(timeout, async { client.add_path(&path_owned).await }).await
-            })
-        });
+        // Walk directory and upload each file
+        for entry in WalkDir::new(path_ref).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_file() {
+                let file_path = entry.path();
+                let relative_path = file_path
+                    .strip_prefix(path_ref)
+                    .unwrap_or(file_path)
+                    .to_string_lossy()
+                    .to_string();
 
-        match result {
-            Ok(Ok(responses)) => {
-                // The last response is typically the root directory
-                let mut files = Vec::new();
-                let mut root_cid = String::new();
-                let mut total_size = 0u64;
+                let data = fs::read(file_path).await.map_err(|e| {
+                    Box::new(std::io::Error::other(format!(
+                        "Failed to read file {:?}: {}",
+                        file_path, e
+                    ))) as Box<dyn std::error::Error + Send + Sync>
+                })?;
 
-                for response in &responses {
-                    files.push(UploadedFile {
-                        name: response.name.clone(),
-                        hash: response.hash.clone(),
-                        size: response.size.parse().unwrap_or(0),
-                    });
-                    total_size += response.size.parse::<u64>().unwrap_or(0);
+                let file_size = data.len() as u64;
+
+                let result = tokio::time::timeout(
+                    timeout,
+                    self.ipfs_client.add_file(relative_path.clone(), data),
+                )
+                .await;
+
+                match result {
+                    Ok(Ok(response)) => {
+                        files.push(UploadedFile {
+                            name: relative_path,
+                            hash: response.hash.clone(),
+                            size: file_size,
+                        });
+                        total_size += file_size;
+                        root_cid = response.hash;
+                    }
+                    Ok(Err(e)) => {
+                        return Err(Box::new(std::io::Error::other(format!(
+                            "Failed to add file: {}",
+                            e
+                        ))) as Box<dyn std::error::Error + Send + Sync>);
+                    }
+                    Err(_) => {
+                        return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "File upload timed out",
+                        )) as Box<dyn std::error::Error + Send + Sync>);
+                    }
                 }
-
-                // The root is the last entry (the directory itself)
-                if let Some(last) = responses.last() {
-                    root_cid = last.hash.clone();
-                }
-
-                Ok(DirectoryUploadResult {
-                    root_cid,
-                    files,
-                    total_size,
-                })
             }
-            Ok(Err(e)) => Err(Box::new(std::io::Error::other(format!(
-                "Failed to add directory: {}",
-                e
-            ))) as Box<dyn std::error::Error + Send + Sync>),
-            Err(_) => Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Directory upload timed out",
-            )) as Box<dyn std::error::Error + Send + Sync>),
         }
+
+        Ok(DirectoryUploadResult {
+            root_cid,
+            files,
+            total_size,
+        })
     }
 
-    /// Get the IPFS client for advanced operations
-    pub fn client(&self) -> &IpfsClient {
+    /// Get reference to the HTTP client for advanced operations
+    pub fn client(&self) -> &IpfsHttpClient {
         &self.ipfs_client
     }
 }
