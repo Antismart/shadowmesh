@@ -174,7 +174,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.113",
- "synstructure 0.13.2",
+ "synstructure",
 ]
 
 [[package]]
@@ -186,7 +186,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.113",
- "synstructure 0.13.2",
+ "synstructure",
 ]
 
 [[package]]
@@ -436,12 +436,6 @@ dependencies = [
  "const-str",
  "match-lookup",
 ]
-
-[[package]]
-name = "base64"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "base64"
@@ -768,22 +762,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "common-multipart-rfc7578"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5baee326bc603965b0f26583e1ecd7c111c41b49bd92a344897476a352798869"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-util",
- "http 0.2.12",
- "mime",
- "mime_guess",
- "rand 0.8.5",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -807,7 +785,7 @@ dependencies = [
  "rust-ini",
  "serde",
  "serde_json",
- "toml 0.8.23",
+ "toml",
  "yaml-rust2",
 ]
 
@@ -1168,26 +1146,6 @@ dependencies = [
  "const-oid",
  "crypto-common",
  "subtle",
-]
-
-[[package]]
-name = "dirs"
-version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca3aa72a6f96ea37bbc5aa912f6788242832f75369bdfdadcb0e38423f100059"
-dependencies = [
- "dirs-sys",
-]
-
-[[package]]
-name = "dirs-sys"
-version = "0.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b1d1d91c932ef41c0f2663aa8b0ca0342d444d842c06914aa0a7e352d0bada6"
-dependencies = [
- "libc",
- "redox_users",
- "winapi",
 ]
 
 [[package]]
@@ -1596,7 +1554,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
- "toml 0.8.23",
+ "toml",
  "tower 0.4.13",
  "tower-http 0.5.2",
  "tracing",
@@ -2001,19 +1959,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyper-multipart-rfc7578"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0eb2cf73e96e9925f4bed948e763aa2901c2f1a3a5f713ee41917433ced6671"
-dependencies = [
- "bytes",
- "common-multipart-rfc7578",
- "futures-core",
- "http 0.2.12",
- "hyper 0.14.32",
-]
-
-[[package]]
 name = "hyper-rustls"
 version = "0.27.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2355,48 +2300,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ipfs-api-backend-hyper"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a9d131b408b4caafe1e7c00d410a09ad3eb7e3ab68690cf668e86904b2176b4"
-dependencies = [
- "async-trait",
- "base64 0.13.1",
- "bytes",
- "futures",
- "http 0.2.12",
- "hyper 0.14.32",
- "hyper-multipart-rfc7578",
- "ipfs-api-prelude",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "ipfs-api-prelude"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b74065805db266ba2c6edbd670b23c4714824a955628472b2e46cc9f3a869cb"
-dependencies = [
- "async-trait",
- "bytes",
- "cfg-if",
- "common-multipart-rfc7578",
- "dirs",
- "futures",
- "http 0.2.12",
- "multiaddr 0.17.1",
- "multibase",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "tracing",
- "walkdir",
-]
-
-[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2544,7 +2447,7 @@ dependencies = [
  "libp2p-tcp",
  "libp2p-upnp",
  "libp2p-yamux",
- "multiaddr 0.18.2",
+ "multiaddr",
  "pin-project",
  "rw-stream-sink",
  "thiserror 2.0.17",
@@ -2583,8 +2486,8 @@ dependencies = [
  "futures",
  "futures-timer",
  "libp2p-identity",
- "multiaddr 0.18.2",
- "multihash 0.19.3",
+ "multiaddr",
+ "multihash",
  "multistream-select",
  "parking_lot",
  "pin-project",
@@ -2674,7 +2577,7 @@ dependencies = [
  "bs58",
  "ed25519-dalek",
  "hkdf",
- "multihash 0.19.3",
+ "multihash",
  "quick-protobuf",
  "rand 0.8.5",
  "serde",
@@ -2761,8 +2664,8 @@ dependencies = [
  "futures",
  "libp2p-core",
  "libp2p-identity",
- "multiaddr 0.18.2",
- "multihash 0.19.3",
+ "multiaddr",
+ "multihash",
  "quick-protobuf",
  "rand 0.8.5",
  "snow",
@@ -2917,7 +2820,7 @@ dependencies = [
  "libp2p-identity",
  "libp2p-noise",
  "libp2p-webrtc-utils",
- "multihash 0.19.3",
+ "multihash",
  "rand 0.8.5",
  "rcgen",
  "stun",
@@ -3182,25 +3085,6 @@ dependencies = [
 
 [[package]]
 name = "multiaddr"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b36f567c7099511fa8612bbbb52dda2419ce0bdbacf31714e3a5ffdb766d3bd"
-dependencies = [
- "arrayref",
- "byteorder",
- "data-encoding",
- "log",
- "multibase",
- "multihash 0.17.0",
- "percent-encoding",
- "serde",
- "static_assertions",
- "unsigned-varint 0.7.2",
- "url",
-]
-
-[[package]]
-name = "multiaddr"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe6351f60b488e04c1d21bc69e56b89cb3f5e8f5d22557d6e8031bdfd79b6961"
@@ -3210,7 +3094,7 @@ dependencies = [
  "data-encoding",
  "libp2p-identity",
  "multibase",
- "multihash 0.19.3",
+ "multihash",
  "percent-encoding",
  "serde",
  "static_assertions",
@@ -3232,17 +3116,6 @@ dependencies = [
 
 [[package]]
 name = "multihash"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "835d6ff01d610179fbce3de1694d007e500bf33a7f29689838941d6bf783ae40"
-dependencies = [
- "core2",
- "multihash-derive",
- "unsigned-varint 0.7.2",
-]
-
-[[package]]
-name = "multihash"
 version = "0.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b430e7953c29dd6a09afc29ff0bb69c6e306329ee6794700aee27b76a1aea8d"
@@ -3250,20 +3123,6 @@ dependencies = [
  "core2",
  "serde",
  "unsigned-varint 0.8.0",
-]
-
-[[package]]
-name = "multihash-derive"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d6d4752e6230d8ef7adf7bd5d8c4b1f6561c1014c5ba9a37445ccefe18aa1db"
-dependencies = [
- "proc-macro-crate",
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "synstructure 0.12.6",
 ]
 
 [[package]]
@@ -3387,7 +3246,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "toml 0.8.23",
+ "toml",
  "tower 0.4.13",
  "tower-http 0.5.2",
 ]
@@ -3958,40 +3817,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro-crate"
-version = "1.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17d47ce914bf4de440332250b0edd23ce48c005f59fab39d3335866b114f11a"
-dependencies = [
- "thiserror 1.0.69",
- "toml 0.5.11",
-]
-
-[[package]]
-name = "proc-macro-error"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da25490ff9892aab3fcf7c36f08cfb902dd3e71ca0f9f9517bea02a73a5ce38c"
-dependencies = [
- "proc-macro-error-attr",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "version_check",
-]
-
-[[package]]
-name = "proc-macro-error-attr"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1be40180e52ecc98ad80b184934baf3d0d29f979574e439af5a55274b35f869"
-dependencies = [
- "proc-macro2",
- "quote",
- "version_check",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4076,16 +3901,16 @@ dependencies = [
  "chacha20poly1305",
  "futures",
  "hex",
- "http 0.2.12",
- "ipfs-api-backend-hyper",
  "libp2p",
  "libp2p-webrtc",
  "rand 0.8.5",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "walkdir",
  "x25519-dalek",
  "zeroize",
 ]
@@ -4321,17 +4146,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "redox_users"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba009ff324d1fc1b900bd1fdb31564febe58a8ccc8a6fdbb93b543d33b13ca43"
-dependencies = [
- "getrandom 0.2.16",
- "libredox",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "regex"
 version = "1.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4370,6 +4184,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
+ "futures-util",
  "h2 0.4.12",
  "http 1.4.0",
  "http-body 1.0.1",
@@ -4381,6 +4196,7 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
+ "mime_guess",
  "native-tls",
  "percent-encoding",
  "pin-project-lite",
@@ -5004,18 +4820,6 @@ dependencies = [
 
 [[package]]
 name = "synstructure"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f36bdaa60a83aca3921b5259d5400cbf5e90fc51931376a9bd4a0eb79aa7210f"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "unicode-xid",
-]
-
-[[package]]
-name = "synstructure"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
@@ -5282,15 +5086,6 @@ dependencies = [
  "futures-sink",
  "pin-project-lite",
  "tokio",
-]
-
-[[package]]
-name = "toml"
-version = "0.5.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -5635,12 +5430,6 @@ name = "unicode-segmentation"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6ccf251212114b54433ec949fd6a7841275f9ada20dddd2f29e9ceea4501493"
-
-[[package]]
-name = "unicode-xid"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "universal-hash"
@@ -6632,7 +6421,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.113",
- "synstructure 0.13.2",
+ "synstructure",
 ]
 
 [[package]]
@@ -6673,7 +6462,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.113",
- "synstructure 0.13.2",
+ "synstructure",
 ]
 
 [[package]]
