@@ -14,6 +14,21 @@ export {
   createNodeClient,
 } from './client.js';
 
+// Re-export resolver (decentralized naming)
+export {
+  NameResolver,
+  BOOTSTRAP_MULTIADDRS,
+  FALLBACK_GATEWAY_URLS,
+  WELL_KNOWN_NAMES,
+} from './resolver.js';
+export type {
+  NameResolution,
+  NameRecordEntry,
+  NameRecord,
+  ServiceRegistryEntry,
+  NameResolverConfig,
+} from './resolver.js';
+
 // Re-export crypto utilities
 export {
   hashContent,
