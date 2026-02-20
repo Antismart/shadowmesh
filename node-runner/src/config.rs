@@ -34,6 +34,10 @@ pub struct NodeConfig {
     /// Performance configuration
     #[serde(default)]
     pub performance: PerformanceConfig,
+
+    /// Naming layer configuration
+    #[serde(default)]
+    pub naming: NamingConfig,
 }
 
 /// Node identity configuration
@@ -300,6 +304,36 @@ impl Default for PerformanceConfig {
 impl PerformanceConfig {
     pub fn request_timeout(&self) -> Duration {
         Duration::from_secs(self.request_timeout_secs)
+    }
+}
+
+/// Configuration for the decentralized naming layer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NamingConfig {
+    /// Enable naming service
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Advertise this node's services (bootstrap, signaling) in the naming layer
+    #[serde(default = "default_true")]
+    pub advertise_services: bool,
+
+    /// Name record cache size
+    #[serde(default = "default_name_cache_size")]
+    pub cache_size: usize,
+}
+
+fn default_name_cache_size() -> usize {
+    10_000
+}
+
+impl Default for NamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            advertise_services: true,
+            cache_size: default_name_cache_size(),
+        }
     }
 }
 
