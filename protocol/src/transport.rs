@@ -11,11 +11,16 @@ pub const DEFAULT_TCP_PORT: u16 = 4001;
 /// Default WebRTC port (UDP)
 pub const DEFAULT_WEBRTC_PORT: u16 = 4002;
 
-/// Default STUN servers for NAT traversal
+/// Default STUN servers for NAT traversal.
+///
+/// ShadowMesh-operated servers (IP-only, no DNS dependency) come first.
+/// Google STUN servers are kept as a last-resort fallback.
 pub const DEFAULT_STUN_SERVERS: &[&str] = &[
+    // ShadowMesh-operated (IP-only — no DNS required)
+    "stun:45.33.32.156:3478",
+    "stun:178.62.8.237:3478",
+    // Fallback (DNS-based — used only if ShadowMesh STUN unreachable)
     "stun:stun.l.google.com:19302",
-    "stun:stun1.l.google.com:19302",
-    "stun:stun2.l.google.com:19302",
 ];
 
 /// Transport configuration for ShadowNode
