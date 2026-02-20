@@ -119,8 +119,11 @@ node:
     webrtcEnabled: true
     webrtcPort: 4002
     stunServers:
+      # ShadowMesh-operated (IP-only, no DNS dependency)
+      - "stun:45.33.32.156:3478"
+      - "stun:178.62.8.237:3478"
+      # Fallback (DNS-based)
       - "stun:stun.l.google.com:19302"
-      - "stun:stun1.l.google.com:19302"
 
     # Dashboard
     dashboardEnabled: true
