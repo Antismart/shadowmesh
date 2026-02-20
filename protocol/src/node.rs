@@ -2,10 +2,14 @@
 //!
 //! Provides the core P2P networking node with support for multiple transports.
 
+use crate::bootstrap::BOOTSTRAP_GOSSIP_TOPIC;
+use crate::naming::{NamingManager, NAMING_GOSSIP_TOPIC};
 use crate::transport::TransportConfig;
 use libp2p::{
     core::{muxing::StreamMuxerBox, transport::OrTransport, upgrade},
-    gossipsub::{Behaviour as Gossipsub, Config as GossipsubConfig, MessageAuthenticity},
+    gossipsub::{
+        Behaviour as Gossipsub, Config as GossipsubConfig, IdentTopic, MessageAuthenticity,
+    },
     identity::{self, Keypair},
     kad::{store::MemoryStore, Behaviour as Kademlia},
     noise,
@@ -22,6 +26,7 @@ pub struct ShadowNode {
     keypair: Keypair,
     config: TransportConfig,
     listen_addrs: Vec<Multiaddr>,
+    naming: NamingManager,
 }
 
 /// Network behaviour combining Kademlia DHT and GossipSub
@@ -85,10 +90,16 @@ impl ShadowNode {
 
         // Set up GossipSub
         let gossipsub_config = GossipsubConfig::default();
-        let gossipsub = Gossipsub::new(
+        let mut gossipsub = Gossipsub::new(
             MessageAuthenticity::Signed(keypair.clone()),
             gossipsub_config,
         )?;
+
+        // Subscribe to naming and bootstrap topics
+        let naming_topic = IdentTopic::new(NAMING_GOSSIP_TOPIC);
+        let bootstrap_topic = IdentTopic::new(BOOTSTRAP_GOSSIP_TOPIC);
+        gossipsub.subscribe(&naming_topic)?;
+        gossipsub.subscribe(&bootstrap_topic)?;
 
         // Create behaviour and swarm
         let behaviour = ShadowBehaviour {
@@ -109,6 +120,7 @@ impl ShadowNode {
             keypair,
             config,
             listen_addrs: Vec::new(),
+            naming: NamingManager::new(),
         })
     }
 
@@ -229,6 +241,16 @@ impl ShadowNode {
     /// Get read access to the swarm
     pub fn swarm(&self) -> &Swarm<ShadowBehaviour> {
         &self.swarm
+    }
+
+    /// Get read access to the naming manager
+    pub fn naming(&self) -> &NamingManager {
+        &self.naming
+    }
+
+    /// Get mutable access to the naming manager
+    pub fn naming_mut(&mut self) -> &mut NamingManager {
+        &mut self.naming
     }
 }
 
