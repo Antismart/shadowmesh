@@ -31,8 +31,8 @@ use axum::{
 use cache::ContentCache;
 use config::Config;
 use dashboard::Deployment;
-use protocol::{StorageConfig, StorageLayer};
-use serde::Serialize;
+use protocol::{NamingManager, StorageConfig, StorageLayer};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -81,6 +81,8 @@ pub struct AppState {
     pub audit_logger: Arc<audit::AuditLogger>,
     /// Redis client for persistence (optional)
     pub redis: Option<Arc<redis_client::RedisClient>>,
+    /// Decentralized naming manager
+    pub naming: Arc<RwLock<NamingManager>>,
 }
 
 #[tokio::main]
@@ -206,6 +208,12 @@ async fn main() {
         Vec::new()
     };
 
+    // Initialize naming manager
+    let naming = Arc::new(RwLock::new(NamingManager::new()));
+    if config.naming.enabled {
+        println!("✓ Decentralized naming layer enabled (cache: {} entries)", config.naming.cache_size);
+    }
+
     let state = AppState {
         storage,
         cache,
@@ -218,6 +226,7 @@ async fn main() {
         ipfs_circuit_breaker,
         audit_logger,
         redis: redis.clone(),
+        naming,
     };
 
     // Initialize API key manager for key rotation
@@ -287,6 +296,10 @@ async fn main() {
         .route("/api/upload/json", post(upload::upload_json))
         .route("/api/upload/raw", post(upload::upload_raw))
         .route("/api/upload/batch", post(upload::upload_batch))
+        // Naming layer API
+        .route("/api/names/:name", get(name_resolve_handler))
+        .route("/api/names/:name", post(name_register_handler))
+        .route("/api/services/:service_type", get(service_discovery_handler))
         // Content retrieval
         .route("/:cid", get(content_handler))
         .route("/ipfs/*path", get(ipfs_content_path_handler))
@@ -849,6 +862,146 @@ async fn content_with_path_handler(
 ) -> Response {
     let full_path = format!("{}/{}", cid, path);
     fetch_content(&state, full_path, Some(format!("/{}/", cid))).await
+}
+
+// ============================================
+// Naming Layer Endpoints
+// ============================================
+
+/// Request body for name registration
+#[derive(Deserialize)]
+struct NameRegisterRequest {
+    /// The name record as JSON (pre-signed by the client)
+    record: protocol::NameRecord,
+}
+
+/// Response for name resolution
+#[derive(Serialize)]
+struct NameResolveResponse {
+    found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    record: Option<protocol::NameRecord>,
+}
+
+/// Resolve a `.shadow` name via the naming layer
+async fn name_resolve_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Json<NameResolveResponse> {
+    if !state.config.naming.enabled {
+        return Json(NameResolveResponse {
+            found: false,
+            record: None,
+        });
+    }
+
+    let naming = state.naming.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(record) = naming.resolve_local(&name) {
+        Json(NameResolveResponse {
+            found: true,
+            record: Some(record.clone()),
+        })
+    } else {
+        Json(NameResolveResponse {
+            found: false,
+            record: None,
+        })
+    }
+}
+
+/// Register or update a `.shadow` name (client sends a pre-signed record)
+async fn name_register_handler(
+    State(state): State<AppState>,
+    Json(body): Json<NameRegisterRequest>,
+) -> Response {
+    if !state.config.naming.enabled {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Naming service disabled"})),
+        )
+            .into_response();
+    }
+
+    // Validate and verify the record
+    if let Err(e) = protocol::naming::validate_record(&body.record) {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Invalid record: {}", e)})),
+        )
+            .into_response();
+    }
+
+    match protocol::naming::verify_record(&body.record) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid signature"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Verification error: {}", e)})),
+            )
+                .into_response();
+        }
+    }
+
+    // Store the record
+    let mut naming = state.naming.write().unwrap_or_else(|e| e.into_inner());
+    match naming.cache_record(body.record.clone()) {
+        Ok(()) => Json(serde_json::json!({
+            "success": true,
+            "name": body.record.name,
+            "name_hash": body.record.name_hash,
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": format!("{}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// Discover services by type (gateway, signaling, stun, etc.)
+async fn service_discovery_handler(
+    State(state): State<AppState>,
+    Path(service_type): Path<String>,
+) -> Json<serde_json::Value> {
+    if !state.config.naming.enabled {
+        return Json(serde_json::json!({"entries": []}));
+    }
+
+    let well_known_name = match service_type.as_str() {
+        "gateway" => protocol::WellKnownNames::GATEWAY,
+        "signaling" => protocol::WellKnownNames::SIGNALING,
+        "bootstrap" => protocol::WellKnownNames::BOOTSTRAP,
+        "turn" => protocol::WellKnownNames::TURN,
+        "stun" => protocol::WellKnownNames::STUN,
+        _ => {
+            return Json(serde_json::json!({
+                "error": "Unknown service type",
+                "valid_types": ["gateway", "signaling", "bootstrap", "turn", "stun"]
+            }));
+        }
+    };
+
+    let naming = state.naming.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(registry) = naming.get_service_registry(well_known_name) {
+        Json(serde_json::json!({
+            "name": well_known_name,
+            "entries": registry.entries,
+            "updated_at": registry.updated_at,
+        }))
+    } else {
+        Json(serde_json::json!({
+            "name": well_known_name,
+            "entries": [],
+        }))
+    }
 }
 
 // ============================================
