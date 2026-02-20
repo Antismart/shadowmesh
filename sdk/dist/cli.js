@@ -24,6 +24,8 @@ program
     .option('--encrypt', 'Encrypt content before upload')
     .option('--password <password>', 'Encryption password')
     .option('--pin', 'Pin content permanently')
+    .option('--bootstrap <addrs>', 'Comma-separated bootstrap multiaddrs for DNS-free discovery')
+    .option('--no-dns', 'Disable DNS-based fallback (pure P2P resolution only)')
     .action(async (filePath, options) => {
     try {
         const mesh = new ShadowMesh({ network: options.network || 'testnet' });

@@ -6,6 +6,8 @@
 export * from './types.js';
 // Re-export client
 export { GatewayClient, NodeClient, createGatewayClient, createNodeClient, } from './client.js';
+// Re-export resolver (decentralized naming)
+export { NameResolver, BOOTSTRAP_MULTIADDRS, FALLBACK_GATEWAY_URLS, WELL_KNOWN_NAMES, } from './resolver.js';
 // Re-export crypto utilities
 export { hashContent, hashString, deriveKey, encrypt, decrypt, serializeEncrypted, deserializeEncrypted, verifyHash, generateId, secureCompare, encryptToBase64, decryptFromBase64, randomBytes, } from './crypto.js';
 // Re-export storage
@@ -37,7 +39,7 @@ isBrowser, isNode, isWebWorker,
 // Event emitter
 EventEmitter, } from './utils.js';
 // Legacy ShadowMesh class (for backwards compatibility)
-import { create } from '@web3-storage/w3up-client';
+import { create } from '@storacha/client';
 import fs from 'fs/promises';
 import path from 'path';
 /**

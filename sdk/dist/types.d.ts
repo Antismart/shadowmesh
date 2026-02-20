@@ -21,6 +21,14 @@ export interface ShadowMeshConfig {
     debug?: boolean;
     /** Cache configuration */
     cache?: CacheConfig;
+    /** Bootstrap multiaddrs for DNS-free discovery */
+    bootstrapMultiaddrs?: string[];
+    /** Enable ENS resolution for .eth names */
+    enableEns?: boolean;
+    /** Ethereum RPC URL for ENS resolution */
+    ensRpcUrl?: string;
+    /** Custom well-known name for gateway discovery (default: _gateway.shadow) */
+    gatewayName?: string;
 }
 /**
  * Cache configuration

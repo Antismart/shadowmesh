@@ -4,14 +4,12 @@
  * HTTP client for communicating with ShadowMesh gateway and nodes.
  */
 import { ErrorCode, } from './types.js';
+import { NameResolver, FALLBACK_GATEWAY_URLS } from './resolver.js';
 /**
- * Default network endpoints
+ * Fallback network endpoints — used ONLY when naming resolution fails.
+ * @deprecated Prefer using the decentralized naming layer for gateway discovery.
  */
-const NETWORK_ENDPOINTS = {
-    mainnet: 'https://api.shadowmesh.network',
-    testnet: 'https://testnet.shadowmesh.network',
-    local: 'http://localhost:3000',
-};
+const NETWORK_ENDPOINTS = FALLBACK_GATEWAY_URLS;
 /**
  * Default request timeout (30 seconds)
  */
@@ -34,11 +32,45 @@ export class GatewayClient {
     apiKey;
     timeout;
     debug;
+    resolver = null;
     constructor(config = {}) {
+        // Explicit URL takes priority
         this.baseUrl = config.gatewayUrl || NETWORK_ENDPOINTS[config.network || 'testnet'];
         this.apiKey = config.apiKey;
         this.timeout = config.timeout || DEFAULT_TIMEOUT;
         this.debug = config.debug || false;
+        // Set up resolver for decentralized gateway discovery
+        if (!config.gatewayUrl) {
+            this.resolver = new NameResolver({
+                gatewayUrls: [this.baseUrl], // Use fallback URL as initial gateway for resolution
+                bootstrapMultiaddrs: config.bootstrapMultiaddrs,
+                enableEns: config.enableEns,
+                ensRpcUrl: config.ensRpcUrl,
+                timeout: config.timeout,
+            });
+            // Trigger async gateway resolution (non-blocking)
+            this.resolveGateway();
+        }
+    }
+    /**
+     * Attempt to resolve a better gateway URL via the naming layer.
+     * Updates `baseUrl` if successful; keeps fallback otherwise.
+     */
+    async resolveGateway() {
+        if (!this.resolver)
+            return;
+        try {
+            const url = await this.resolver.resolveGatewayUrl(this.baseUrl);
+            if (url && url !== this.baseUrl) {
+                if (this.debug) {
+                    console.log(`[ShadowMesh] Resolved gateway: ${url}`);
+                }
+                this.baseUrl = url;
+            }
+        }
+        catch {
+            // Keep fallback URL
+        }
     }
     /**
      * Make an HTTP request

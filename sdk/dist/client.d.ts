@@ -12,7 +12,13 @@ export declare class GatewayClient {
     private apiKey?;
     private timeout;
     private debug;
+    private resolver;
     constructor(config?: ShadowMeshConfig);
+    /**
+     * Attempt to resolve a better gateway URL via the naming layer.
+     * Updates `baseUrl` if successful; keeps fallback otherwise.
+     */
+    private resolveGateway;
     /**
      * Make an HTTP request
      */

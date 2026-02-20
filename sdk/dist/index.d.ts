@@ -4,6 +4,8 @@
  */
 export * from './types.js';
 export { GatewayClient, NodeClient, createGatewayClient, createNodeClient, } from './client.js';
+export { NameResolver, BOOTSTRAP_MULTIADDRS, FALLBACK_GATEWAY_URLS, WELL_KNOWN_NAMES, } from './resolver.js';
+export type { NameResolution, NameRecordEntry, NameRecord, ServiceRegistryEntry, NameResolverConfig, } from './resolver.js';
 export { hashContent, hashString, deriveKey, encrypt, decrypt, serializeEncrypted, deserializeEncrypted, verifyHash, generateId, secureCompare, encryptToBase64, decryptFromBase64, randomBytes, type EncryptedData, } from './crypto.js';
 export { type StorageBackend, MemoryStorage, IndexedDBStorage, type ContentStorageConfig, type StoredContent, ContentStorage, reassembleContent, fragmentContent, type IPFSConfig, IPFSClient, } from './storage.js';
 export { type CacheEntry, type CacheStats, LRUCache, ContentCache, RequestDeduplicator, type FetchFunction, createCachedFetch, ContentPreloader, } from './cache.js';
