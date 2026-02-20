@@ -16,12 +16,17 @@
 //! - `zk_relay` - Zero-knowledge relay for plausible deniability
 //! - `adaptive_routing` - Censorship detection and route-around
 //! - `transport` - Multi-transport configuration (TCP, WebRTC)
+//! - `naming` - Decentralized naming layer (DHT-native name resolution)
+//! - `bootstrap` - DNS-free bootstrap configuration
 
 pub mod adaptive_routing;
 pub mod bandwidth;
+pub mod bootstrap;
 pub mod crypto;
 pub mod dht;
+pub mod ens_bridge;
 pub mod fragments;
+pub mod naming;
 pub mod node;
 pub mod peer_discovery;
 pub mod replication;
@@ -91,4 +96,17 @@ pub use signaling::{
     HeartbeatMessage, IceCandidateMessage, OfferMessage, PeerDisconnectedMessage,
     PeerInfo as SignalingPeerInfo, PeersMessage, PendingSession, SessionState, SignalingErrorCode,
     SignalingMessage, TrackedPeer,
+};
+
+// Re-export naming types
+pub use naming::{
+    validate_name, verify_record, NameRecord, NameRecordType, NameResolver, NamingError,
+    NamingManager, ResolveResult, ServiceRegistry, ServiceRegistryEntry, ServiceType,
+    WellKnownNames, NAMING_GOSSIP_TOPIC,
+};
+
+// Re-export bootstrap types
+pub use bootstrap::{
+    all_stun_servers, is_valid_bootstrap_multiaddr, BOOTSTRAP_GOSSIP_TOPIC,
+    FALLBACK_STUN_SERVERS, OFFICIAL_BOOTSTRAP_NODES, SHADOWMESH_STUN_SERVERS,
 };
