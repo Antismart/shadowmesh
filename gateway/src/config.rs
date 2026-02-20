@@ -19,6 +19,8 @@ pub struct Config {
     pub telemetry: TelemetryConfig,
     #[serde(default)]
     pub redis: RedisConfig,
+    #[serde(default)]
+    pub naming: NamingConfig,
 }
 
 /// Validation errors for configuration
@@ -213,6 +215,27 @@ impl RedisConfig {
     }
 }
 
+/// Configuration for the decentralized naming layer
+#[derive(Debug, Deserialize, Clone)]
+pub struct NamingConfig {
+    /// Enable the naming service
+    pub enabled: bool,
+    /// Advertise this gateway in the naming layer
+    pub advertise_gateway: bool,
+    /// Maximum name record cache entries
+    pub cache_size: usize,
+}
+
+impl Default for NamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            advertise_gateway: true,
+            cache_size: 10_000,
+        }
+    }
+}
+
 impl Config {
     /// Load configuration from file and environment variables
     ///
@@ -361,6 +384,7 @@ impl Config {
             deploy: DeployConfig::default(),
             telemetry: TelemetryConfig::default(),
             redis: RedisConfig::default(),
+            naming: NamingConfig::default(),
         }
     }
 }
