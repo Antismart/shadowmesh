@@ -27,12 +27,14 @@ use wasm_bindgen::prelude::*;
 
 mod client;
 mod error;
+pub mod naming;
 mod signaling;
 mod utils;
 mod webrtc;
 
 pub use client::ShadowMeshClient;
 pub use error::SdkError;
+pub use naming::WasmNameResolver;
 
 /// Initialize the SDK (call once before using)
 #[wasm_bindgen(start)]
