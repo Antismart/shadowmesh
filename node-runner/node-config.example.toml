@@ -58,6 +58,15 @@ enable_cors = true
 # Allowed CORS origins (empty = allow all)
 cors_origins = []
 
+# Naming Layer Configuration
+[naming]
+# Enable decentralized naming service
+enabled = true
+# Advertise this node's services (bootstrap, signaling) in the naming layer
+advertise_services = true
+# Name record cache size
+cache_size = 10000
+
 # Performance Configuration
 [performance]
 # Number of worker threads (0 = auto, uses number of CPU cores)
