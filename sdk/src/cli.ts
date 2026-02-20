@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import fs from 'fs/promises';
 import path from 'path';
-import { ShadowMesh, GatewayClient, formatBytes, formatDuration } from './index.js';
+import { ShadowMesh, GatewayClient, NameResolver, FALLBACK_GATEWAY_URLS, formatBytes, formatDuration } from './index.js';
 
 const program = new Command();
 
@@ -28,6 +28,8 @@ program
   .option('--encrypt', 'Encrypt content before upload')
   .option('--password <password>', 'Encryption password')
   .option('--pin', 'Pin content permanently')
+  .option('--bootstrap <addrs>', 'Comma-separated bootstrap multiaddrs for DNS-free discovery')
+  .option('--no-dns', 'Disable DNS-based fallback (pure P2P resolution only)')
   .action(async (filePath: string, options: {
     domain?: string;
     ens?: string;
