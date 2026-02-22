@@ -410,22 +410,24 @@ impl SignalingServer {
         // Atomically remove from all three maps to keep them in sync.
         // Lock order: peers -> peer_connections -> connections (same as handle_announce).
         let peer_id = {
+            let mut peers = self.peers.write().await;
+            let mut peer_connections = self.peer_connections.write().await;
             let mut connections = self.connections.write().await;
+
             let peer_id = connections
                 .get(connection_id)
                 .and_then(|c| c.peer_id.clone());
             connections.remove(connection_id);
+
+            if let Some(ref pid) = peer_id {
+                peers.remove(pid);
+                peer_connections.remove(pid);
+            }
+
             peer_id
         };
 
         if let Some(peer_id) = peer_id {
-            {
-                let mut peers = self.peers.write().await;
-                peers.remove(&peer_id);
-                let mut peer_connections = self.peer_connections.write().await;
-                peer_connections.remove(&peer_id);
-            }
-
             // Notify other peers about disconnect
             let disconnect_msg =
                 SignalingMessage::PeerDisconnected(protocol::PeerDisconnectedMessage {
