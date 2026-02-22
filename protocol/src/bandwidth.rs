@@ -159,7 +159,7 @@ impl BandwidthTracker {
     fn record_peer_inbound(&mut self, peer_id: &str, bytes: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let entry = self
@@ -176,7 +176,7 @@ impl BandwidthTracker {
     fn record_peer_outbound(&mut self, peer_id: &str, bytes: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let entry = self
