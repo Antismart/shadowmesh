@@ -130,7 +130,7 @@ impl DHTManager {
     ) -> ContentRecord {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         ContentRecord {
@@ -250,7 +250,7 @@ impl DHTManager {
     pub fn cleanup_expired_records(&mut self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         self.local_records
