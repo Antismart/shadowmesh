@@ -18,6 +18,7 @@ use std::process::Command;
 use std::sync::Arc;
 use uuid::Uuid;
 
+#[allow(dead_code)]
 pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
     let deployments = read_lock(&state.deployments);
     let mut grouped: BTreeMap<String, Vec<&Deployment>> = BTreeMap::new();
@@ -950,7 +951,7 @@ pub async fn github_callback(
     });
     *write_lock(&state.github_oauth_state) = None;
 
-    Redirect::to("/dashboard").into_response()
+    Redirect::to("/").into_response()
 }
 
 pub async fn github_status(State(state): State<AppState>) -> impl IntoResponse {
