@@ -1,8 +1,17 @@
 # ShadowMesh Gateway Dockerfile
-# Multi-stage build for minimal production image
+# Multi-stage build: Node (dashboard) → Rust (gateway) → minimal runtime
 
-# Build stage
-FROM rust:latest as builder
+# Stage 1: Build React dashboard
+FROM node:20-slim AS dashboard-builder
+
+WORKDIR /app/dashboard
+COPY dashboard/package.json dashboard/package-lock.json* ./
+RUN npm ci
+COPY dashboard/ ./
+RUN npm run build
+
+# Stage 2: Build Rust gateway (embeds dashboard/dist via rust-embed)
+FROM rust:latest AS builder
 
 WORKDIR /app
 
@@ -14,10 +23,13 @@ COPY node-runner ./node-runner
 COPY benchmarks ./benchmarks
 COPY sdk-browser ./sdk-browser
 
+# Copy built dashboard into expected location for rust-embed
+COPY --from=dashboard-builder /app/dashboard/dist ./dashboard/dist
+
 # Build release binary
 RUN cargo build --release -p gateway
 
-# Runtime stage
+# Stage 3: Minimal runtime
 FROM debian:bookworm-slim
 
 # Install runtime dependencies
