@@ -25,7 +25,8 @@ use std::time::{Duration, Instant};
 /// Default cache TTL for ENS resolutions (1 hour)
 const ENS_CACHE_TTL: Duration = Duration::from_secs(3600);
 
-/// Maximum ENS cache entries
+/// Maximum ENS cache entries (used by cache_result when on-chain resolution is implemented)
+#[allow(dead_code)]
 const MAX_ENS_CACHE: usize = 1000;
 
 /// Result of an ENS resolution
@@ -88,23 +89,26 @@ impl EnsBridge {
 
         // Without RPC, we can only use cache
         let Some(_rpc_url) = &self.rpc_url else {
-            return Ok(EnsResolution::NotFound);
+            return Err(NamingError::ResolutionFailed(
+                "ENS resolution unavailable: no Ethereum RPC endpoint configured. \
+                 Create an EnsBridge with EnsBridge::new(rpc_url) to enable ENS lookups."
+                    .to_string(),
+            ));
         };
 
-        // NOTE: Full ENS resolution requires the `ethers` crate (behind `ens` feature).
-        // This stub demonstrates the interface. When the `ens` feature is enabled,
-        // this would:
+        // Full ENS resolution requires the `ethers` crate (behind `ens` feature).
+        // When the `ens` feature is enabled, this would:
         // 1. Connect to Ethereum via the RPC URL
         // 2. Resolve the ENS name to a contenthash record
         // 3. Parse the contenthash for shadow:// or ipfs:// URIs
         // 4. Return the appropriate EnsResolution variant
-
-        let resolution = EnsResolution::NotFound;
-
-        // Cache the result
-        self.cache_result(&normalized, resolution.clone());
-
-        Ok(resolution)
+        //
+        // For now, return an explicit error instead of silently returning NotFound.
+        Err(NamingError::ResolutionFailed(
+            "ENS on-chain resolution is not yet implemented. \
+             Use .shadow names or direct CIDs instead."
+                .to_string(),
+        ))
     }
 
     /// Parse a contenthash value to extract ShadowMesh references.
@@ -135,6 +139,8 @@ impl EnsBridge {
             .retain(|_, entry| entry.cached_at.elapsed() < ENS_CACHE_TTL);
     }
 
+    /// Cache a resolution result. Will be used when on-chain resolution is implemented.
+    #[allow(dead_code)]
     fn cache_result(&mut self, name: &str, resolution: EnsResolution) {
         // Evict if over capacity
         if self.cache.len() >= MAX_ENS_CACHE {
@@ -189,7 +195,14 @@ mod tests {
     #[tokio::test]
     async fn test_bridge_without_rpc() {
         let mut bridge = EnsBridge::without_rpc();
-        let result = bridge.resolve_ens("test.eth").await.unwrap();
-        assert!(matches!(result, EnsResolution::NotFound));
+        let result = bridge.resolve_ens("test.eth").await;
+        assert!(result.is_err(), "Should return error when no RPC configured");
+    }
+
+    #[tokio::test]
+    async fn test_bridge_with_rpc_not_implemented() {
+        let mut bridge = EnsBridge::new("https://mainnet.infura.io/v3/fake");
+        let result = bridge.resolve_ens("test.eth").await;
+        assert!(result.is_err(), "Should return error since on-chain resolution is not yet implemented");
     }
 }
