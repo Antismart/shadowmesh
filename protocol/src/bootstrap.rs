@@ -11,15 +11,13 @@
 //! 4. Resolve `_gateway.shadow`, `_signaling.shadow`, `_stun.shadow` for services
 //! 5. Subscribe to GossipSub topics for real-time updates
 
-/// Official ShadowMesh bootstrap nodes.
+/// Default bootstrap nodes (PLACEHOLDERS — override via `SHADOWMESH_BOOTSTRAP_NODES` env var).
 ///
 /// These use raw IP addresses — no DNS resolution required.
 /// At least one must be reachable to join the network.
 ///
 /// Format: `/ip4/{ip}/tcp/{port}/p2p/{peer_id}`
-///
-/// NOTE: Replace placeholder peer IDs with actual deployed node IDs before release.
-pub const OFFICIAL_BOOTSTRAP_NODES: &[&str] = &[
+const DEFAULT_BOOTSTRAP_NODES: &[&str] = &[
     // US East (New York)
     "/ip4/45.33.32.156/tcp/4001/p2p/12D3KooWBootstrapUSEast1placeholder",
     // EU West (Amsterdam)
@@ -27,6 +25,47 @@ pub const OFFICIAL_BOOTSTRAP_NODES: &[&str] = &[
     // Asia Pacific (Singapore)
     "/ip4/103.43.75.104/tcp/4001/p2p/12D3KooWBootstrapAPAC1placeholder",
 ];
+
+/// Backward-compatible alias for default bootstrap nodes.
+pub const OFFICIAL_BOOTSTRAP_NODES: &[&str] = DEFAULT_BOOTSTRAP_NODES;
+
+/// Returns the effective bootstrap nodes.
+///
+/// Reads from `SHADOWMESH_BOOTSTRAP_NODES` (comma-separated multiaddrs).
+/// Falls back to `DEFAULT_BOOTSTRAP_NODES` if the env var is not set.
+/// Warns if placeholder peer IDs are still in use.
+pub fn get_bootstrap_nodes() -> Vec<String> {
+    if let Ok(env_nodes) = std::env::var("SHADOWMESH_BOOTSTRAP_NODES") {
+        let nodes: Vec<String> = env_nodes
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !nodes.is_empty() {
+            for node in &nodes {
+                if !is_valid_bootstrap_multiaddr(node) {
+                    eprintln!(
+                        "WARNING: Bootstrap node '{}' is not a valid IP-based multiaddr",
+                        node
+                    );
+                }
+            }
+            return nodes;
+        }
+    }
+
+    let defaults: Vec<String> = DEFAULT_BOOTSTRAP_NODES.iter().map(|s| s.to_string()).collect();
+    for node in &defaults {
+        if node.contains("placeholder") {
+            eprintln!(
+                "WARNING: Using placeholder bootstrap node. \
+                 Set SHADOWMESH_BOOTSTRAP_NODES with real peer IDs for production."
+            );
+            break;
+        }
+    }
+    defaults
+}
 
 /// ShadowMesh-operated STUN servers (IP-only, no DNS dependency).
 ///
