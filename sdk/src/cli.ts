@@ -21,7 +21,7 @@ program
   .description('Deploy a file or directory to ShadowMesh')
   .argument('<path>', 'Path to file or directory')
   .option('-d, --domain <domain>', 'Custom domain name')
-  .option('-e, --ens <name>', 'ENS domain name')
+  // ENS integration not yet implemented — removed --ens flag
   .option('-p, --privacy <level>', 'Privacy level (low|medium|high)', 'medium')
   .option('-r, --redundancy <number>', 'Number of replicas', '5')
   .option('-n, --network <network>', 'Network (testnet|mainnet)', 'testnet')
@@ -32,7 +32,6 @@ program
   .option('--no-dns', 'Disable DNS-based fallback (pure P2P resolution only)')
   .action(async (filePath: string, options: {
     domain?: string;
-    ens?: string;
     privacy?: 'low' | 'medium' | 'high';
     redundancy?: string;
     network?: 'testnet' | 'mainnet';
@@ -55,7 +54,6 @@ program
       const result = await mesh.deploy({
         path: filePath,
         domain: options.domain,
-        ens: options.ens,
         privacy: options.privacy,
         redundancy: parseInt(options.redundancy || '5'),
       });
@@ -65,10 +63,6 @@ program
       console.log(chalk.cyan('Native URL: '), result.native);
       console.log(chalk.cyan('Content ID: '), result.cid);
       
-      if (result.ens) {
-        console.log(chalk.cyan('ENS URL:    '), result.ens);
-      }
-
       console.log(chalk.gray('\nManifest:'));
       console.log(chalk.gray(`  Hash: ${result.manifest.content_hash}`));
       console.log(chalk.gray(`  Fragments: ${result.manifest.fragments.length}`));
@@ -193,19 +187,10 @@ program
   .description('Pin content to keep it available')
   .argument('<cid>', 'Content ID to pin')
   .option('-n, --network <network>', 'Network (testnet|mainnet)', 'testnet')
-  .action(async (cid: string, options: { network?: 'testnet' | 'mainnet' }) => {
-    try {
-      console.log(chalk.blue(`\n📌 Pinning ${cid}...\n`));
-      
-      // TODO: Implement pinning via gateway API
-      console.log(chalk.yellow('Pinning functionality coming soon!'));
-      console.log(chalk.gray('Content ID: ' + cid));
-      console.log();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      console.error(chalk.red('❌ Pin failed:'), message);
-      process.exit(1);
-    }
+  .action(async (_cid: string, _options: { network?: 'testnet' | 'mainnet' }) => {
+    console.error(chalk.red('❌ Pin command is not yet implemented.'));
+    console.error(chalk.gray('   Content is pinned automatically during deployment.'));
+    process.exit(1);
   });
 
 // ============================================================================
@@ -217,19 +202,9 @@ program
   .description('Unpin content')
   .argument('<cid>', 'Content ID to unpin')
   .option('-n, --network <network>', 'Network (testnet|mainnet)', 'testnet')
-  .action(async (cid: string, options: { network?: 'testnet' | 'mainnet' }) => {
-    try {
-      console.log(chalk.blue(`\n📌 Unpinning ${cid}...\n`));
-      
-      // TODO: Implement unpinning via gateway API
-      console.log(chalk.yellow('Unpinning functionality coming soon!'));
-      console.log(chalk.gray('Content ID: ' + cid));
-      console.log();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      console.error(chalk.red('❌ Unpin failed:'), message);
-      process.exit(1);
-    }
+  .action(async (_cid: string, _options: { network?: 'testnet' | 'mainnet' }) => {
+    console.error(chalk.red('❌ Unpin command is not yet implemented.'));
+    process.exit(1);
   });
 
 // ============================================================================
@@ -242,19 +217,10 @@ program
   .description('List your deployed content')
   .option('-n, --network <network>', 'Network (testnet|mainnet)', 'testnet')
   .option('--limit <number>', 'Maximum number of items', '20')
-  .action(async (options: { network?: 'testnet' | 'mainnet'; limit?: string }) => {
-    try {
-      console.log(chalk.blue('\n📋 Your Deployments\n'));
-      
-      // TODO: Implement listing via gateway API (requires auth)
-      console.log(chalk.yellow('Listing functionality coming soon!'));
-      console.log(chalk.gray('This will require authentication.'));
-      console.log();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      console.error(chalk.red('❌ List failed:'), message);
-      process.exit(1);
-    }
+  .action(async (_options: { network?: 'testnet' | 'mainnet'; limit?: string }) => {
+    console.error(chalk.red('❌ List command is not yet implemented.'));
+    console.error(chalk.gray('   Use the gateway dashboard to view deployments.'));
+    process.exit(1);
   });
 
 // ============================================================================
