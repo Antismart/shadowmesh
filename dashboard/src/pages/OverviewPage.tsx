@@ -92,6 +92,9 @@ export default function OverviewPage() {
                     Visit
                   </a>
                 </div>
+                {latest.domain && (
+                  <p className="text-xs font-mono text-mesh-accent mb-2 truncate">{latest.domain}</p>
+                )}
                 <div className="flex items-center gap-3 text-xs text-mesh-muted">
                   <StatusBadge status={latest.build_status} />
                   <span>{latest.created_at}</span>
