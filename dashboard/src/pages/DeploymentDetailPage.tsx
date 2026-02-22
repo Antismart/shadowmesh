@@ -130,6 +130,16 @@ export default function DeploymentDetailPage() {
               <CopyButton text={`${window.location.origin}${previewUrl}`} />
             </div>
           </div>
+          {deployment.domain && (
+            <div>
+              <p className="text-xs text-mesh-muted mb-1">Domain</p>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-mono text-mesh-accent">{deployment.domain}</span>
+                <CopyButton text={deployment.domain} />
+                <Link to="/domains" className="text-xs text-mesh-muted hover:text-mesh-text">Edit</Link>
+              </div>
+            </div>
+          )}
         </div>
         <div className="border border-mesh-border rounded-lg p-4 space-y-3">
           <div className="flex justify-between">
