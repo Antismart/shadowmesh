@@ -12,7 +12,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::AppState;
+use crate::{audit, AppState};
 
 /// Maximum upload size (50 MB)
 const MAX_UPLOAD_SIZE: usize = 50 * 1024 * 1024;
@@ -173,12 +173,23 @@ pub async fn upload_multipart(State(state): State<AppState>, mut multipart: Mult
         match result {
             Ok(Ok(cid)) => {
                 let port = state.config.server.port;
+                let size = data.len();
+                audit::log_file_upload(
+                    &state.audit_logger,
+                    "api",
+                    &cid,
+                    size as u64,
+                    filename.as_deref(),
+                    None,
+                    None,
+                )
+                .await;
                 return Json(UploadResponse {
                     success: true,
                     gateway_url: format!("http://localhost:{}/{}", port, cid),
                     shadow_url: format!("shadow://{}", cid),
                     cid,
-                    size: data.len(),
+                    size,
                     content_type,
                     filename,
                 })
