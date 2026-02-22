@@ -1539,6 +1539,7 @@ dependencies = [
  "hyper 1.8.1",
  "infer",
  "lazy_static",
+ "libp2p",
  "mime_guess",
  "notify",
  "opentelemetry",
@@ -1556,6 +1557,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-util",
  "toml",
  "tower 0.4.13",
  "tower-http 0.5.2",
@@ -5120,6 +5122,7 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
