@@ -26,6 +26,7 @@ pub mod crypto;
 pub mod dht;
 pub mod ens_bridge;
 pub mod fragments;
+pub mod lock_utils;
 pub mod naming;
 pub mod node;
 pub mod peer_discovery;
