@@ -135,10 +135,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build CORS layer
     let cors = if config.dashboard.enable_cors {
         if config.dashboard.cors_origins.is_empty() {
+            // No origins configured — deny all cross-origin requests
             CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any)
         } else {
             let origins: Vec<_> = config
                 .dashboard
