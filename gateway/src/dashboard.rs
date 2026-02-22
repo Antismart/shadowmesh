@@ -878,7 +878,8 @@ pub async fn github_login(State(state): State<AppState>) -> impl IntoResponse {
     });
 
     let csrf_state = Uuid::new_v4().to_string();
-    *write_lock(&state.github_oauth_state) = Some(csrf_state.clone());
+    write_lock(&state.github_oauth_states)
+        .insert(csrf_state.clone(), std::time::Instant::now());
 
     let url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope=read:user%20repo&state={}",
@@ -922,11 +923,34 @@ pub async fn github_callback(
         )
     });
 
-    if let Some(expected_state) = read_lock(&state.github_oauth_state).clone() {
-        if Some(expected_state) != query.state {
+    // Validate and consume the CSRF state token
+    match &query.state {
+        Some(state_param) => {
+            let mut states = write_lock(&state.github_oauth_states);
+            match states.remove(state_param.as_str()) {
+                Some(created_at) => {
+                    // Reject tokens older than 10 minutes
+                    if created_at.elapsed() > std::time::Duration::from_secs(600) {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"success": false, "error": "OAuth state expired"})),
+                        )
+                            .into_response();
+                    }
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"success": false, "error": "Invalid OAuth state"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "error": "Invalid OAuth state"})),
+                Json(json!({"success": false, "error": "Missing OAuth state parameter"})),
             )
                 .into_response();
         }
@@ -999,8 +1023,6 @@ pub async fn github_callback(
         token: token_body.access_token,
         user,
     });
-    *write_lock(&state.github_oauth_state) = None;
-
     Redirect::to("/").into_response()
 }
 
@@ -1104,10 +1126,27 @@ fn parse_github_url(url: &str) -> Option<RepoInfo> {
 
 fn extract_github_zip(data: &[u8]) -> Result<tempfile::TempDir, String> {
     use std::io::{Read, Write};
+
+    /// Maximum total uncompressed size (512 MB)
+    const MAX_UNCOMPRESSED_SIZE: u64 = 512 * 1024 * 1024;
+    /// Maximum number of entries in the ZIP
+    const MAX_FILE_COUNT: usize = 10_000;
+
     let temp_dir = tempfile::TempDir::new().map_err(|e| format!("Temp dir failed: {}", e))?;
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid ZIP: {}", e))?;
+
+    if archive.len() > MAX_FILE_COUNT {
+        return Err(format!(
+            "ZIP contains too many entries ({}, max {})",
+            archive.len(),
+            MAX_FILE_COUNT
+        ));
+    }
+
     let mut root_prefix = String::new();
+    let mut total_size: u64 = 0;
+
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
@@ -1142,15 +1181,42 @@ fn extract_github_zip(data: &[u8]) -> Result<tempfile::TempDir, String> {
             }
             let mut outfile =
                 std::fs::File::create(&out_path).map_err(|e| format!("File failed: {}", e))?;
-            let mut contents = Vec::new();
-            file.read_to_end(&mut contents)
-                .map_err(|e| format!("Read failed: {}", e))?;
-            outfile
-                .write_all(&contents)
-                .map_err(|e| format!("Write failed: {}", e))?;
+
+            // Stream the file in chunks to enforce size limit without buffering entire file
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = file.read(&mut buf).map_err(|e| format!("Read failed: {}", e))?;
+                if n == 0 {
+                    break;
+                }
+                total_size += n as u64;
+                if total_size > MAX_UNCOMPRESSED_SIZE {
+                    return Err(format!(
+                        "ZIP uncompressed size exceeds limit ({} bytes)",
+                        MAX_UNCOMPRESSED_SIZE
+                    ));
+                }
+                outfile
+                    .write_all(&buf[..n])
+                    .map_err(|e| format!("Write failed: {}", e))?;
+            }
         }
     }
     Ok(temp_dir)
+}
+
+/// Validate that a Git branch name contains only safe characters.
+fn is_valid_branch_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && !s.starts_with('.')
+        && !s.starts_with('-')
+        && !s.contains("..")
+        && !s.contains("//")
+        && !s.contains('\\')
+        && !s.contains(' ')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_' || c == '/')
 }
 
 async fn deploy_github_project(
@@ -1161,12 +1227,19 @@ async fn deploy_github_project(
     let repo_info =
         parse_github_url(url).ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
 
+    if !is_valid_branch_name(branch) {
+        return Err((StatusCode::BAD_REQUEST, "Invalid branch name".to_string()));
+    }
+
     let zip_url = format!(
         "https://github.com/{}/{}/archive/refs/heads/{}.zip",
         repo_info.owner, repo_info.repo, branch
     );
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let response = client.get(&zip_url).send().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
