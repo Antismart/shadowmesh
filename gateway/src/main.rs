@@ -293,7 +293,7 @@ async fn main() {
     // Start background cleanup task for stale signaling connections
     let signaling_cleanup = signaling_state.clone();
     let cleanup_token = shutdown_token.clone();
-    tokio::spawn(async move {
+    let cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             tokio::select! {
@@ -305,6 +305,12 @@ async fn main() {
                     break;
                 }
             }
+        }
+    });
+    // Monitor the cleanup task so panics are logged rather than silently lost
+    tokio::spawn(async move {
+        if let Err(e) = cleanup_handle.await {
+            tracing::error!("Signaling cleanup task failed: {}", e);
         }
     });
 
