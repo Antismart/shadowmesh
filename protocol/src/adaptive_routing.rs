@@ -19,6 +19,7 @@
 //! - TLS certificate anomalies
 //! - Consistent failures from specific ASNs
 
+use crate::lock_utils::{read_lock, write_lock};
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -690,19 +691,19 @@ impl AdaptiveRouter {
 
     /// Register a relay node
     pub fn register_relay(&self, info: RelayInfo) {
-        let mut relays = self.relays.write().unwrap();
+        let mut relays = write_lock(&self.relays);
         relays.insert(info.peer_id, info);
     }
 
     /// Remove a relay node
     pub fn remove_relay(&self, peer_id: &PeerId) {
-        let mut relays = self.relays.write().unwrap();
+        let mut relays = write_lock(&self.relays);
         relays.remove(peer_id);
     }
 
     /// Get relay info
     pub fn get_relay(&self, peer_id: &PeerId) -> Option<RelayInfo> {
-        let relays = self.relays.read().unwrap();
+        let relays = read_lock(&self.relays);
         relays.get(peer_id).cloned()
     }
 
@@ -712,9 +713,9 @@ impl AdaptiveRouter {
         destination: Option<PeerId>,
     ) -> Result<ComputedRoute, RoutingError> {
         let start = Instant::now();
-        let relays = self.relays.read().unwrap();
-        let blocked = self.blocked_paths.read().unwrap();
-        let path_health = self.path_health.read().unwrap();
+        let relays = read_lock(&self.relays);
+        let blocked = read_lock(&self.blocked_paths);
+        let path_health = read_lock(&self.path_health);
 
         // Filter available relays
         let available: Vec<&RelayInfo> = relays
@@ -783,10 +784,7 @@ impl AdaptiveRouter {
         }
 
         // Store route
-        self.active_routes
-            .write()
-            .unwrap()
-            .insert(route.id, route.clone());
+        write_lock(&self.active_routes).insert(route.id, route.clone());
 
         // Generate backup routes
         self.generate_backup_routes(&route)?;
@@ -982,9 +980,9 @@ impl AdaptiveRouter {
         // Try to generate 2 backup routes
         for i in 0..2 {
             // Temporarily mark primary relays as "to avoid" for diversity
-            let relays = self.relays.read().unwrap();
-            let blocked = self.blocked_paths.read().unwrap();
-            let path_health = self.path_health.read().unwrap();
+            let relays = read_lock(&self.relays);
+            let blocked = read_lock(&self.blocked_paths);
+            let path_health = read_lock(&self.path_health);
 
             let available: Vec<&RelayInfo> = relays
                 .values()
@@ -1027,17 +1025,14 @@ impl AdaptiveRouter {
             }
         }
 
-        self.backup_routes
-            .write()
-            .unwrap()
-            .insert(primary.id, backups);
+        write_lock(&self.backup_routes).insert(primary.id, backups);
         Ok(())
     }
 
     /// Record a successful delivery
     pub fn record_success(&self, route_id: &[u8; 16], _latency_ms: u64, _bytes: u64) {
         // Update route stats
-        if let Some(route) = self.active_routes.write().unwrap().get_mut(route_id) {
+        if let Some(route) = write_lock(&self.active_routes).get_mut(route_id) {
             route.use_count += 1;
         }
 
@@ -1055,7 +1050,7 @@ impl AdaptiveRouter {
         failure_type: FailureType,
     ) -> Option<ComputedRoute> {
         let route = {
-            let routes = self.active_routes.read().unwrap();
+            let routes = read_lock(&self.active_routes);
             routes.get(route_id).cloned()
         };
 
@@ -1066,7 +1061,7 @@ impl AdaptiveRouter {
             let from = route.relays[hop_index];
             let to = route.relays[hop_index + 1];
 
-            let mut path_health = self.path_health.write().unwrap();
+            let mut path_health = write_lock(&self.path_health);
             let health = path_health
                 .entry((from, to))
                 .or_insert_with(|| PathHealth::new(from, to));
@@ -1074,11 +1069,11 @@ impl AdaptiveRouter {
 
             // Check if this path should now be blocked
             if health.censorship_status == CensorshipStatus::Confirmed {
-                self.blocked_paths.write().unwrap().insert((from, to));
+                write_lock(&self.blocked_paths).insert((from, to));
 
                 if let Ok(mut stats) = self.stats.write() {
                     stats.censorship_events += 1;
-                    stats.blocked_paths = self.blocked_paths.read().unwrap().len();
+                    stats.blocked_paths = read_lock(&self.blocked_paths).len();
                 }
             }
         }
@@ -1098,14 +1093,18 @@ impl AdaptiveRouter {
 
     /// Switch to a backup route
     pub fn failover(&self, route_id: &[u8; 16]) -> Option<ComputedRoute> {
-        let backups = self.backup_routes.read().unwrap();
+        let backups = read_lock(&self.backup_routes);
 
         if let Some(backup_list) = backups.get(route_id) {
             // Find best available backup
             let best = backup_list
                 .iter()
                 .filter(|b| b.is_valid(Duration::from_secs(300)))
-                .max_by(|a, b| a.health_score.partial_cmp(&b.health_score).unwrap());
+                .max_by(|a, b| {
+                    a.health_score
+                        .partial_cmp(&b.health_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
 
             if let Some(backup) = best {
                 // Update stats
@@ -1114,10 +1113,7 @@ impl AdaptiveRouter {
                 }
 
                 // Promote backup to active
-                self.active_routes
-                    .write()
-                    .unwrap()
-                    .insert(backup.id, backup.clone());
+                write_lock(&self.active_routes).insert(backup.id, backup.clone());
 
                 return Some(backup.clone());
             }
@@ -1136,27 +1132,27 @@ impl AdaptiveRouter {
 
     /// Get routing statistics
     pub fn stats(&self) -> RoutingStats {
-        self.stats.read().unwrap().clone()
+        read_lock(&self.stats).clone()
     }
 
     /// Get blocked paths
     pub fn blocked_paths(&self) -> Vec<(PeerId, PeerId)> {
-        self.blocked_paths.read().unwrap().iter().copied().collect()
+        read_lock(&self.blocked_paths).iter().copied().collect()
     }
 
     /// Manually block a path
     pub fn block_path(&self, from: PeerId, to: PeerId) {
-        self.blocked_paths.write().unwrap().insert((from, to));
+        write_lock(&self.blocked_paths).insert((from, to));
     }
 
     /// Clear a blocked path (for retry)
     pub fn unblock_path(&self, from: PeerId, to: PeerId) {
-        self.blocked_paths.write().unwrap().remove(&(from, to));
+        write_lock(&self.blocked_paths).remove(&(from, to));
     }
 
     /// Get path health
     pub fn get_path_health(&self, from: PeerId, to: PeerId) -> Option<(f64, CensorshipStatus)> {
-        let path_health = self.path_health.read().unwrap();
+        let path_health = read_lock(&self.path_health);
         path_health
             .get(&(from, to))
             .map(|h| (h.health_score(), h.censorship_status))
@@ -1164,7 +1160,7 @@ impl AdaptiveRouter {
 
     /// Get all relays with censorship issues
     pub fn get_censored_paths(&self) -> Vec<(PeerId, PeerId, CensorshipStatus)> {
-        let path_health = self.path_health.read().unwrap();
+        let path_health = read_lock(&self.path_health);
         path_health
             .iter()
             .filter(|(_, h)| {
@@ -1179,12 +1175,12 @@ impl AdaptiveRouter {
 
     /// Get number of registered relays
     pub fn relay_count(&self) -> usize {
-        self.relays.read().unwrap().len()
+        read_lock(&self.relays).len()
     }
 
     /// Get number of active routes
     pub fn active_route_count(&self) -> usize {
-        self.active_routes.read().unwrap().len()
+        read_lock(&self.active_routes).len()
     }
 }
 
