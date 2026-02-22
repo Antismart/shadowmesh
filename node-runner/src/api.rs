@@ -302,10 +302,18 @@ pub struct PeerInfo {
 }
 
 /// Get connected peers
-async fn get_peers(State(_state): State<Arc<AppState>>) -> Json<Vec<PeerInfo>> {
-    // TODO: Integrate with actual P2P layer
-    // Placeholder - would normally come from P2P layer
-    Json(vec![])
+///
+/// Returns the local node as a self-entry. Remote peer tracking will be
+/// populated once the P2P swarm is wired into the API layer.
+async fn get_peers(State(state): State<Arc<AppState>>) -> Json<Vec<PeerInfo>> {
+    // Return self as the only known peer until P2P layer integration
+    let config = state.config.read().await;
+    Json(vec![PeerInfo {
+        peer_id: state.peer_id.clone(),
+        addresses: config.network.listen_addresses.clone(),
+        connected: true,
+        latency_ms: Some(0),
+    }])
 }
 
 /// Bandwidth response
@@ -350,4 +358,390 @@ async fn shutdown_node(State(state): State<Arc<AppState>>) -> Json<ShutdownRespo
         message: "Shutdown initiated".to_string(),
         graceful: true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── PeerInfo serialization ──────────────────────────────────────
+
+    #[test]
+    fn peer_info_serializes_all_fields() {
+        let peer = PeerInfo {
+            peer_id: "12D3KooWTest".to_string(),
+            addresses: vec!["/ip4/127.0.0.1/tcp/4001".to_string()],
+            connected: true,
+            latency_ms: Some(42),
+        };
+
+        let value = serde_json::to_value(&peer).unwrap();
+        assert_eq!(value["peer_id"], "12D3KooWTest");
+        assert_eq!(value["addresses"], json!(["/ip4/127.0.0.1/tcp/4001"]));
+        assert_eq!(value["connected"], true);
+        assert_eq!(value["latency_ms"], 42);
+    }
+
+    #[test]
+    fn peer_info_serializes_none_latency_as_null() {
+        let peer = PeerInfo {
+            peer_id: "12D3KooWTest".to_string(),
+            addresses: vec![],
+            connected: false,
+            latency_ms: None,
+        };
+
+        let value = serde_json::to_value(&peer).unwrap();
+        assert!(value["latency_ms"].is_null());
+        assert_eq!(value["connected"], false);
+        assert!(value["addresses"].as_array().unwrap().is_empty());
+    }
+
+    // ── BandwidthResponse serialization ─────────────────────────────
+
+    #[test]
+    fn bandwidth_response_serializes_all_fields() {
+        let bw = BandwidthResponse {
+            inbound_bps: 1024,
+            outbound_bps: 2048,
+            total_inbound: "1.00 KB".to_string(),
+            total_outbound: "2.00 KB".to_string(),
+            limit_inbound: Some(10_000_000),
+            limit_outbound: None,
+        };
+
+        let value = serde_json::to_value(&bw).unwrap();
+        assert_eq!(value["inbound_bps"], 1024);
+        assert_eq!(value["outbound_bps"], 2048);
+        assert_eq!(value["total_inbound"], "1.00 KB");
+        assert_eq!(value["total_outbound"], "2.00 KB");
+        assert_eq!(value["limit_inbound"], 10_000_000);
+        assert!(value["limit_outbound"].is_null());
+    }
+
+    #[test]
+    fn bandwidth_response_roundtrip_json_string() {
+        let bw = BandwidthResponse {
+            inbound_bps: 0,
+            outbound_bps: 0,
+            total_inbound: "0 B".to_string(),
+            total_outbound: "0 B".to_string(),
+            limit_inbound: None,
+            limit_outbound: None,
+        };
+
+        let json_str = serde_json::to_string(&bw).unwrap();
+        assert!(json_str.contains("\"inbound_bps\":0"));
+        assert!(json_str.contains("\"outbound_bps\":0"));
+    }
+
+    // ── ShutdownResponse serialization ──────────────────────────────
+
+    #[test]
+    fn shutdown_response_serializes_correctly() {
+        let resp = ShutdownResponse {
+            message: "Shutdown initiated".to_string(),
+            graceful: true,
+        };
+
+        let value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(value["message"], "Shutdown initiated");
+        assert_eq!(value["graceful"], true);
+    }
+
+    #[test]
+    fn shutdown_response_non_graceful() {
+        let resp = ShutdownResponse {
+            message: "Force shutdown".to_string(),
+            graceful: false,
+        };
+
+        let value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(value["message"], "Force shutdown");
+        assert_eq!(value["graceful"], false);
+    }
+
+    // ── StorageStats serialization ──────────────────────────────────
+
+    #[test]
+    fn storage_stats_serializes_with_defaults() {
+        let stats = StorageStats::default();
+        let value = serde_json::to_value(&stats).unwrap();
+
+        assert_eq!(value["total_bytes"], 0);
+        assert_eq!(value["fragment_count"], 0);
+        assert_eq!(value["content_count"], 0);
+        assert_eq!(value["pinned_count"], 0);
+        assert_eq!(value["capacity_bytes"], 0);
+        assert!(value["last_gc"].is_null());
+    }
+
+    #[test]
+    fn storage_stats_serializes_populated() {
+        let stats = StorageStats {
+            total_bytes: 5_000_000,
+            fragment_count: 10,
+            content_count: 3,
+            pinned_count: 1,
+            capacity_bytes: 10_000_000,
+            last_gc: Some(1700000000),
+        };
+
+        let value = serde_json::to_value(&stats).unwrap();
+        assert_eq!(value["total_bytes"], 5_000_000);
+        assert_eq!(value["fragment_count"], 10);
+        assert_eq!(value["content_count"], 3);
+        assert_eq!(value["pinned_count"], 1);
+        assert_eq!(value["capacity_bytes"], 10_000_000);
+        assert_eq!(value["last_gc"], 1_700_000_000);
+    }
+
+    #[test]
+    fn storage_stats_usage_percentage() {
+        let stats = StorageStats {
+            total_bytes: 500,
+            capacity_bytes: 1000,
+            ..Default::default()
+        };
+        let pct = stats.usage_percentage();
+        assert!((pct - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn storage_stats_usage_percentage_zero_capacity() {
+        let stats = StorageStats::default();
+        assert!((stats.usage_percentage() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn storage_stats_available_bytes() {
+        let stats = StorageStats {
+            total_bytes: 300,
+            capacity_bytes: 1000,
+            ..Default::default()
+        };
+        assert_eq!(stats.available_bytes(), 700);
+    }
+
+    #[test]
+    fn storage_stats_available_bytes_saturates() {
+        let stats = StorageStats {
+            total_bytes: 2000,
+            capacity_bytes: 1000,
+            ..Default::default()
+        };
+        assert_eq!(stats.available_bytes(), 0);
+    }
+
+    // ── StoredContent serialization ─────────────────────────────────
+
+    #[test]
+    fn stored_content_serializes_correctly() {
+        let content = StoredContent {
+            cid: "QmTestCid123".to_string(),
+            name: "test-file.txt".to_string(),
+            total_size: 4096,
+            fragment_count: 2,
+            fragments: vec!["hash_a".to_string(), "hash_b".to_string()],
+            stored_at: 1700000000,
+            pinned: true,
+            mime_type: "text/plain".to_string(),
+        };
+
+        let value = serde_json::to_value(&content).unwrap();
+        assert_eq!(value["cid"], "QmTestCid123");
+        assert_eq!(value["name"], "test-file.txt");
+        assert_eq!(value["total_size"], 4096);
+        assert_eq!(value["fragment_count"], 2);
+        assert_eq!(value["fragments"], json!(["hash_a", "hash_b"]));
+        assert_eq!(value["stored_at"], 1_700_000_000);
+        assert_eq!(value["pinned"], true);
+        assert_eq!(value["mime_type"], "text/plain");
+    }
+
+    #[test]
+    fn stored_content_deserializes_roundtrip() {
+        let original = StoredContent {
+            cid: "QmRoundTrip".to_string(),
+            name: "round.bin".to_string(),
+            total_size: 999,
+            fragment_count: 1,
+            fragments: vec!["frag0".to_string()],
+            stored_at: 1600000000,
+            pinned: false,
+            mime_type: "application/octet-stream".to_string(),
+        };
+
+        let json_str = serde_json::to_string(&original).unwrap();
+        let deserialized: StoredContent = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(deserialized.cid, original.cid);
+        assert_eq!(deserialized.name, original.name);
+        assert_eq!(deserialized.total_size, original.total_size);
+        assert_eq!(deserialized.fragment_count, original.fragment_count);
+        assert_eq!(deserialized.fragments, original.fragments);
+        assert_eq!(deserialized.stored_at, original.stored_at);
+        assert_eq!(deserialized.pinned, original.pinned);
+        assert_eq!(deserialized.mime_type, original.mime_type);
+    }
+
+    // ── NodeStatusResponse serialization ────────────────────────────
+
+    #[test]
+    fn node_status_response_serializes_correctly() {
+        let resp = NodeStatusResponse {
+            peer_id: "12D3KooWStatus".to_string(),
+            name: "my-node".to_string(),
+            version: "0.1.0".to_string(),
+            uptime_secs: 3600,
+            uptime_formatted: "1h 0m 0s".to_string(),
+            status: "running".to_string(),
+            storage_used: 1024,
+            storage_capacity: 1_073_741_824,
+            connected_peers: 5,
+            bandwidth_served: "10.00 MB".to_string(),
+        };
+
+        let value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(value["peer_id"], "12D3KooWStatus");
+        assert_eq!(value["name"], "my-node");
+        assert_eq!(value["uptime_secs"], 3600);
+        assert_eq!(value["status"], "running");
+        assert_eq!(value["connected_peers"], 5);
+        assert_eq!(value["bandwidth_served"], "10.00 MB");
+    }
+
+    // ── HealthResponse / HealthChecks serialization ─────────────────
+
+    #[test]
+    fn health_response_serializes_correctly() {
+        let resp = HealthResponse {
+            healthy: true,
+            checks: HealthChecks {
+                storage: true,
+                network: true,
+                api: true,
+            },
+        };
+
+        let value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(value["healthy"], true);
+        assert_eq!(value["checks"]["storage"], true);
+        assert_eq!(value["checks"]["network"], true);
+        assert_eq!(value["checks"]["api"], true);
+    }
+
+    #[test]
+    fn health_response_unhealthy() {
+        let resp = HealthResponse {
+            healthy: false,
+            checks: HealthChecks {
+                storage: false,
+                network: true,
+                api: true,
+            },
+        };
+
+        let value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(value["healthy"], false);
+        assert_eq!(value["checks"]["storage"], false);
+    }
+
+    // ── Helper function tests ───────────────────────────────────────
+
+    #[test]
+    fn default_limit_returns_60() {
+        assert_eq!(default_limit(), 60);
+    }
+
+    #[test]
+    fn default_gc_target_returns_1() {
+        assert!((default_gc_target() - 1.0).abs() < f64::EPSILON);
+    }
+
+    // ── HistoryQuery deserialization ────────────────────────────────
+
+    #[test]
+    fn history_query_with_explicit_limit() {
+        let q: HistoryQuery = serde_json::from_str(r#"{"limit": 100}"#).unwrap();
+        assert_eq!(q.limit, 100);
+    }
+
+    #[test]
+    fn history_query_uses_default_limit() {
+        let q: HistoryQuery = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(q.limit, 60);
+    }
+
+    // ── ConfigUpdateRequest deserialization ──────────────────────────
+
+    #[test]
+    fn config_update_request_all_fields() {
+        let req: ConfigUpdateRequest = serde_json::from_str(
+            r#"{
+                "max_storage_gb": 10.5,
+                "max_bandwidth_mbps": 100,
+                "max_peers": 50,
+                "node_name": "my-node"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(req.max_storage_gb, Some(10.5));
+        assert_eq!(req.max_bandwidth_mbps, Some(100));
+        assert_eq!(req.max_peers, Some(50));
+        assert_eq!(req.node_name, Some("my-node".to_string()));
+    }
+
+    #[test]
+    fn config_update_request_partial_fields() {
+        let req: ConfigUpdateRequest =
+            serde_json::from_str(r#"{"node_name": "updated"}"#).unwrap();
+
+        assert!(req.max_storage_gb.is_none());
+        assert!(req.max_bandwidth_mbps.is_none());
+        assert!(req.max_peers.is_none());
+        assert_eq!(req.node_name, Some("updated".to_string()));
+    }
+
+    #[test]
+    fn config_update_request_empty() {
+        let req: ConfigUpdateRequest = serde_json::from_str(r#"{}"#).unwrap();
+
+        assert!(req.max_storage_gb.is_none());
+        assert!(req.max_bandwidth_mbps.is_none());
+        assert!(req.max_peers.is_none());
+        assert!(req.node_name.is_none());
+    }
+
+    // ── GCRequest deserialization ───────────────────────────────────
+
+    #[test]
+    fn gc_request_with_explicit_target() {
+        let req: GCRequest = serde_json::from_str(r#"{"target_free_gb": 5.0}"#).unwrap();
+        assert!((req.target_free_gb - 5.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn gc_request_uses_default_target() {
+        let req: GCRequest = serde_json::from_str(r#"{}"#).unwrap();
+        assert!((req.target_free_gb - 1.0).abs() < f64::EPSILON);
+    }
+
+    // ── GCResult serialization ──────────────────────────────────────
+
+    #[test]
+    fn gc_result_serializes_correctly() {
+        let result = crate::storage::GCResult {
+            freed_bytes: 1024,
+            removed_fragments: 3,
+            removed_content: 1,
+        };
+
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["freed_bytes"], 1024);
+        assert_eq!(value["removed_fragments"], 3);
+        assert_eq!(value["removed_content"], 1);
+    }
 }
