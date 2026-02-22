@@ -199,7 +199,7 @@ impl StorageManager {
         // Update metadata
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let fragment = StoredFragment {
@@ -257,7 +257,7 @@ impl StorageManager {
             if let Some(frag) = fragments.get_mut(hash) {
                 frag.last_accessed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 frag.access_count += 1;
             }
@@ -499,7 +499,7 @@ impl StorageManager {
             stats.last_gc = Some(
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs(),
             );
         }
