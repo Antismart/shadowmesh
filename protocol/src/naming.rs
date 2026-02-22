@@ -111,6 +111,8 @@ pub enum NamingError {
     InvalidTtl(u64),
     /// Sequence number is not higher than existing
     StaleSequence,
+    /// Name resolution failed (e.g., ENS not configured)
+    ResolutionFailed(String),
 }
 
 impl std::fmt::Display for NamingError {
@@ -128,6 +130,7 @@ impl std::fmt::Display for NamingError {
                 write!(f, "TTL {} out of range [{}, {}]", ttl, MIN_NAME_TTL, MAX_NAME_TTL)
             }
             NamingError::StaleSequence => write!(f, "Sequence number is not higher than existing"),
+            NamingError::ResolutionFailed(msg) => write!(f, "Resolution failed: {}", msg),
         }
     }
 }
