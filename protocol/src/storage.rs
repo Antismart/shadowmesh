@@ -78,6 +78,14 @@ impl IpfsHttpClient {
     }
 
     async fn cat(&self, cid: &str) -> Result<Vec<u8>, reqwest::Error> {
+        // Validate CID contains only safe base-encoded characters to prevent
+        // query parameter injection into the IPFS API URL.
+        assert!(
+            !cid.is_empty()
+                && cid.len() <= 512
+                && cid.chars().all(|c| c.is_ascii_alphanumeric()),
+            "Invalid CID format"
+        );
         let url = format!("{}/api/v0/cat?arg={}", self.base_url, cid);
         let resp = self.client.post(&url).send().await?;
         Ok(resp.bytes().await?.to_vec())
