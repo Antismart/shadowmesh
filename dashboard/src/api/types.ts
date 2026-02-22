@@ -10,6 +10,7 @@ export interface Deployment {
   build_status: string;
   build_logs: string | null;
   status: string;
+  domain: string | null;
 }
 
 export interface DeployResponse {
@@ -93,11 +94,26 @@ export interface ApiKeyCreateResponse {
   prefix: string;
 }
 
+export interface NameRecord {
+  name: string;
+  name_hash: string;
+  owner_pubkey: string;
+  records: Array<{ Content?: { cid: string } }>;
+  sequence: number;
+  created_at: number;
+  updated_at: number;
+  ttl_seconds: number;
+  signature: string;
+}
+
 export interface NameResolveResponse {
   found: boolean;
-  record?: {
-    name: string;
-    name_hash: string;
-    records: unknown[];
-  };
+  record?: NameRecord;
+}
+
+export interface NameAssignResponse {
+  success: boolean;
+  name: string;
+  name_hash: string;
+  cid: string;
 }
