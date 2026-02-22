@@ -20,6 +20,7 @@
 //! 6. Client decrypts all layers to get content
 
 use crate::crypto::{CryptoManager, KEY_SIZE};
+use crate::lock_utils::{read_lock, write_lock};
 use blake3::Hasher;
 use chacha20poly1305::aead::{AeadCore, OsRng};
 use chacha20poly1305::ChaCha20Poly1305;
@@ -830,7 +831,10 @@ impl ZkRelayClient {
             context.extend_from_slice(&circuit_id);
             context.extend_from_slice(&i.to_le_bytes());
 
-            let hop = circuit.hops.last_mut().unwrap();
+            let hop = circuit
+                .hops
+                .last_mut()
+                .expect("hop was just added via add_hop");
             let mock_relay_public: X25519PublicKey = rand::random();
             hop.relay_public_key = Some(mock_relay_public);
             hop.symmetric_key = Some(
@@ -1043,7 +1047,7 @@ impl ZkRelayNode {
 
     /// Handle circuit creation with ECDH key exchange
     fn handle_create(&self, cell: RelayCell, from_peer: PeerId) -> Result<RelayAction, RelayError> {
-        let mut states = self.circuit_states.write().unwrap();
+        let mut states = write_lock(&self.circuit_states);
 
         if states.len() >= self.config.max_circuits {
             return Err(RelayError::MaxCircuitsExceeded);
@@ -1079,7 +1083,7 @@ impl ZkRelayNode {
 
     /// Handle circuit extension
     fn handle_extend(&self, cell: RelayCell, from_peer: PeerId) -> Result<RelayAction, RelayError> {
-        let mut states = self.circuit_states.write().unwrap();
+        let mut states = write_lock(&self.circuit_states);
 
         let state = states
             .get_mut(&cell.circuit_id)
@@ -1119,7 +1123,7 @@ impl ZkRelayNode {
 
     /// Handle relay cell (the main forwarding path)
     fn handle_relay(&self, cell: RelayCell, from_peer: PeerId) -> Result<RelayAction, RelayError> {
-        let states = self.circuit_states.read().unwrap();
+        let states = read_lock(&self.circuit_states);
 
         let state = states
             .get(&cell.circuit_id)
@@ -1127,10 +1131,7 @@ impl ZkRelayNode {
 
         if state.is_expired() {
             drop(states);
-            self.circuit_states
-                .write()
-                .unwrap()
-                .remove(&cell.circuit_id);
+            write_lock(&self.circuit_states).remove(&cell.circuit_id);
             return Err(RelayError::CircuitExpired);
         }
 
@@ -1203,7 +1204,7 @@ impl ZkRelayNode {
 
     /// Handle circuit destruction
     fn handle_destroy(&self, cell: RelayCell) -> Result<RelayAction, RelayError> {
-        let mut states = self.circuit_states.write().unwrap();
+        let mut states = write_lock(&self.circuit_states);
 
         if let Some(state) = states.remove(&cell.circuit_id) {
             // Update stats
@@ -1227,17 +1228,17 @@ impl ZkRelayNode {
 
     /// Get relay statistics
     pub fn stats(&self) -> RelayStats {
-        self.stats.read().unwrap().clone()
+        read_lock(&self.stats).clone()
     }
 
     /// Get active circuit count
     pub fn active_circuits(&self) -> usize {
-        self.circuit_states.read().unwrap().len()
+        read_lock(&self.circuit_states).len()
     }
 
     /// Clean up expired circuits
     pub fn cleanup_expired(&self) -> usize {
-        let mut states = self.circuit_states.write().unwrap();
+        let mut states = write_lock(&self.circuit_states);
         let before = states.len();
         states.retain(|_, s| !s.is_expired());
         let removed = before - states.len();
