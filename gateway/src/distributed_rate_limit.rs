@@ -54,18 +54,12 @@ impl DistributedRateLimiter {
             .and_then(|value| value.strip_prefix("Bearer ").map(|s| s.to_string()))
     }
 
-    /// Extract client IP from request
+    /// Extract client IP from request.
+    ///
+    /// Uses the direct connection IP to prevent X-Forwarded-For spoofing.
+    /// If running behind a trusted reverse proxy, configure the proxy to
+    /// set a verified header and update this function accordingly.
     fn extract_client_ip(req: &Request<Body>) -> String {
-        // Check X-Forwarded-For header first (for proxied requests)
-        if let Some(forwarded) = req.headers().get("x-forwarded-for") {
-            if let Ok(value) = forwarded.to_str() {
-                if let Some(ip) = value.split(',').next() {
-                    return ip.trim().to_string();
-                }
-            }
-        }
-
-        // Fall back to direct connection IP
         req.extensions()
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ci| ci.0.ip().to_string())
