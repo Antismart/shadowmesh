@@ -113,19 +113,12 @@ impl RateLimiter {
             .and_then(|value| value.strip_prefix("Bearer ").map(|s| s.to_string()))
     }
 
-    /// Extract client IP from request
+    /// Extract client IP from request.
+    ///
+    /// Uses the direct connection IP to prevent X-Forwarded-For spoofing.
+    /// If running behind a trusted reverse proxy, configure the proxy to
+    /// set a verified header and update this function accordingly.
     fn extract_client_ip(req: &Request<Body>) -> String {
-        // Check X-Forwarded-For header first (for proxied requests)
-        if let Some(forwarded) = req.headers().get("x-forwarded-for") {
-            if let Ok(value) = forwarded.to_str() {
-                // Take the first IP (original client)
-                if let Some(ip) = value.split(',').next() {
-                    return ip.trim().to_string();
-                }
-            }
-        }
-
-        // Fall back to direct connection IP
         req.extensions()
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ci| ci.0.ip().to_string())
@@ -184,7 +177,8 @@ impl RateLimiter {
         let mut limits = limits.write().await;
         let now = Instant::now();
 
-        if limits.len() > 10000 {
+        // Always evict stale entries when map grows beyond a modest threshold
+        if limits.len() > 1000 {
             limits.retain(|_, limit| {
                 now.duration_since(limit.window_start) < Duration::from_secs(60)
             });
@@ -232,8 +226,8 @@ impl RateLimiter {
         {
             Ok(()) => {
                 // Periodically cleanup old entries
-                if rand::random::<u8>() < 10 {
-                    // ~4% chance
+                if rand::random::<u8>() < 25 {
+                    // ~10% chance
                     let ip_limits = self.ip_limits.clone();
                     let key_limits = self.key_limits.clone();
                     tokio::spawn(async move {
