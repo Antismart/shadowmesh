@@ -248,6 +248,9 @@ async fn main() {
         naming_key,
     };
 
+    // Clone audit logger before state is moved into the router
+    let audit_for_auth = state.audit_logger.clone();
+
     // Initialize API key manager for key rotation
     let admin_key = std::env::var("SHADOWMESH_ADMIN_KEY").ok();
     let api_key_manager = Arc::new(api_keys::ApiKeyManager::new(redis, admin_key));
@@ -398,7 +401,8 @@ async fn main() {
         let auth_config_clone = auth_config.clone();
         app = app.layer(axum_middleware::from_fn(move |req, next| {
             let auth = auth_config_clone.clone();
-            async move { auth::api_key_auth(auth, req, next).await }
+            let audit = audit_for_auth.clone();
+            async move { auth::api_key_auth(auth, audit, req, next).await }
         }));
         println!("🔐 API authentication enabled");
     } else {
