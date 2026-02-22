@@ -9,145 +9,159 @@ use prometheus::{
 };
 use std::time::Instant;
 
+/// Helper macro to create a metric and log on failure instead of panicking.
+macro_rules! create_metric {
+    ($constructor:expr, $name:expr) => {
+        $constructor.unwrap_or_else(|e| {
+            panic!("failed to create metric '{}': {}", $name, e)
+        })
+    };
+}
+
 lazy_static! {
     pub static ref REGISTRY: Registry = Registry::new();
 
     // Request metrics
-    pub static ref HTTP_REQUESTS_TOTAL: IntCounterVec = IntCounterVec::new(
-        Opts::new("http_requests_total", "Total number of HTTP requests"),
-        &["method", "endpoint", "status"]
-    ).expect("metric can be created");
+    pub static ref HTTP_REQUESTS_TOTAL: IntCounterVec = create_metric!(
+        IntCounterVec::new(
+            Opts::new("http_requests_total", "Total number of HTTP requests"),
+            &["method", "endpoint", "status"]
+        ),
+        "http_requests_total"
+    );
 
-    pub static ref HTTP_REQUEST_DURATION_SECONDS: HistogramVec = HistogramVec::new(
-        HistogramOpts::new(
-            "http_request_duration_seconds",
-            "HTTP request duration in seconds"
-        ).buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
-        &["method", "endpoint"]
-    ).expect("metric can be created");
+    pub static ref HTTP_REQUEST_DURATION_SECONDS: HistogramVec = create_metric!(
+        HistogramVec::new(
+            HistogramOpts::new(
+                "http_request_duration_seconds",
+                "HTTP request duration in seconds"
+            ).buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
+            &["method", "endpoint"]
+        ),
+        "http_request_duration_seconds"
+    );
 
-    pub static ref HTTP_REQUESTS_IN_FLIGHT: IntGauge = IntGauge::new(
-        "http_requests_in_flight",
-        "Number of HTTP requests currently being processed"
-    ).expect("metric can be created");
+    pub static ref HTTP_REQUESTS_IN_FLIGHT: IntGauge = create_metric!(
+        IntGauge::new(
+            "http_requests_in_flight",
+            "Number of HTTP requests currently being processed"
+        ),
+        "http_requests_in_flight"
+    );
 
     // Bytes metrics
-    pub static ref BYTES_SERVED_TOTAL: IntCounter = IntCounter::new(
-        "bytes_served_total",
-        "Total bytes served to clients"
-    ).expect("metric can be created");
+    pub static ref BYTES_SERVED_TOTAL: IntCounter = create_metric!(
+        IntCounter::new("bytes_served_total", "Total bytes served to clients"),
+        "bytes_served_total"
+    );
 
-    pub static ref BYTES_RECEIVED_TOTAL: IntCounter = IntCounter::new(
-        "bytes_received_total",
-        "Total bytes received from clients"
-    ).expect("metric can be created");
+    pub static ref BYTES_RECEIVED_TOTAL: IntCounter = create_metric!(
+        IntCounter::new("bytes_received_total", "Total bytes received from clients"),
+        "bytes_received_total"
+    );
 
     // Cache metrics
-    pub static ref CACHE_HITS_TOTAL: IntCounter = IntCounter::new(
-        "cache_hits_total",
-        "Total number of cache hits"
-    ).expect("metric can be created");
+    pub static ref CACHE_HITS_TOTAL: IntCounter = create_metric!(
+        IntCounter::new("cache_hits_total", "Total number of cache hits"),
+        "cache_hits_total"
+    );
 
-    pub static ref CACHE_MISSES_TOTAL: IntCounter = IntCounter::new(
-        "cache_misses_total",
-        "Total number of cache misses"
-    ).expect("metric can be created");
+    pub static ref CACHE_MISSES_TOTAL: IntCounter = create_metric!(
+        IntCounter::new("cache_misses_total", "Total number of cache misses"),
+        "cache_misses_total"
+    );
 
-    pub static ref CACHE_SIZE_ENTRIES: IntGauge = IntGauge::new(
-        "cache_size_entries",
-        "Current number of entries in cache"
-    ).expect("metric can be created");
+    pub static ref CACHE_SIZE_ENTRIES: IntGauge = create_metric!(
+        IntGauge::new("cache_size_entries", "Current number of entries in cache"),
+        "cache_size_entries"
+    );
 
     // IPFS metrics
-    pub static ref IPFS_OPERATIONS_TOTAL: IntCounterVec = IntCounterVec::new(
-        Opts::new("ipfs_operations_total", "Total IPFS operations"),
-        &["operation", "status"]
-    ).expect("metric can be created");
+    pub static ref IPFS_OPERATIONS_TOTAL: IntCounterVec = create_metric!(
+        IntCounterVec::new(
+            Opts::new("ipfs_operations_total", "Total IPFS operations"),
+            &["operation", "status"]
+        ),
+        "ipfs_operations_total"
+    );
 
-    pub static ref IPFS_OPERATION_DURATION_SECONDS: HistogramVec = HistogramVec::new(
-        HistogramOpts::new(
-            "ipfs_operation_duration_seconds",
-            "IPFS operation duration in seconds"
-        ).buckets(vec![0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0]),
-        &["operation"]
-    ).expect("metric can be created");
+    pub static ref IPFS_OPERATION_DURATION_SECONDS: HistogramVec = create_metric!(
+        HistogramVec::new(
+            HistogramOpts::new(
+                "ipfs_operation_duration_seconds",
+                "IPFS operation duration in seconds"
+            ).buckets(vec![0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0]),
+            &["operation"]
+        ),
+        "ipfs_operation_duration_seconds"
+    );
 
-    pub static ref IPFS_CONNECTED: IntGauge = IntGauge::new(
-        "ipfs_connected",
-        "Whether the gateway is connected to IPFS (1=yes, 0=no)"
-    ).expect("metric can be created");
+    pub static ref IPFS_CONNECTED: IntGauge = create_metric!(
+        IntGauge::new(
+            "ipfs_connected",
+            "Whether the gateway is connected to IPFS (1=yes, 0=no)"
+        ),
+        "ipfs_connected"
+    );
 
     // Deployment metrics
-    pub static ref DEPLOYMENTS_TOTAL: IntCounterVec = IntCounterVec::new(
-        Opts::new("deployments_total", "Total deployments"),
-        &["status"]
-    ).expect("metric can be created");
+    pub static ref DEPLOYMENTS_TOTAL: IntCounterVec = create_metric!(
+        IntCounterVec::new(
+            Opts::new("deployments_total", "Total deployments"),
+            &["status"]
+        ),
+        "deployments_total"
+    );
 
-    pub static ref ACTIVE_DEPLOYMENTS: IntGauge = IntGauge::new(
-        "active_deployments",
-        "Number of active deployments"
-    ).expect("metric can be created");
+    pub static ref ACTIVE_DEPLOYMENTS: IntGauge = create_metric!(
+        IntGauge::new("active_deployments", "Number of active deployments"),
+        "active_deployments"
+    );
 
     // Rate limiting metrics
-    pub static ref RATE_LIMIT_EXCEEDED_TOTAL: IntCounter = IntCounter::new(
-        "rate_limit_exceeded_total",
-        "Total number of requests rejected due to rate limiting"
-    ).expect("metric can be created");
+    pub static ref RATE_LIMIT_EXCEEDED_TOTAL: IntCounter = create_metric!(
+        IntCounter::new(
+            "rate_limit_exceeded_total",
+            "Total number of requests rejected due to rate limiting"
+        ),
+        "rate_limit_exceeded_total"
+    );
 
     // Auth metrics
-    pub static ref AUTH_FAILURES_TOTAL: IntCounterVec = IntCounterVec::new(
-        Opts::new("auth_failures_total", "Total authentication failures"),
-        &["reason"]
-    ).expect("metric can be created");
+    pub static ref AUTH_FAILURES_TOTAL: IntCounterVec = create_metric!(
+        IntCounterVec::new(
+            Opts::new("auth_failures_total", "Total authentication failures"),
+            &["reason"]
+        ),
+        "auth_failures_total"
+    );
 }
 
 /// Register all metrics with the registry
 pub fn register_metrics() {
-    REGISTRY
-        .register(Box::new(HTTP_REQUESTS_TOTAL.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(HTTP_REQUEST_DURATION_SECONDS.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(HTTP_REQUESTS_IN_FLIGHT.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(BYTES_SERVED_TOTAL.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(BYTES_RECEIVED_TOTAL.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(CACHE_HITS_TOTAL.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(CACHE_MISSES_TOTAL.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(CACHE_SIZE_ENTRIES.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(IPFS_OPERATIONS_TOTAL.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(IPFS_OPERATION_DURATION_SECONDS.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(IPFS_CONNECTED.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(DEPLOYMENTS_TOTAL.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(ACTIVE_DEPLOYMENTS.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(RATE_LIMIT_EXCEEDED_TOTAL.clone()))
-        .expect("metric can be registered");
-    REGISTRY
-        .register(Box::new(AUTH_FAILURES_TOTAL.clone()))
-        .expect("metric can be registered");
+    let metrics: Vec<(&str, Box<dyn prometheus::core::Collector>)> = vec![
+        ("http_requests_total", Box::new(HTTP_REQUESTS_TOTAL.clone())),
+        ("http_request_duration_seconds", Box::new(HTTP_REQUEST_DURATION_SECONDS.clone())),
+        ("http_requests_in_flight", Box::new(HTTP_REQUESTS_IN_FLIGHT.clone())),
+        ("bytes_served_total", Box::new(BYTES_SERVED_TOTAL.clone())),
+        ("bytes_received_total", Box::new(BYTES_RECEIVED_TOTAL.clone())),
+        ("cache_hits_total", Box::new(CACHE_HITS_TOTAL.clone())),
+        ("cache_misses_total", Box::new(CACHE_MISSES_TOTAL.clone())),
+        ("cache_size_entries", Box::new(CACHE_SIZE_ENTRIES.clone())),
+        ("ipfs_operations_total", Box::new(IPFS_OPERATIONS_TOTAL.clone())),
+        ("ipfs_operation_duration_seconds", Box::new(IPFS_OPERATION_DURATION_SECONDS.clone())),
+        ("ipfs_connected", Box::new(IPFS_CONNECTED.clone())),
+        ("deployments_total", Box::new(DEPLOYMENTS_TOTAL.clone())),
+        ("active_deployments", Box::new(ACTIVE_DEPLOYMENTS.clone())),
+        ("rate_limit_exceeded_total", Box::new(RATE_LIMIT_EXCEEDED_TOTAL.clone())),
+        ("auth_failures_total", Box::new(AUTH_FAILURES_TOTAL.clone())),
+    ];
+
+    for (name, collector) in metrics {
+        if let Err(e) = REGISTRY.register(collector) {
+            tracing::error!("Failed to register metric '{}': {}", name, e);
+        }
+    }
 }
 
 /// Encode metrics in Prometheus text format
