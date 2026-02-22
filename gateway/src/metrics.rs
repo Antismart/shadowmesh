@@ -135,6 +135,15 @@ lazy_static! {
         ),
         "auth_failures_total"
     );
+
+    // Circuit breaker metrics
+    pub static ref CIRCUIT_BREAKER_STATE: IntGauge = create_metric!(
+        IntGauge::new(
+            "circuit_breaker_state",
+            "Circuit breaker state (0=closed, 1=half-open, 2=open)"
+        ),
+        "circuit_breaker_state"
+    );
 }
 
 /// Register all metrics with the registry
@@ -155,6 +164,7 @@ pub fn register_metrics() {
         ("active_deployments", Box::new(ACTIVE_DEPLOYMENTS.clone())),
         ("rate_limit_exceeded_total", Box::new(RATE_LIMIT_EXCEEDED_TOTAL.clone())),
         ("auth_failures_total", Box::new(AUTH_FAILURES_TOTAL.clone())),
+        ("circuit_breaker_state", Box::new(CIRCUIT_BREAKER_STATE.clone())),
     ];
 
     for (name, collector) in metrics {
@@ -230,7 +240,6 @@ pub fn record_cache_miss() {
 }
 
 /// Update cache size
-#[allow(dead_code)]
 pub fn update_cache_size(entries: i64) {
     CACHE_SIZE_ENTRIES.set(entries);
 }
@@ -252,7 +261,6 @@ pub fn set_ipfs_connected(connected: bool) {
 }
 
 /// Record deployment
-#[allow(dead_code)]
 pub fn record_deployment(success: bool) {
     let status = if success { "success" } else { "error" };
     DEPLOYMENTS_TOTAL.with_label_values(&[status]).inc();
@@ -267,7 +275,18 @@ pub fn record_rate_limit_exceeded() {
 }
 
 /// Record auth failure
-#[allow(dead_code)]
 pub fn record_auth_failure(reason: &str) {
     AUTH_FAILURES_TOTAL.with_label_values(&[reason]).inc();
+}
+
+/// Update circuit breaker state metric
+pub fn update_circuit_breaker_state(is_open: bool, is_half_open: bool) {
+    let state = if is_open {
+        2
+    } else if is_half_open {
+        1
+    } else {
+        0
+    };
+    CIRCUIT_BREAKER_STATE.set(state);
 }
