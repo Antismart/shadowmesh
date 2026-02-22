@@ -96,7 +96,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
     };
 
     // Process multipart fields
-    while let Ok(Some(field)) = multipart.next_field().await {
+    while let Ok(Some(mut field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
 
         if name != "file" {
@@ -105,35 +105,40 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
 
         let filename = field.file_name().map(|s| s.to_string());
 
-        // Read the ZIP data
-        let data = match field.bytes().await {
-            Ok(bytes) => bytes.to_vec(),
-            Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(DeployError::new(
-                        format!("Failed to read upload: {}", e),
-                        "READ_ERROR",
-                    )),
-                )
-                    .into_response();
-            }
-        };
-
-        // Check size limit (configurable via config.toml)
+        // Read the ZIP data with streaming size enforcement.
+        // This prevents buffering an unbounded upload into RAM.
         let max_deploy_size = state.config.deploy.max_size_bytes();
-        if data.len() > max_deploy_size {
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                Json(DeployError::new(
-                    format!(
-                        "Deployment too large. Maximum size is {} MB",
-                        state.config.deploy.max_size_mb
-                    ),
-                    "FILE_TOO_LARGE",
-                )),
-            )
-                .into_response();
+        let mut data = Vec::new();
+        loop {
+            match field.chunk().await {
+                Ok(Some(chunk)) => {
+                    if data.len() + chunk.len() > max_deploy_size {
+                        return (
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            Json(DeployError::new(
+                                format!(
+                                    "Deployment too large. Maximum size is {} MB",
+                                    state.config.deploy.max_size_mb
+                                ),
+                                "FILE_TOO_LARGE",
+                            )),
+                        )
+                            .into_response();
+                    }
+                    data.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(DeployError::new(
+                            format!("Failed to read upload: {}", e),
+                            "READ_ERROR",
+                        )),
+                    )
+                        .into_response();
+                }
+            }
         }
 
         // Verify it's a ZIP file
