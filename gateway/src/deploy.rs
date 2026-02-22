@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use zip::ZipArchive;
 
-use crate::{lock_utils::write_lock, metrics, AppState};
+use crate::{audit, lock_utils::write_lock, metrics, AppState};
 
 /// Deploy response returned after successful website deployment
 #[derive(Debug, Serialize)]
@@ -243,6 +243,15 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                 write_lock(&state.deployments).insert(0, deployment);
 
                 metrics::record_deployment(true);
+                audit::log_deploy_success(
+                    &state.audit_logger,
+                    "api",
+                    &cid,
+                    upload_result.total_size,
+                    None,
+                    None,
+                )
+                .await;
 
                 return Json(DeployResponse {
                     success: true,
@@ -258,6 +267,14 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
             }
             Ok(Err(e)) => {
                 metrics::record_deployment(false);
+                audit::log_deploy_failure(
+                    &state.audit_logger,
+                    "api",
+                    &format!("Deploy error: {}", e),
+                    None,
+                    None,
+                )
+                .await;
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(DeployError::new(
@@ -269,6 +286,14 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
             }
             Err(e) => {
                 metrics::record_deployment(false);
+                audit::log_deploy_failure(
+                    &state.audit_logger,
+                    "api",
+                    &format!("Internal error: {}", e),
+                    None,
+                    None,
+                )
+                .await;
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(DeployError::new(
@@ -430,4 +455,136 @@ pub async fn deploy_info(State(state): State<AppState>) -> Json<DeployInfo> {
         supported_formats: vec!["zip"],
         example_command: "cd my-site && zip -r ../site.zip . && curl -X POST http://localhost:8080/api/deploy -F 'file=@../site.zip'",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    // ── is_zip ──────────────────────────────────────────────────────
+
+    #[test]
+    fn is_zip_valid_magic_bytes() {
+        // PK\x03\x04 followed by some payload
+        let data = [0x50, 0x4B, 0x03, 0x04, 0x00, 0x00];
+        assert!(is_zip(&data));
+    }
+
+    #[test]
+    fn is_zip_exactly_four_bytes() {
+        let data = [0x50, 0x4B, 0x03, 0x04];
+        assert!(is_zip(&data));
+    }
+
+    #[test]
+    fn is_zip_too_short() {
+        assert!(!is_zip(&[0x50, 0x4B, 0x03]));
+        assert!(!is_zip(&[]));
+    }
+
+    #[test]
+    fn is_zip_wrong_magic() {
+        // First byte wrong
+        assert!(!is_zip(&[0x00, 0x4B, 0x03, 0x04]));
+        // All zeroes
+        assert!(!is_zip(&[0x00, 0x00, 0x00, 0x00]));
+        // PNG magic
+        assert!(!is_zip(&[0x89, 0x50, 0x4E, 0x47]));
+    }
+
+    #[test]
+    fn is_zip_random_data() {
+        let data = vec![0xFFu8; 1024];
+        assert!(!is_zip(&data));
+    }
+
+    // ── extract_zip ─────────────────────────────────────────────────
+
+    /// Helper: build a real ZIP archive in memory with the given entries.
+    /// Each entry is (name, contents). Directory entries should end with '/'.
+    fn build_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let buf = Vec::new();
+        let cursor = Cursor::new(buf);
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options =
+            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        for (name, contents) in entries {
+            if name.ends_with('/') {
+                writer.add_directory(*name, options).unwrap();
+            } else {
+                writer.start_file(*name, options).unwrap();
+                writer.write_all(contents).unwrap();
+            }
+        }
+
+        let cursor = writer.finish().unwrap();
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn extract_zip_single_file() {
+        let zip_data = build_zip(&[("hello.txt", b"world")]);
+        let temp_dir = extract_zip(&zip_data).expect("extraction should succeed");
+        let content = std::fs::read_to_string(temp_dir.path().join("hello.txt")).unwrap();
+        assert_eq!(content, "world");
+    }
+
+    #[test]
+    fn extract_zip_nested_directories() {
+        let zip_data = build_zip(&[
+            ("css/", b""),
+            ("css/style.css", b"body{}"),
+            ("index.html", b"<html></html>"),
+        ]);
+        let temp_dir = extract_zip(&zip_data).expect("extraction should succeed");
+        assert!(temp_dir.path().join("index.html").exists());
+        assert!(temp_dir.path().join("css/style.css").exists());
+        let css = std::fs::read_to_string(temp_dir.path().join("css/style.css")).unwrap();
+        assert_eq!(css, "body{}");
+    }
+
+    #[test]
+    fn extract_zip_invalid_data() {
+        let result = extract_zip(b"this is not a zip file");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Invalid ZIP"),
+            "Expected 'Invalid ZIP' in error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn extract_zip_empty_archive() {
+        // A valid ZIP with zero entries
+        let zip_data = build_zip(&[]);
+        let temp_dir = extract_zip(&zip_data).expect("extraction should succeed");
+        // The temp directory exists but has no files
+        let entries: Vec<_> = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .collect();
+        assert!(entries.is_empty());
+    }
+
+    // ── DeployError ─────────────────────────────────────────────────
+
+    #[test]
+    fn deploy_error_new_sets_fields() {
+        let err = DeployError::new("something broke", "BROKEN");
+        assert!(!err.success);
+        assert_eq!(err.error, "something broke");
+        assert_eq!(err.code, "BROKEN");
+    }
+
+    #[test]
+    fn deploy_error_serializes_to_json() {
+        let err = DeployError::new("bad request", "BAD_REQ");
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"], "bad request");
+        assert_eq!(json["code"], "BAD_REQ");
+    }
 }
