@@ -5,6 +5,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -21,6 +22,7 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         // Status and health
         .route("/status", get(get_status))
         .route("/health", get(health_check))
+        .route("/ready", get(ready_check))
         .route("/metrics", get(get_metrics))
         .route("/metrics/history", get(get_metrics_history))
         // Configuration
@@ -105,6 +107,31 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
             api: true,
         },
     })
+}
+
+/// Readiness check endpoint (returns 503 when not ready)
+async fn ready_check(State(state): State<Arc<AppState>>) -> Response {
+    let storage = state.storage.get_stats().await;
+    let network = state.metrics.get_network_stats().await;
+
+    let storage_ok = storage.usage_percentage() < 95.0;
+    let network_ok = network.connected_peers > 0 || !state.config.read().await.network.enable_dht;
+    let all_ready = storage_ok && network_ok;
+
+    let response = HealthResponse {
+        healthy: all_ready,
+        checks: HealthChecks {
+            storage: storage_ok,
+            network: network_ok,
+            api: true,
+        },
+    };
+
+    if all_ready {
+        (StatusCode::OK, Json(response)).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(response)).into_response()
+    }
 }
 
 /// Get detailed metrics
