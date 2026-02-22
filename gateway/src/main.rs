@@ -33,6 +33,7 @@ use axum::{
 use cache::ContentCache;
 use config::Config;
 use dashboard::Deployment;
+use tokio_util::sync::CancellationToken;
 use protocol::{NamingManager, StorageConfig, StorageLayer};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -85,6 +86,8 @@ pub struct AppState {
     pub redis: Option<Arc<redis_client::RedisClient>>,
     /// Decentralized naming manager
     pub naming: Arc<RwLock<NamingManager>>,
+    /// Ed25519 keypair for signing name records
+    pub naming_key: Arc<libp2p::identity::Keypair>,
 }
 
 #[tokio::main]
@@ -210,8 +213,21 @@ async fn main() {
         Vec::new()
     };
 
-    // Initialize naming manager
+    // Initialize naming manager and keypair
     let naming = Arc::new(RwLock::new(NamingManager::new()));
+    let naming_key = if let Ok(seed_hex) = std::env::var("SHADOWMESH_NAMING_KEY") {
+        let seed_hex = seed_hex.trim();
+        assert!(seed_hex.len() == 64, "SHADOWMESH_NAMING_KEY must be 64 hex characters (32 bytes)");
+        let mut seed = [0u8; 32];
+        for i in 0..32 {
+            seed[i] = u8::from_str_radix(&seed_hex[i * 2..i * 2 + 2], 16)
+                .expect("SHADOWMESH_NAMING_KEY must be valid hex");
+        }
+        Arc::new(libp2p::identity::Keypair::ed25519_from_bytes(seed).expect("Invalid Ed25519 seed"))
+    } else {
+        tracing::warn!("No SHADOWMESH_NAMING_KEY set — generating ephemeral naming keypair (names won't persist across restarts)");
+        Arc::new(libp2p::identity::Keypair::generate_ed25519())
+    };
     if config.naming.enabled {
         println!("✓ Decentralized naming layer enabled (cache: {} entries)", config.naming.cache_size);
     }
@@ -229,6 +245,7 @@ async fn main() {
         audit_logger,
         redis: redis.clone(),
         naming,
+        naming_key,
     };
 
     // Initialize API key manager for key rotation
@@ -249,13 +266,24 @@ async fn main() {
         Arc::new(signaling::SignalingServer::new(signaling_config));
     println!("✓ WebRTC signaling server enabled at /signaling/ws");
 
+    // Cancellation token for graceful shutdown of background tasks
+    let shutdown_token = CancellationToken::new();
+
     // Start background cleanup task for stale signaling connections
     let signaling_cleanup = signaling_state.clone();
+    let cleanup_token = shutdown_token.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
-            interval.tick().await;
-            signaling_cleanup.cleanup_stale().await;
+            tokio::select! {
+                _ = interval.tick() => {
+                    signaling_cleanup.cleanup_stale().await;
+                }
+                _ = cleanup_token.cancelled() => {
+                    tracing::info!("Signaling cleanup task shutting down");
+                    break;
+                }
+            }
         }
     });
 
@@ -277,6 +305,7 @@ async fn main() {
 
     let mut app = Router::new()
         .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .route("/metrics", get(metrics_handler))
         .route("/metrics/prometheus", get(prometheus_metrics_handler))
         // Deploy endpoints (Vercel-like)
@@ -306,8 +335,11 @@ async fn main() {
         .route("/api/upload/raw", post(upload::upload_raw))
         .route("/api/upload/batch", post(upload::upload_batch))
         // Naming layer API
+        .route("/api/names", get(name_list_handler))
         .route("/api/names/:name", get(name_resolve_handler))
         .route("/api/names/:name", post(name_register_handler))
+        .route("/api/names/:name", delete(name_delete_handler))
+        .route("/api/names/:name/assign", post(name_assign_handler))
         .route("/api/services/:service_type", get(service_discovery_handler))
         // Content retrieval (CID paths only — SPA routes handled by fallback)
         .route("/:cid", get(content_or_spa_handler))
@@ -417,6 +449,9 @@ async fn main() {
         .unwrap_or_else(|e| {
             tracing::error!("Server error: {}", e);
         });
+
+    // Cancel background tasks
+    shutdown_token.cancel();
 
     // Shutdown OpenTelemetry gracefully
     if telemetry_enabled {
@@ -585,6 +620,90 @@ async fn content_with_path_handler(
 }
 
 // ============================================
+// Auto-assign .shadow domain on deploy
+// ============================================
+
+/// Sanitize a deployment name into a valid .shadow domain label.
+fn sanitize_domain_label(name: &str) -> String {
+    let label: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    // Trim leading/trailing hyphens and limit length
+    let label = label.trim_matches('-');
+    let label = if label.len() > 40 { &label[..40] } else { label };
+    let label = label.trim_end_matches('-');
+    if label.is_empty() {
+        "site".to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+/// Try to auto-assign a `.shadow` domain for a deployment.
+/// Returns the assigned domain name, or None if naming is disabled or registration fails.
+pub fn auto_assign_domain(state: &AppState, deploy_name: &str, cid: &str) -> Option<String> {
+    if !state.config.naming.enabled {
+        return None;
+    }
+
+    let base_label = sanitize_domain_label(deploy_name);
+    let records = vec![protocol::NameRecordType::Content {
+        cid: cid.to_string(),
+    }];
+
+    let mut naming = state.naming.write().unwrap_or_else(|e| e.into_inner());
+
+    // Try the base name first
+    let full_name = format!("{}.shadow", base_label);
+    match naming.register_name(
+        &full_name,
+        records.clone(),
+        &state.naming_key,
+        protocol::naming::DEFAULT_NAME_TTL,
+    ) {
+        Ok(_) => {
+            tracing::info!(domain = %full_name, cid = %cid, "Auto-assigned domain");
+            return Some(full_name);
+        }
+        Err(protocol::NamingError::NameTaken) => {
+            // Name taken, try with random suffix
+        }
+        Err(e) => {
+            tracing::warn!(name = %full_name, error = %e, "Failed to auto-assign domain");
+            return None;
+        }
+    }
+
+    // Try with random suffixes (up to 3 attempts)
+    for _ in 0..3 {
+        let suffix: String = (0..4)
+            .map(|_| {
+                let idx = rand::random::<u8>() % 36;
+                if idx < 10 { (b'0' + idx) as char } else { (b'a' + idx - 10) as char }
+            })
+            .collect();
+        let name_with_suffix = format!("{}-{}.shadow", base_label, suffix);
+        match naming.register_name(
+            &name_with_suffix,
+            records.clone(),
+            &state.naming_key,
+            protocol::naming::DEFAULT_NAME_TTL,
+        ) {
+            Ok(_) => {
+                tracing::info!(domain = %name_with_suffix, cid = %cid, "Auto-assigned domain (with suffix)");
+                return Some(name_with_suffix);
+            }
+            Err(_) => continue,
+        }
+    }
+
+    tracing::warn!(name = %base_label, "Could not auto-assign domain after retries");
+    None
+}
+
+// ============================================
 // Naming Layer Endpoints
 // ============================================
 
@@ -683,6 +802,136 @@ async fn name_register_handler(
             Json(serde_json::json!({"error": format!("{}", e)})),
         )
             .into_response(),
+    }
+}
+
+/// Request body for simplified name assignment
+#[derive(Deserialize)]
+struct NameAssignRequest {
+    cid: String,
+}
+
+/// List all names owned by this gateway (excludes revoked)
+async fn name_list_handler(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    if !state.config.naming.enabled {
+        return Json(serde_json::json!([]));
+    }
+
+    let naming = state.naming.read().unwrap_or_else(|e| e.into_inner());
+    let names: Vec<_> = naming
+        .owned_names()
+        .into_iter()
+        .filter(|r| !r.records.is_empty()) // Exclude revoked
+        .cloned()
+        .collect();
+    Json(serde_json::json!(names))
+}
+
+/// Assign a `.shadow` name to a CID (gateway signs on behalf of user)
+async fn name_assign_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<NameAssignRequest>,
+) -> Response {
+    if !state.config.naming.enabled {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Naming service disabled"})),
+        )
+            .into_response();
+    }
+
+    let full_name = if name.ends_with(".shadow") {
+        name.clone()
+    } else {
+        format!("{}.shadow", name)
+    };
+
+    if let Err(e) = protocol::validate_name(&full_name) {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Invalid name: {}", e)})),
+        )
+            .into_response();
+    }
+
+    if body.cid.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "CID is required"})),
+        )
+            .into_response();
+    }
+
+    let records = vec![protocol::NameRecordType::Content {
+        cid: body.cid.clone(),
+    }];
+
+    let mut naming = state.naming.write().unwrap_or_else(|e| e.into_inner());
+    match naming.register_name(
+        &full_name,
+        records,
+        &state.naming_key,
+        protocol::naming::DEFAULT_NAME_TTL,
+    ) {
+        Ok(record) => Json(serde_json::json!({
+            "success": true,
+            "name": record.name,
+            "name_hash": record.name_hash,
+            "cid": body.cid,
+        }))
+        .into_response(),
+        Err(e) => {
+            let status = match e {
+                protocol::NamingError::NameTaken => axum::http::StatusCode::CONFLICT,
+                _ => axum::http::StatusCode::BAD_REQUEST,
+            };
+            (status, Json(serde_json::json!({"error": format!("{}", e)})))
+                .into_response()
+        }
+    }
+}
+
+/// Delete (revoke) a `.shadow` name owned by this gateway
+async fn name_delete_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Response {
+    if !state.config.naming.enabled {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Naming service disabled"})),
+        )
+            .into_response();
+    }
+
+    let full_name = if name.ends_with(".shadow") {
+        name.clone()
+    } else {
+        format!("{}.shadow", name)
+    };
+
+    let mut naming = state.naming.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(record) = naming.resolve_local(&full_name).cloned() {
+        match naming.revoke_name_record(&record, &state.naming_key) {
+            Ok(_revoked) => {
+                naming.invalidate_cache(&full_name);
+                Json(serde_json::json!({"success": true})).into_response()
+            }
+            Err(e) => (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("{}", e)})),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Name not found"})),
+        )
+            .into_response()
     }
 }
 
@@ -814,11 +1063,13 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
             // Record success with circuit breaker and metrics
             state.ipfs_circuit_breaker.record_success();
             metrics::record_ipfs_operation("retrieve", true, duration.as_secs_f64());
+            metrics::update_circuit_breaker_state(false, false);
 
             let content_type = content_type_from_path(&cid, &data);
             let data = rewrite_html_assets(&data, &content_type, base_prefix.as_deref());
 
             state.cache.set(cid, data.clone(), content_type.clone());
+            metrics::update_cache_size(state.cache.stats().total_entries as i64);
 
             state.metrics.increment_success();
             state.metrics.add_bytes(data.len() as u64);
@@ -840,6 +1091,10 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
             // Record failure with circuit breaker
             state.ipfs_circuit_breaker.record_failure();
             metrics::record_ipfs_operation("retrieve", false, duration.as_secs_f64());
+            metrics::update_circuit_breaker_state(
+                state.ipfs_circuit_breaker.is_open(),
+                state.ipfs_circuit_breaker.state() == crate::circuit_breaker::CircuitState::HalfOpen,
+            );
             state.metrics.increment_error();
 
             tracing::warn!(cid = %cid, error = %e, "IPFS retrieval failed");
@@ -857,6 +1112,10 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
             // Record failure with circuit breaker (task panic/cancellation)
             state.ipfs_circuit_breaker.record_failure();
             metrics::record_ipfs_operation("retrieve", false, duration.as_secs_f64());
+            metrics::update_circuit_breaker_state(
+                state.ipfs_circuit_breaker.is_open(),
+                state.ipfs_circuit_breaker.state() == crate::circuit_breaker::CircuitState::HalfOpen,
+            );
             state.metrics.increment_error();
 
             tracing::error!(cid = %cid, error = %e, "IPFS retrieval task failed");
@@ -983,6 +1242,45 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
         uptime_seconds: uptime,
         ipfs_connected,
     })
+}
+
+#[derive(Serialize)]
+struct ReadyResponse {
+    ready: bool,
+    checks: ReadyChecks,
+}
+
+#[derive(Serialize)]
+struct ReadyChecks {
+    ipfs: bool,
+    redis: bool,
+    circuit_breaker_closed: bool,
+}
+
+async fn ready_handler(State(state): State<AppState>) -> Response {
+    let ipfs_ok = state.storage.is_some();
+    let redis_ok = match &state.redis {
+        Some(redis) => redis.ping().await.unwrap_or(false),
+        None => true, // Redis is optional; not configured is not a failure
+    };
+    let cb_ok = !state.ipfs_circuit_breaker.is_open();
+
+    let all_ready = ipfs_ok && redis_ok && cb_ok;
+
+    let response = ReadyResponse {
+        ready: all_ready,
+        checks: ReadyChecks {
+            ipfs: ipfs_ok,
+            redis: redis_ok,
+            circuit_breaker_closed: cb_ok,
+        },
+    };
+
+    if all_ready {
+        (axum::http::StatusCode::OK, Json(response)).into_response()
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(response)).into_response()
+    }
 }
 
 #[derive(Serialize)]
