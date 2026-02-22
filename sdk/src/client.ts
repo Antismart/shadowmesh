@@ -387,21 +387,29 @@ export class NodeClient {
       console.log(`[ShadowMesh Node] ${method} ${url}`);
     }
 
-    const response = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
-    if (!response.ok) {
-      throw createError(
-        ErrorCode.NETWORK_ERROR,
-        `Node request failed: ${response.status}`
-      );
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw createError(
+          ErrorCode.NETWORK_ERROR,
+          `Node request failed: ${response.status}`
+        );
+      }
+
+      const text = await response.text();
+      return text ? JSON.parse(text) : ({} as T);
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const text = await response.text();
-    return text ? JSON.parse(text) : ({} as T);
   }
 
   /**
