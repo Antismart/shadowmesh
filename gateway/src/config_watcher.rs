@@ -137,8 +137,14 @@ pub async fn start_config_reload_task(
     };
 
     // Set up SIGHUP handler for Unix
-    let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-        .expect("Failed to create SIGHUP handler");
+    let mut sighup =
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create SIGHUP handler, signal-based reload disabled");
+                None
+            }
+        };
 
     loop {
         tokio::select! {
@@ -155,7 +161,13 @@ pub async fn start_config_reload_task(
             }
 
             // SIGHUP trigger
-            _ = sighup.recv() => {
+            _ = async {
+                if let Some(ref mut s) = sighup {
+                    s.recv().await
+                } else {
+                    std::future::pending::<Option<()>>().await
+                }
+            } => {
                 tracing::info!("Received SIGHUP, reloading configuration...");
                 reload_config(&config).await;
             }
