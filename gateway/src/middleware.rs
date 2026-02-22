@@ -72,6 +72,13 @@ pub async fn security_headers(req: Request<Body>, next: Next) -> Response {
         headers.insert(header::CONTENT_SECURITY_POLICY, value);
     }
 
+    // API version header for /api/ routes
+    if path.starts_with("/api/") {
+        if let Ok(value) = "1".parse() {
+            headers.insert("X-API-Version", value);
+        }
+    }
+
     response
 }
 
