@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use zip::ZipArchive;
 
-use crate::{lock_utils::write_lock, AppState};
+use crate::{lock_utils::write_lock, metrics, AppState};
 
 /// Deploy response returned after successful website deployment
 #[derive(Debug, Serialize)]
@@ -222,12 +222,15 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                     .map(|f| f.trim_end_matches(".zip").to_string())
                     .unwrap_or_else(|| format!("deploy-{}", &cid[..8]));
 
-                let deployment = crate::dashboard::Deployment::new(
-                    deployment_name,
+                let mut deployment = crate::dashboard::Deployment::new(
+                    deployment_name.clone(),
                     cid.clone(),
                     upload_result.total_size,
                     files.len(),
                 );
+
+                // Auto-assign .shadow domain
+                deployment.domain = crate::auto_assign_domain(&state, &deployment_name, &cid);
 
                 // Save to Redis if available
                 if let Some(ref redis) = state.redis {
@@ -238,6 +241,8 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
 
                 // Also keep in-memory for immediate access
                 write_lock(&state.deployments).insert(0, deployment);
+
+                metrics::record_deployment(true);
 
                 return Json(DeployResponse {
                     success: true,
@@ -252,6 +257,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                 .into_response();
             }
             Ok(Err(e)) => {
+                metrics::record_deployment(false);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(DeployError::new(
@@ -262,6 +268,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                     .into_response();
             }
             Err(e) => {
+                metrics::record_deployment(false);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(DeployError::new(
