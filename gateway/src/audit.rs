@@ -212,7 +212,6 @@ impl AuditLogger {
 // Convenience functions for common audit events
 
 /// Log a successful deployment
-#[allow(dead_code)]
 pub async fn log_deploy_success(
     logger: &AuditLogger,
     actor: &str,
@@ -236,7 +235,6 @@ pub async fn log_deploy_success(
 }
 
 /// Log a failed deployment
-#[allow(dead_code)]
 pub async fn log_deploy_failure(
     logger: &AuditLogger,
     actor: &str,
@@ -258,7 +256,6 @@ pub async fn log_deploy_failure(
 }
 
 /// Log a deployment deletion
-#[allow(dead_code)]
 pub async fn log_deploy_delete(
     logger: &AuditLogger,
     actor: &str,
@@ -280,7 +277,6 @@ pub async fn log_deploy_delete(
 }
 
 /// Log an authentication failure
-#[allow(dead_code)]
 pub async fn log_auth_failure(
     logger: &AuditLogger,
     reason: &str,
@@ -301,7 +297,6 @@ pub async fn log_auth_failure(
 }
 
 /// Log a file upload
-#[allow(dead_code)]
 pub async fn log_file_upload(
     logger: &AuditLogger,
     actor: &str,
