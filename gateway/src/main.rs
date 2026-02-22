@@ -217,13 +217,31 @@ async fn main() {
     let naming = Arc::new(RwLock::new(NamingManager::new()));
     let naming_key = if let Ok(seed_hex) = std::env::var("SHADOWMESH_NAMING_KEY") {
         let seed_hex = seed_hex.trim();
-        assert!(seed_hex.len() == 64, "SHADOWMESH_NAMING_KEY must be 64 hex characters (32 bytes)");
+        if seed_hex.len() != 64 {
+            eprintln!("FATAL: SHADOWMESH_NAMING_KEY must be 64 hex characters (32 bytes), got {}", seed_hex.len());
+            std::process::exit(1);
+        }
         let mut seed = [0u8; 32];
         for i in 0..32 {
-            seed[i] = u8::from_str_radix(&seed_hex[i * 2..i * 2 + 2], 16)
-                .expect("SHADOWMESH_NAMING_KEY must be valid hex");
+            seed[i] = match u8::from_str_radix(&seed_hex[i * 2..i * 2 + 2], 16) {
+                Ok(b) => b,
+                Err(_) => {
+                    eprintln!("FATAL: SHADOWMESH_NAMING_KEY contains invalid hex at position {}", i * 2);
+                    std::process::exit(1);
+                }
+            };
         }
-        Arc::new(libp2p::identity::Keypair::ed25519_from_bytes(seed).expect("Invalid Ed25519 seed"))
+        match libp2p::identity::Keypair::ed25519_from_bytes(seed) {
+            Ok(kp) => Arc::new(kp),
+            Err(e) => {
+                eprintln!("FATAL: Invalid Ed25519 seed in SHADOWMESH_NAMING_KEY: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else if production::is_production_mode() {
+        eprintln!("FATAL: SHADOWMESH_NAMING_KEY is required in production mode");
+        eprintln!("       Generate one with: openssl rand -hex 32");
+        std::process::exit(1);
     } else {
         tracing::warn!("No SHADOWMESH_NAMING_KEY set — generating ephemeral naming keypair (names won't persist across restarts)");
         Arc::new(libp2p::identity::Keypair::generate_ed25519())
@@ -359,7 +377,13 @@ async fn main() {
     if config.security.cors_enabled {
         let allowed_origins = config.security.get_allowed_origins();
         let cors = if allowed_origins.contains(&"*".to_string()) {
-            CorsLayer::permissive()
+            if production::is_production_mode() {
+                tracing::error!("CORS wildcard (*) is not allowed in production mode — using restrictive CORS");
+                CorsLayer::new()
+            } else {
+                tracing::warn!("CORS wildcard (*) enabled — this is insecure for production");
+                CorsLayer::permissive()
+            }
         } else {
             let origins: Vec<_> = allowed_origins
                 .iter()
@@ -657,7 +681,7 @@ pub fn auto_assign_domain(state: &AppState, deploy_name: &str, cid: &str) -> Opt
         cid: cid.to_string(),
     }];
 
-    let mut naming = state.naming.write().unwrap_or_else(|e| e.into_inner());
+    let mut naming = lock_utils::write_lock(&state.naming);
 
     // Try the base name first
     let full_name = format!("{}.shadow", base_label);
@@ -738,7 +762,7 @@ async fn name_resolve_handler(
         });
     }
 
-    let naming = state.naming.read().unwrap_or_else(|e| e.into_inner());
+    let naming = lock_utils::read_lock(&state.naming);
     if let Some(record) = naming.resolve_local(&name) {
         Json(NameResolveResponse {
             found: true,
@@ -793,7 +817,7 @@ async fn name_register_handler(
     }
 
     // Store the record
-    let mut naming = state.naming.write().unwrap_or_else(|e| e.into_inner());
+    let mut naming = lock_utils::write_lock(&state.naming);
     match naming.cache_record(body.record.clone()) {
         Ok(()) => Json(serde_json::json!({
             "success": true,
@@ -823,7 +847,7 @@ async fn name_list_handler(
         return Json(serde_json::json!([]));
     }
 
-    let naming = state.naming.read().unwrap_or_else(|e| e.into_inner());
+    let naming = lock_utils::read_lock(&state.naming);
     let names: Vec<_> = naming
         .owned_names()
         .into_iter()
@@ -873,7 +897,7 @@ async fn name_assign_handler(
         cid: body.cid.clone(),
     }];
 
-    let mut naming = state.naming.write().unwrap_or_else(|e| e.into_inner());
+    let mut naming = lock_utils::write_lock(&state.naming);
     match naming.register_name(
         &full_name,
         records,
@@ -917,7 +941,7 @@ async fn name_delete_handler(
         format!("{}.shadow", name)
     };
 
-    let mut naming = state.naming.write().unwrap_or_else(|e| e.into_inner());
+    let mut naming = lock_utils::write_lock(&state.naming);
     if let Some(record) = naming.resolve_local(&full_name).cloned() {
         match naming.revoke_name_record(&record, &state.naming_key) {
             Ok(_revoked) => {
@@ -962,7 +986,7 @@ async fn service_discovery_handler(
         }
     };
 
-    let naming = state.naming.read().unwrap_or_else(|e| e.into_inner());
+    let naming = lock_utils::read_lock(&state.naming);
     if let Some(registry) = naming.get_service_registry(well_known_name) {
         Json(serde_json::json!({
             "name": well_known_name,
