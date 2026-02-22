@@ -878,8 +878,15 @@ pub async fn github_login(State(state): State<AppState>) -> impl IntoResponse {
     });
 
     let csrf_state = Uuid::new_v4().to_string();
-    write_lock(&state.github_oauth_states)
-        .insert(csrf_state.clone(), std::time::Instant::now());
+    {
+        let mut states = write_lock(&state.github_oauth_states);
+        // Evict expired states and cap to prevent unbounded growth
+        if states.len() >= 10_000 {
+            let cutoff = std::time::Duration::from_secs(600);
+            states.retain(|_, created| created.elapsed() <= cutoff);
+        }
+        states.insert(csrf_state.clone(), std::time::Instant::now());
+    }
 
     let url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope=read:user%20repo&state={}",
@@ -956,7 +963,10 @@ pub async fn github_callback(
         }
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let token_response = match client
         .post("https://github.com/login/oauth/access_token")
         .header("Accept", "application/json")
@@ -1240,7 +1250,7 @@ async fn deploy_github_project(
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
-    let response = client.get(&zip_url).send().await.map_err(|e| {
+    let mut response = client.get(&zip_url).send().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
             format!("Failed to download: {}", e),
@@ -1254,10 +1264,22 @@ async fn deploy_github_project(
         ));
     }
 
-    let zip_bytes = response
-        .bytes()
+    // Stream the download with a size limit to prevent memory exhaustion.
+    const MAX_ZIP_DOWNLOAD: usize = 512 * 1024 * 1024; // 512 MB
+    let mut zip_bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Failed to read: {}", e)))?;
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Failed to read: {}", e)))?
+    {
+        if zip_bytes.len() + chunk.len() > MAX_ZIP_DOWNLOAD {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Repository archive exceeds 512 MB limit".to_string(),
+            ));
+        }
+        zip_bytes.extend_from_slice(&chunk);
+    }
 
     let temp_dir =
         extract_github_zip(&zip_bytes).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -1336,7 +1358,12 @@ async fn deploy_github_project(
     .await;
 
     let domain = deployment.domain.clone();
-    write_lock(&state.deployments).insert(0, deployment);
+    {
+        let mut deployments = write_lock(&state.deployments);
+        deployments.insert(0, deployment);
+        const MAX_IN_MEMORY_DEPLOYMENTS: usize = 1000;
+        deployments.truncate(MAX_IN_MEMORY_DEPLOYMENTS);
+    }
 
     Ok(json!({
         "success": true,
