@@ -32,5 +32,8 @@ __pycache__/
 .env
 gateway/.env
 
+# Dashboard build output (embedded at compile time via rust-embed)
+dashboard/dist/
+
 # IPFS
 .ipfs/
