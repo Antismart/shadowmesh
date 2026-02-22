@@ -285,10 +285,10 @@ export class ShadowMesh {
     }
   }
 
-  private async registerENS(ensName: string, cid: string): Promise<string> {
-    // TODO: Implement ENS registration
-    console.log(`📝 ENS registration for ${ensName} (coming soon)`);
-    return `https://${ensName}.limo`;
+  private async registerENS(_ensName: string, _cid: string): Promise<string> {
+    throw new Error(
+      'ENS registration is not yet implemented. Remove the --ens flag and register manually at https://app.ens.domains'
+    );
   }
 
   /**
