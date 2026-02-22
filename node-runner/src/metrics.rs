@@ -250,7 +250,7 @@ impl MetricsCollector {
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let point = DataPoint {
@@ -296,7 +296,7 @@ impl MetricsCollector {
             network: self.get_network_stats().await,
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs(),
         }
     }
