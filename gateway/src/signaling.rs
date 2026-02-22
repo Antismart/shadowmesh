@@ -238,42 +238,39 @@ impl SignalingServer {
         connection_id: &str,
         announce: AnnounceMessage,
     ) -> Result<(), String> {
-        // Check if we've reached max peers
-        let peer_count = self.peers.read().await.len();
-        if peer_count >= self.config.max_peers {
-            self.send_error(
-                connection_id,
-                SignalingErrorCode::RateLimitExceeded,
-                "Maximum peer limit reached",
-            )
-            .await;
-            return Err("Max peers reached".to_string());
-        }
-
         let peer_id = announce.peer_id.clone();
-
-        // Create tracked peer
         let tracked = TrackedPeer::from_announce(&announce, Some(connection_id.to_string()));
 
-        // Store peer
-        {
+        // Atomically check peer limit and update all three maps together
+        // to prevent desync between peers/peer_connections/connections.
+        let total_peers = {
             let mut peers = self.peers.write().await;
+            if peers.len() >= self.config.max_peers {
+                // Release lock before sending error (which is async I/O)
+                drop(peers);
+                self.send_error(
+                    connection_id,
+                    SignalingErrorCode::RateLimitExceeded,
+                    "Maximum peer limit reached",
+                )
+                .await;
+                return Err("Max peers reached".to_string());
+            }
             peers.insert(peer_id.clone(), tracked);
-        }
+            let total = peers.len();
 
-        // Update peer-connection mapping
-        {
+            // Update peer-connection mapping while peers lock is held
             let mut peer_connections = self.peer_connections.write().await;
             peer_connections.insert(peer_id.clone(), connection_id.to_string());
-        }
 
-        // Update connection's peer ID
-        {
+            // Update connection's peer ID
             let mut connections = self.connections.write().await;
             if let Some(conn) = connections.get_mut(connection_id) {
                 conn.peer_id = Some(peer_id.clone());
             }
-        }
+
+            total
+        };
 
         info!(
             "Peer announced: {} via connection {}",
@@ -283,7 +280,7 @@ impl SignalingServer {
         // Send acknowledgment
         let response = SignalingMessage::Peers(protocol::PeersMessage {
             peers: vec![], // Empty for announce ack
-            total_peers: self.peers.read().await.len(),
+            total_peers,
         });
 
         self.send_to_connection(connection_id, &response).await;
@@ -410,30 +407,21 @@ impl SignalingServer {
 
     /// Handle connection disconnect
     async fn handle_disconnect(&self, connection_id: &str) {
-        // Get peer ID if any
+        // Atomically remove from all three maps to keep them in sync.
+        // Lock order: peers -> peer_connections -> connections (same as handle_announce).
         let peer_id = {
-            let connections = self.connections.read().await;
-            connections
+            let mut connections = self.connections.write().await;
+            let peer_id = connections
                 .get(connection_id)
-                .and_then(|c| c.peer_id.clone())
+                .and_then(|c| c.peer_id.clone());
+            connections.remove(connection_id);
+            peer_id
         };
 
-        // Remove connection
-        {
-            let mut connections = self.connections.write().await;
-            connections.remove(connection_id);
-        }
-
-        // If peer was announced, clean up
         if let Some(peer_id) = peer_id {
-            // Remove from peers
             {
                 let mut peers = self.peers.write().await;
                 peers.remove(&peer_id);
-            }
-
-            // Remove from peer-connection mapping
-            {
                 let mut peer_connections = self.peer_connections.write().await;
                 peer_connections.remove(&peer_id);
             }
@@ -445,7 +433,6 @@ impl SignalingServer {
                     reason: Some("Connection closed".to_string()),
                 });
 
-            // Broadcast to all connected peers
             let connections = self.connections.read().await;
             for (_, conn) in connections.iter() {
                 if let Ok(json) = serde_json::to_string(&disconnect_msg) {
@@ -479,11 +466,13 @@ impl SignalingServer {
         }
     }
 
-    /// Get current stats
+    /// Get current stats (reads both maps under lock for consistency)
     pub async fn stats(&self) -> SignalingStats {
+        let peers = self.peers.read().await;
+        let connections = self.connections.read().await;
         SignalingStats {
-            connected_peers: self.peers.read().await.len(),
-            active_connections: self.connections.read().await.len(),
+            connected_peers: peers.len(),
+            active_connections: connections.len(),
         }
     }
 }
