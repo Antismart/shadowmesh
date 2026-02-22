@@ -60,8 +60,9 @@ gateway:
 
     # CORS
     corsEnabled: true
-    corsOrigins:
-      - "*"
+    corsOrigins: []
+    # corsOrigins:
+    #   - "https://your-domain.com"
 
     # Signaling (WebRTC)
     signalingEnabled: true
