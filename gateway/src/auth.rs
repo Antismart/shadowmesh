@@ -9,6 +9,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Json, Response},
 };
+use crate::metrics;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -33,6 +34,7 @@ impl AuthConfig {
             public_routes: vec![
                 // Health and monitoring
                 "GET:/health".to_string(),
+                "GET:/ready".to_string(),
                 "GET:/metrics".to_string(),
                 "GET:/metrics/prometheus".to_string(),
                 // SPA dashboard (root + all SPA routes served by fallback)
@@ -51,6 +53,8 @@ impl AuthConfig {
                 "GET:/api/github/login".to_string(),
                 "GET:/api/github/callback".to_string(),
                 "GET:/api/github/status".to_string(),
+                // Name resolution (public read access)
+                "GET:/api/names/*".to_string(),
                 // Content retrieval by CID (single segment paths that look like CIDs)
                 "GET:/:cid".to_string(),
             ],
@@ -177,6 +181,7 @@ pub async fn api_key_auth(
                 path = %path,
                 "Invalid API key provided"
             );
+            metrics::record_auth_failure("invalid_key");
             (
                 StatusCode::UNAUTHORIZED,
                 Json(AuthError {
@@ -193,6 +198,7 @@ pub async fn api_key_auth(
                 path = %path,
                 "Missing API key"
             );
+            metrics::record_auth_failure("missing_key");
             (
                 StatusCode::UNAUTHORIZED,
                 Json(AuthError {
