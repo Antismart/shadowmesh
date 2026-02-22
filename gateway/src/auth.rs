@@ -35,9 +35,17 @@ impl AuthConfig {
                 "GET:/health".to_string(),
                 "GET:/metrics".to_string(),
                 "GET:/metrics/prometheus".to_string(),
-                // Public content retrieval
+                // SPA dashboard (root + all SPA routes served by fallback)
                 "GET:/".to_string(),
-                "GET:/dashboard".to_string(),
+                "GET:/login".to_string(),
+                "GET:/new".to_string(),
+                "GET:/domains".to_string(),
+                "GET:/analytics".to_string(),
+                "GET:/settings".to_string(),
+                "GET:/projects/*".to_string(),
+                "GET:/deployments/*".to_string(),
+                "GET:/assets/*".to_string(),
+                // Public content retrieval
                 "GET:/ipfs/*".to_string(),
                 // GitHub OAuth flow (needed for initial auth)
                 "GET:/api/github/login".to_string(),
@@ -226,7 +234,10 @@ mod tests {
         assert!(config.is_public_route("GET", "/health"));
         assert!(config.is_public_route("GET", "/metrics"));
         assert!(config.is_public_route("GET", "/"));
-        assert!(config.is_public_route("GET", "/dashboard"));
+        assert!(config.is_public_route("GET", "/login"));
+        assert!(config.is_public_route("GET", "/analytics"));
+        assert!(config.is_public_route("GET", "/settings"));
+        assert!(config.is_public_route("GET", "/assets/index-abc.js"));
         assert!(config.is_public_route("GET", "/ipfs/QmTest123"));
         assert!(config.is_public_route("GET", "/QmTest123"));
         assert!(config.is_public_route("GET", "/bafyTest123"));
