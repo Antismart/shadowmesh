@@ -516,8 +516,17 @@ impl StorageManager {
         self.stats.read().await.clone()
     }
 
-    /// Get fragment path
+    /// Get fragment path.
+    ///
+    /// Validates that the hash contains only safe alphanumeric characters
+    /// to prevent path traversal attacks (e.g. "../../etc/passwd").
     fn fragment_path(&self, hash: &str) -> PathBuf {
+        assert!(
+            !hash.is_empty()
+                && hash.len() <= 512
+                && hash.chars().all(|c| c.is_ascii_alphanumeric()),
+            "Invalid fragment hash"
+        );
         // Use first 2 chars as subdirectory for better filesystem performance
         let subdir = &hash[..2.min(hash.len())];
         self.data_dir.join("fragments").join(subdir).join(hash)
