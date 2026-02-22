@@ -11,7 +11,7 @@ COPY dashboard/ ./
 RUN npm run build
 
 # Stage 2: Build Rust gateway (embeds dashboard/dist via rust-embed)
-FROM rust:latest AS builder
+FROM rust:1.84-bookworm AS builder
 
 WORKDIR /app
 
