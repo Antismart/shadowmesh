@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -126,7 +127,7 @@ impl AuditEvent {
 #[derive(Clone)]
 pub struct AuditLogger {
     /// In-memory event buffer (last N events)
-    events: Arc<RwLock<Vec<AuditEvent>>>,
+    events: Arc<RwLock<VecDeque<AuditEvent>>>,
     /// Maximum events to keep in memory
     max_events: usize,
 }
@@ -141,7 +142,7 @@ impl AuditLogger {
     /// Create a new audit logger
     pub fn new(max_events: usize) -> Self {
         Self {
-            events: Arc::new(RwLock::new(Vec::with_capacity(max_events))),
+            events: Arc::new(RwLock::new(VecDeque::with_capacity(max_events))),
             max_events,
         }
     }
@@ -166,9 +167,9 @@ impl AuditLogger {
         // Store in memory buffer
         let mut events = self.events.write().await;
         if events.len() >= self.max_events {
-            events.remove(0);
+            events.pop_front();
         }
-        events.push(event);
+        events.push_back(event);
     }
 
     /// Get recent audit events
