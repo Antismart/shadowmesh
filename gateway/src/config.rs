@@ -372,8 +372,8 @@ impl Config {
                 retry_attempts: 3,
             },
             security: SecurityConfig {
-                cors_enabled: true,
-                allowed_origins: vec![], // Deny all by default - must be explicitly configured
+                cors_enabled: false,
+                allowed_origins: vec![],
                 max_request_size_mb: 100,
             },
             monitoring: MonitoringConfig {
