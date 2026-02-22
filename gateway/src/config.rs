@@ -155,7 +155,10 @@ impl Default for DeployConfig {
 
 impl DeployConfig {
     pub fn max_size_bytes(&self) -> usize {
-        (self.max_size_mb * 1024 * 1024) as usize
+        self.max_size_mb
+            .saturating_mul(1024)
+            .saturating_mul(1024)
+            .min(usize::MAX as u64) as usize
     }
 }
 
