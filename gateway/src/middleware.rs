@@ -57,8 +57,13 @@ pub async fn security_headers(req: Request<Body>, next: Next) -> Response {
     if let Ok(value) = "max-age=31536000; includeSubDomains".parse() {
         headers.insert(header::STRICT_TRANSPORT_SECURITY, value);
     }
-    let csp = if path == "/dashboard" || path == "/metrics" {
-        "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'"
+    let csp = if path.starts_with("/assets/")
+        || path == "/"
+        || path == "/metrics"
+        || (!path.starts_with("/api/") && !path.starts_with("/ipfs/"))
+    {
+        // SPA dashboard pages and assets — allow inline styles (Tailwind), fonts, and GitHub avatars
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' https://avatars.githubusercontent.com data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'"
     } else {
         "default-src 'self'"
     };
