@@ -43,7 +43,13 @@ impl IntoResponse for GatewayError {
             ),
             GatewayError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "Request timeout".to_string()),
             GatewayError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
-            GatewayError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            GatewayError::Internal(msg) => {
+                tracing::error!("Internal error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+            }
         };
 
         let body = Json(json!({
