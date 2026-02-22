@@ -665,7 +665,7 @@ export class IPFSClient {
       throw new Error('IPFS API URL not configured');
     }
 
-    const response = await fetch(`${this.apiUrl}/api/v0/pin/add?arg=${cid}`, {
+    const response = await fetch(`${this.apiUrl}/api/v0/pin/add?arg=${encodeURIComponent(cid)}`, {
       method: 'POST',
     });
 
@@ -682,7 +682,7 @@ export class IPFSClient {
       throw new Error('IPFS API URL not configured');
     }
 
-    const response = await fetch(`${this.apiUrl}/api/v0/pin/rm?arg=${cid}`, {
+    const response = await fetch(`${this.apiUrl}/api/v0/pin/rm?arg=${encodeURIComponent(cid)}`, {
       method: 'POST',
     });
 
