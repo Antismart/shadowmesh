@@ -18,11 +18,13 @@ mod production;
 mod rate_limit;
 mod redis_client;
 mod signaling;
+mod spa;
 mod telemetry;
 mod upload;
 
 use axum::{
     extract::{Path, State},
+    http::Uri,
     middleware as axum_middleware,
     response::{Html, IntoResponse, Json, Response},
     routing::{delete, get, post},
@@ -274,8 +276,6 @@ async fn main() {
     };
 
     let mut app = Router::new()
-        .route("/", get(index_handler))
-        .route("/dashboard", get(dashboard::dashboard_handler))
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/metrics/prometheus", get(prometheus_metrics_handler))
@@ -284,13 +284,22 @@ async fn main() {
         .route("/api/deploy/info", get(deploy::deploy_info))
         .route("/api/deploy/github", post(dashboard::deploy_from_github))
         .route("/api/deployments", get(dashboard::get_deployments))
-    .route("/api/deployments/:cid", delete(dashboard::delete_deployment))
-    .route("/api/deployments/:cid/redeploy", post(dashboard::redeploy_github))
-    .route("/api/deployments/:cid/logs", get(dashboard::deployment_logs))
-    .route("/api/github/login", get(dashboard::github_login))
-    .route("/api/github/callback", get(dashboard::github_callback))
-    .route("/api/github/status", get(dashboard::github_status))
-    .route("/api/github/repos", get(dashboard::github_repos))
+        .route(
+            "/api/deployments/:cid",
+            delete(dashboard::delete_deployment),
+        )
+        .route(
+            "/api/deployments/:cid/redeploy",
+            post(dashboard::redeploy_github),
+        )
+        .route(
+            "/api/deployments/:cid/logs",
+            get(dashboard::deployment_logs),
+        )
+        .route("/api/github/login", get(dashboard::github_login))
+        .route("/api/github/callback", get(dashboard::github_callback))
+        .route("/api/github/status", get(dashboard::github_status))
+        .route("/api/github/repos", get(dashboard::github_repos))
         // Upload endpoints (single files)
         .route("/api/upload", post(upload::upload_multipart))
         .route("/api/upload/json", post(upload::upload_json))
@@ -300,14 +309,16 @@ async fn main() {
         .route("/api/names/:name", get(name_resolve_handler))
         .route("/api/names/:name", post(name_register_handler))
         .route("/api/services/:service_type", get(service_discovery_handler))
-        // Content retrieval
-        .route("/:cid", get(content_handler))
+        // Content retrieval (CID paths only — SPA routes handled by fallback)
+        .route("/:cid", get(content_or_spa_handler))
         .route("/ipfs/*path", get(ipfs_content_path_handler))
         .with_state(state)
         // API key management routes (separate state)
         .nest("/api/keys", api_keys::api_keys_router(api_key_state))
         // WebRTC signaling server
-        .nest("/signaling", signaling::signaling_router(signaling_state));
+        .nest("/signaling", signaling::signaling_router(signaling_state))
+        // SPA fallback — serves React dashboard for all unmatched routes
+        .fallback(spa::spa_handler);
 
     // Add middleware layers
     if config.security.cors_enabled {
@@ -418,17 +429,21 @@ async fn main() {
 /// Wait for shutdown signal (SIGTERM or Ctrl+C)
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!("Failed to listen for Ctrl+C: {}", e);
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(e) => {
+                tracing::error!("Failed to install SIGTERM handler: {}", e);
+            }
+        }
     };
 
     #[cfg(not(unix))]
@@ -446,316 +461,21 @@ async fn shutdown_signal() {
     println!("\n🛑 Shutting down gracefully...");
 }
 
-async fn index_handler(State(state): State<AppState>) -> Html<String> {
-    let port = state.config.server.port;
-    let ipfs_status = if state.storage.is_some() {
-        "Connected"
-    } else {
-        "Disconnected"
-    };
-    let status_color = if state.storage.is_some() {
-        "#4CAF50"
-    } else {
-        "#f44336"
-    };
 
-    let html = format!(
-        r#"
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>ShadowMesh Gateway</title>
-            <style>
-                body {{
-                    font-family: system-ui;
-                    max-width: 900px;
-                    margin: 50px auto;
-                    padding: 20px;
-                    line-height: 1.6;
-                }}
-                h1 {{ color: #333; }}
-                h2 {{ color: #555; margin-top: 30px; }}
-                h3 {{ color: #666; margin-top: 20px; }}
-                code {{
-                    background: #f4f4f4;
-                    padding: 2px 6px;
-                    border-radius: 3px;
-                    font-size: 0.9em;
-                }}
-                pre {{
-                    background: #2d2d2d;
-                    color: #f8f8f2;
-                    padding: 15px;
-                    border-radius: 5px;
-                    overflow-x: auto;
-                    font-size: 0.85em;
-                }}
-                .section {{
-                    background: #f9f9f9;
-                    padding: 20px;
-                    border-left: 4px solid #4CAF50;
-                    margin: 20px 0;
-                    border-radius: 0 5px 5px 0;
-                }}
-                .api-endpoint {{
-                    background: #e8f5e9;
-                    padding: 10px 15px;
-                    margin: 10px 0;
-                    border-radius: 5px;
-                }}
-                .method {{
-                    display: inline-block;
-                    padding: 3px 8px;
-                    border-radius: 3px;
-                    font-weight: bold;
-                    font-size: 0.8em;
-                    margin-right: 10px;
-                }}
-                .method-get {{ background: #61affe; color: white; }}
-                .method-post {{ background: #49cc90; color: white; }}
-                .config {{
-                    background: #f0f0f0;
-                    padding: 15px;
-                    border-radius: 5px;
-                    margin: 20px 0;
-                }}
-                table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin: 15px 0;
-                }}
-                th, td {{
-                    text-align: left;
-                    padding: 10px;
-                    border-bottom: 1px solid #ddd;
-                }}
-                th {{ background: #f5f5f5; }}
-            </style>
-        </head>
-        <body>
-            <h1>🌐 ShadowMesh Gateway</h1>
-            <p>Deploy and access censorship-resistant content through a decentralized network.</p>
-
-            <h2>� Deploy API (Vercel-like)</h2>
-            
-            <div class="section" style="border-left-color: #9c27b0;">
-                <h3>Deploy a Website</h3>
-                <div class="api-endpoint" style="background: #f3e5f5;">
-                    <span class="method method-post">POST</span>
-                    <code>/api/deploy</code>
-                </div>
-                <p>Deploy a complete static website from a ZIP file:</p>
-                <pre># 1. Create a ZIP of your website
-cd my-website
-zip -r ../site.zip .
-
-# 2. Deploy to ShadowMesh
-curl -X POST http://localhost:{}/api/deploy -F "file=@../site.zip"</pre>
-                <p><strong>Your site will be live at the returned URL with full directory structure!</strong></p>
-            </div>
-
-            <h2>�📤 Upload API (Single Files)</h2>
-            
-            <div class="section">
-                <h3>Multipart Upload (Recommended)</h3>
-                <div class="api-endpoint">
-                    <span class="method method-post">POST</span>
-                    <code>/api/upload</code>
-                </div>
-                <p>Upload a file using multipart form data:</p>
-                <pre>curl -X POST http://localhost:{}/api/upload \
-  -F "file=@./index.html"</pre>
-            </div>
-
-            <div class="section">
-                <h3>JSON Upload (Base64)</h3>
-                <div class="api-endpoint">
-                    <span class="method method-post">POST</span>
-                    <code>/api/upload/json</code>
-                </div>
-                <p>Upload base64-encoded content:</p>
-                <pre>curl -X POST http://localhost:{}/api/upload/json \
-  -H "Content-Type: application/json" \
-  -d '{{"data": "PGh0bWw+SGVsbG88L2h0bWw+", "filename": "index.html"}}'</pre>
-            </div>
-
-            <div class="section">
-                <h3>Raw Upload</h3>
-                <div class="api-endpoint">
-                    <span class="method method-post">POST</span>
-                    <code>/api/upload/raw</code>
-                </div>
-                <p>Upload raw binary data:</p>
-                <pre>curl -X POST http://localhost:{}/api/upload/raw \
-  -H "Content-Type: text/html" \
-  --data-binary @./index.html</pre>
-            </div>
-
-            <div class="section">
-                <h3>Batch Upload</h3>
-                <div class="api-endpoint">
-                    <span class="method method-post">POST</span>
-                    <code>/api/upload/batch</code>
-                </div>
-                <p>Upload multiple files at once:</p>
-                <pre>curl -X POST http://localhost:{}/api/upload/batch \
-  -H "Content-Type: application/json" \
-  -d '{{"files": [{{"data": "...", "filename": "a.html"}}, {{"data": "..."}}]}}'</pre>
-            </div>
-
-            <h2>📥 Content Retrieval</h2>
-            
-            <div class="section">
-                <div class="api-endpoint">
-                    <span class="method method-get">GET</span>
-                    <code>/{{cid}}</code> or <code>/ipfs/{{cid}}</code>
-                </div>
-                <p>Retrieve content by CID:</p>
-                <pre>curl http://localhost:{}/QmExample...</pre>
-            </div>
-
-            <h2>📊 Response Format</h2>
-            <div class="config">
-                <p>Successful uploads return:</p>
-                <pre>{{
-  "success": true,
-  "cid": "QmExample...",
-  "gateway_url": "http://localhost:{}/QmExample...",
-  "shadow_url": "shadow://QmExample...",
-  "size": 1234,
-  "content_type": "text/html",
-  "filename": "index.html"
-}}</pre>
-            </div>
-
-            <h2>⚙️ Configuration</h2>
-            <div class="config">
-                <table>
-                    <tr><th>Setting</th><th>Value</th></tr>
-                    <tr><td>Port</td><td>{}</td></tr>
-                    <tr><td>Cache</td><td>{} MB (TTL: {}s)</td></tr>
-                    <tr><td>Rate Limit</td><td>{} req/s (burst: {})</td></tr>
-                    <tr><td>IPFS</td><td>{}</td></tr>
-                    <tr><td>Max Deploy</td><td>100 MB (ZIP)</td></tr>
-                    <tr><td>Max Upload</td><td>50 MB (single file)</td></tr>
-                </table>
-            </div>
-
-            <p style="color: #666; margin-top: 40px;">
-                IPFS Status: <span style="color: {};">● {}</span> |
-                <a href="/health">Health</a> |
-                <a href="/metrics">Metrics</a>
-            </p>
-        </body>
-        </html>
-    "#,
-        port,
-        port,
-        port,
-        port,
-        port,
-        port,
-        port,
-        port,
-        state.config.cache.max_size_mb,
-        state.config.cache.ttl_seconds,
-        state.config.rate_limit.requests_per_second,
-        state.config.rate_limit.burst_size,
-        state.config.ipfs.api_url,
-        status_color,
-        ipfs_status
-    );
-
-    Html(html)
-}
-
-async fn content_handler(State(state): State<AppState>, Path(cid): Path<String>) -> Response {
-    state.metrics.increment_requests();
-
-    // Check cache first
-    if let Some((data, content_type)) = state.cache.get(&cid) {
-        state.metrics.increment_success();
-        state.metrics.add_bytes(data.len() as u64);
-        return (
-            [
-                (axum::http::header::CONTENT_TYPE, content_type),
-                (
-                    axum::http::header::HeaderName::from_static("x-cache"),
-                    "HIT".to_string(),
-                ),
-            ],
-            data,
-        )
-            .into_response();
+/// Handles `/:cid` — if the path looks like a CID, serve IPFS content;
+/// otherwise delegate to the embedded SPA for client-side routing.
+async fn content_or_spa_handler(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+    uri: Uri,
+) -> Response {
+    // Only treat paths starting with "Qm" (CIDv0) or "bafy" (CIDv1) as IPFS content
+    if cid.starts_with("Qm") || cid.starts_with("bafy") {
+        return fetch_content(&state, cid, None).await;
     }
 
-    // Fetch from IPFS
-    let Some(storage) = &state.storage else {
-        state.metrics.increment_error();
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Html(r#"<html><body><h1>IPFS Not Connected</h1></body></html>"#),
-        )
-            .into_response();
-    };
-
-    let storage = Arc::clone(storage);
-    let cid_clone = cid.clone();
-
-    // Spawn blocking task for IPFS retrieval (handles non-Send stream)
-    let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current()
-            .block_on(async { storage.retrieve_content(&cid_clone).await })
-    })
-    .await;
-
-    match result {
-        Ok(Ok(data)) => {
-            let content_type = infer::get(&data)
-                .map(|t| t.mime_type().to_string())
-                .unwrap_or_else(|| "application/octet-stream".to_string());
-
-            // Store in cache
-            state.cache.set(cid, data.clone(), content_type.clone());
-
-            state.metrics.increment_success();
-            state.metrics.add_bytes(data.len() as u64);
-
-            (
-                [
-                    (axum::http::header::CONTENT_TYPE, content_type),
-                    (
-                        axum::http::header::HeaderName::from_static("x-cache"),
-                        "MISS".to_string(),
-                    ),
-                ],
-                data,
-            )
-                .into_response()
-        }
-        Ok(Err(e)) => {
-            state.metrics.increment_error();
-            (
-                axum::http::StatusCode::NOT_FOUND,
-                Html(format!(
-                    r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#,
-                    e
-                )),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            state.metrics.increment_error();
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#,
-                    e
-                )),
-            )
-                .into_response()
-        }
-    }
+    // Everything else is a SPA route (e.g. /analytics, /settings, /login)
+    spa::spa_handler(uri).await
 }
 
 #[allow(dead_code)]
