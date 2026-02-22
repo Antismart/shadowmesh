@@ -14,6 +14,8 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::audit;
+
 /// Authentication configuration
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
@@ -157,6 +159,7 @@ fn extract_bearer_token(req: &Request<Body>) -> Option<String> {
 /// API Key authentication middleware
 pub async fn api_key_auth(
     auth_config: Arc<AuthConfig>,
+    audit_logger: Arc<audit::AuditLogger>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
@@ -182,6 +185,13 @@ pub async fn api_key_auth(
                 "Invalid API key provided"
             );
             metrics::record_auth_failure("invalid_key");
+            audit::log_auth_failure(
+                &audit_logger,
+                &format!("Invalid API key for {} {}", method, path),
+                None,
+                None,
+            )
+            .await;
             (
                 StatusCode::UNAUTHORIZED,
                 Json(AuthError {
@@ -199,6 +209,13 @@ pub async fn api_key_auth(
                 "Missing API key"
             );
             metrics::record_auth_failure("missing_key");
+            audit::log_auth_failure(
+                &audit_logger,
+                &format!("Missing API key for {} {}", method, path),
+                None,
+                None,
+            )
+            .await;
             (
                 StatusCode::UNAUTHORIZED,
                 Json(AuthError {
