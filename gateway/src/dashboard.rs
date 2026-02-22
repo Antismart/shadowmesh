@@ -1,6 +1,7 @@
 //! Dashboard for ShadowMesh Gateway - Tailwind CSS Version
 
 use crate::{
+    audit,
     lock_utils::{read_lock, write_lock},
     metrics,
     redis_client::RedisClient,
@@ -766,6 +767,7 @@ pub async fn delete_deployment(
                 tracing::warn!("Failed to delete deployment from Redis: {}", e);
             }
         }
+        audit::log_deploy_delete(&state.audit_logger, "api", &cid, None, None).await;
         Json(json!({"success": true})).into_response()
     }
 }
@@ -1197,6 +1199,15 @@ async fn deploy_github_project(
     }
 
     metrics::record_deployment(true);
+    audit::log_deploy_success(
+        &state.audit_logger,
+        "github",
+        &cid,
+        total_size,
+        None,
+        None,
+    )
+    .await;
 
     let domain = deployment.domain.clone();
     write_lock(&state.deployments).insert(0, deployment);
@@ -1400,5 +1411,221 @@ impl Deployment {
         redis.delete(&format!("deployment:{}", cid)).await?;
         redis.zrem("deployments", cid).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Deployment::new ─────────────────────────────────────────────
+
+    #[test]
+    fn deployment_new_sets_basic_fields() {
+        let d = Deployment::new("my-site".into(), "QmABC123".into(), 4096, 5);
+        assert_eq!(d.name, "my-site");
+        assert_eq!(d.cid, "QmABC123");
+        assert_eq!(d.size, 4096);
+        assert_eq!(d.file_count, 5);
+    }
+
+    #[test]
+    fn deployment_new_defaults() {
+        let d = Deployment::new("app".into(), "QmXYZ".into(), 100, 1);
+        assert_eq!(d.source, "upload");
+        assert_eq!(d.status, "Ready");
+        assert_eq!(d.build_status, "Uploaded");
+        assert!(d.branch.is_none());
+        assert!(d.repo_url.is_none());
+        assert!(d.domain.is_none());
+        assert!(d.build_logs.is_some());
+    }
+
+    #[test]
+    fn deployment_new_created_at_is_nonempty() {
+        let d = Deployment::new("x".into(), "QmZ".into(), 0, 0);
+        assert!(!d.created_at.is_empty());
+    }
+
+    // ── Deployment::new_github ──────────────────────────────────────
+
+    #[test]
+    fn deployment_new_github_sets_source() {
+        let d = Deployment::new_github(
+            "repo".into(),
+            "QmGH".into(),
+            2048,
+            3,
+            "main".into(),
+            Some("https://github.com/user/repo".into()),
+            "Built".into(),
+            Some("build logs here".into()),
+        );
+        assert_eq!(d.source, "github");
+        assert_eq!(d.branch, Some("main".to_string()));
+        assert_eq!(
+            d.repo_url,
+            Some("https://github.com/user/repo".to_string())
+        );
+        assert_eq!(d.build_status, "Built");
+        assert_eq!(d.status, "Ready");
+        assert!(d.domain.is_none());
+    }
+
+    #[test]
+    fn deployment_new_github_optional_repo_url() {
+        let d = Deployment::new_github(
+            "repo".into(),
+            "QmXX".into(),
+            0,
+            0,
+            "dev".into(),
+            None,
+            "Skipped".into(),
+            None,
+        );
+        assert!(d.repo_url.is_none());
+        assert!(d.build_logs.is_none());
+    }
+
+    // ── Serialization / Deserialization ─────────────────────────────
+
+    #[test]
+    fn deployment_serializes_to_json() {
+        let d = Deployment::new("test".into(), "QmT".into(), 1024, 2);
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["name"], "test");
+        assert_eq!(json["cid"], "QmT");
+        assert_eq!(json["size"], 1024);
+        assert_eq!(json["file_count"], 2);
+        assert_eq!(json["source"], "upload");
+        assert_eq!(json["status"], "Ready");
+        assert!(json["domain"].is_null());
+    }
+
+    #[test]
+    fn deployment_roundtrip_json() {
+        let original = Deployment::new_github(
+            "my-repo".into(),
+            "QmRoundTrip".into(),
+            8192,
+            10,
+            "feature/x".into(),
+            Some("https://github.com/user/my-repo".into()),
+            "Built".into(),
+            Some("npm install\nnpm run build".into()),
+        );
+
+        let json_str = serde_json::to_string(&original).unwrap();
+        let restored: Deployment = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(restored.name, original.name);
+        assert_eq!(restored.cid, original.cid);
+        assert_eq!(restored.size, original.size);
+        assert_eq!(restored.file_count, original.file_count);
+        assert_eq!(restored.source, original.source);
+        assert_eq!(restored.branch, original.branch);
+        assert_eq!(restored.repo_url, original.repo_url);
+        assert_eq!(restored.build_status, original.build_status);
+        assert_eq!(restored.build_logs, original.build_logs);
+        assert_eq!(restored.status, original.status);
+        assert_eq!(restored.domain, original.domain);
+    }
+
+    #[test]
+    fn deployment_domain_default_is_none() {
+        // Ensure serde(default) works: domain absent in JSON -> None
+        let json_str = r#"{
+            "name": "test",
+            "cid": "QmTest",
+            "size": 100,
+            "file_count": 1,
+            "created_at": "Jan 01, 00:00",
+            "source": "upload",
+            "branch": null,
+            "repo_url": null,
+            "build_status": "Uploaded",
+            "build_logs": null,
+            "status": "Ready"
+        }"#;
+
+        let d: Deployment = serde_json::from_str(json_str).unwrap();
+        assert!(d.domain.is_none());
+    }
+
+    #[test]
+    fn deployment_domain_deserializes_when_present() {
+        let json_str = r#"{
+            "name": "test",
+            "cid": "QmTest",
+            "size": 100,
+            "file_count": 1,
+            "created_at": "Jan 01, 00:00",
+            "source": "upload",
+            "branch": null,
+            "repo_url": null,
+            "build_status": "Uploaded",
+            "build_logs": null,
+            "status": "Ready",
+            "domain": "my-app.shadow"
+        }"#;
+
+        let d: Deployment = serde_json::from_str(json_str).unwrap();
+        assert_eq!(d.domain, Some("my-app.shadow".to_string()));
+    }
+
+    // ── parse_github_url ────────────────────────────────────────────
+
+    #[test]
+    fn parse_github_url_https() {
+        let info = parse_github_url("https://github.com/user/repo").unwrap();
+        assert_eq!(info.owner, "user");
+        assert_eq!(info.repo, "repo");
+    }
+
+    #[test]
+    fn parse_github_url_trailing_slash() {
+        let info = parse_github_url("https://github.com/user/repo/").unwrap();
+        assert_eq!(info.owner, "user");
+        assert_eq!(info.repo, "repo");
+    }
+
+    #[test]
+    fn parse_github_url_dot_git_suffix() {
+        let info = parse_github_url("https://github.com/user/repo.git").unwrap();
+        assert_eq!(info.owner, "user");
+        assert_eq!(info.repo, "repo");
+    }
+
+    #[test]
+    fn parse_github_url_without_scheme() {
+        let info = parse_github_url("github.com/user/repo").unwrap();
+        assert_eq!(info.owner, "user");
+        assert_eq!(info.repo, "repo");
+    }
+
+    #[test]
+    fn parse_github_url_invalid() {
+        assert!(parse_github_url("https://gitlab.com/user/repo").is_none());
+        assert!(parse_github_url("not-a-url").is_none());
+        assert!(parse_github_url("https://github.com/solo").is_none());
+    }
+
+    // ── trim_logs ───────────────────────────────────────────────────
+
+    #[test]
+    fn trim_logs_short_unchanged() {
+        let short = "hello world";
+        assert_eq!(trim_logs(short), short);
+    }
+
+    #[test]
+    fn trim_logs_long_truncated() {
+        let long = "x".repeat(20_000);
+        let trimmed = trim_logs(&long);
+        // Should start with the ellipsis marker
+        assert!(trimmed.starts_with('\u{2026}'));
+        // Total length should be 12000 + a few bytes for prefix
+        assert!(trimmed.len() <= 12_010);
     }
 }
