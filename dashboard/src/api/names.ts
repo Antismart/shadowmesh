@@ -1,12 +1,18 @@
-import { apiFetch, apiPost } from './client';
-import type { NameResolveResponse } from './types';
+import { apiFetch, apiPost, apiDelete } from './client';
+import type { NameRecord, NameResolveResponse, NameAssignResponse } from './types';
 
 export const names = {
+  list: () => apiFetch<NameRecord[]>('/api/names'),
+
   resolve: (name: string) =>
     apiFetch<NameResolveResponse>(`/api/names/${encodeURIComponent(name)}`),
 
-  register: (name: string, records: unknown[]) =>
-    apiPost<{ success: boolean }>(`/api/names/${encodeURIComponent(name)}`, {
-      records,
-    }),
+  assign: (name: string, cid: string) =>
+    apiPost<NameAssignResponse>(
+      `/api/names/${encodeURIComponent(name)}/assign`,
+      { cid },
+    ),
+
+  remove: (name: string) =>
+    apiDelete<{ success: boolean }>(`/api/names/${encodeURIComponent(name)}`),
 };
