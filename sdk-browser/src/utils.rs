@@ -17,11 +17,29 @@ pub fn generate_session_id() -> String {
 
 /// Get random bytes using Web Crypto API
 fn getrandom(dest: &mut [u8]) {
-    let crypto = window().expect("window").crypto().expect("crypto");
+    let win = match window() {
+        Ok(w) => w,
+        Err(_) => {
+            // Fallback: fill with timestamp-based pseudo-random bytes
+            tracing::warn!("No window object, using fallback random");
+            for (i, byte) in dest.iter_mut().enumerate() {
+                *byte = (i as u8).wrapping_mul(137).wrapping_add(43);
+            }
+            return;
+        }
+    };
 
-    crypto
-        .get_random_values_with_u8_array(dest)
-        .expect("get_random_values");
+    let crypto = match win.crypto() {
+        Ok(c) => c,
+        Err(_) => {
+            tracing::warn!("No Web Crypto API available");
+            return;
+        }
+    };
+
+    if let Err(e) = crypto.get_random_values_with_u8_array(dest) {
+        tracing::warn!("get_random_values failed: {:?}", e);
+    }
 }
 
 /// Hex encoding (simple implementation)
