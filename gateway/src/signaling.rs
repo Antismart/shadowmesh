@@ -501,9 +501,12 @@ pub type SignalingState = Arc<SignalingServer>;
 /// WebSocket upgrade handler
 pub async fn ws_handler(ws: WebSocketUpgrade, State(signaling): State<SignalingState>) -> Response {
     let connection_id = generate_session_id();
-    ws.on_upgrade(move |socket| async move {
-        signaling.handle_connection(socket, connection_id).await;
-    })
+    let max_size = signaling.config.max_message_size;
+    ws.max_frame_size(max_size)
+        .max_message_size(max_size)
+        .on_upgrade(move |socket| async move {
+            signaling.handle_connection(socket, connection_id).await;
+        })
 }
 
 /// Stats endpoint handler
