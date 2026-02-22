@@ -31,7 +31,17 @@ impl RedisClient {
         let client = Client::open(url)?;
         let conn = ConnectionManager::new(client).await?;
 
-        tracing::info!(url = %url, "Connected to Redis");
+        // Redact credentials before logging
+        let display_url = if let Some(at_pos) = url.find('@') {
+            if let Some(scheme_end) = url.find("://") {
+                format!("{}://***@{}", &url[..scheme_end], &url[at_pos + 1..])
+            } else {
+                "redis://***@<redacted>".to_string()
+            }
+        } else {
+            url.to_string()
+        };
+        tracing::info!(url = %display_url, "Connected to Redis");
 
         Ok(Self { conn, key_prefix })
     }
