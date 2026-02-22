@@ -305,7 +305,7 @@ impl PeerDiscovery {
     /// Get best peers for content retrieval (sorted by score)
     pub fn get_best_peers(&self, count: usize) -> Vec<&PeerInfo> {
         let mut connected: Vec<_> = self.get_connected_peers();
-        connected.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        connected.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         connected.into_iter().take(count).collect()
     }
 
@@ -340,7 +340,7 @@ impl PeerDiscovery {
         candidates.sort_by(|a, b| {
             let score_a = a.score - (a.average_latency().unwrap_or(100) as f64 * 0.1);
             let score_b = b.score - (b.average_latency().unwrap_or(100) as f64 * 0.1);
-            score_b.partial_cmp(&score_a).unwrap()
+            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
         });
 
         candidates
@@ -393,7 +393,7 @@ impl PeerDiscovery {
     /// Get peers to disconnect (lowest scoring)
     pub fn get_peers_to_disconnect(&self, count: usize) -> Vec<PeerId> {
         let mut connected: Vec<_> = self.get_connected_peers();
-        connected.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
+        connected.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
         connected
             .into_iter()
             .take(count)
