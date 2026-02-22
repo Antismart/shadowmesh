@@ -55,14 +55,17 @@ pub fn get_bootstrap_nodes() -> Vec<String> {
     }
 
     let defaults: Vec<String> = DEFAULT_BOOTSTRAP_NODES.iter().map(|s| s.to_string()).collect();
-    for node in &defaults {
-        if node.contains("placeholder") {
-            eprintln!(
-                "WARNING: Using placeholder bootstrap node. \
-                 Set SHADOWMESH_BOOTSTRAP_NODES with real peer IDs for production."
-            );
-            break;
-        }
+    let has_placeholders = defaults.iter().any(|n| n.contains("placeholder"));
+    if has_placeholders {
+        eprintln!(
+            "WARNING: Default bootstrap nodes contain placeholder peer IDs and will be skipped. \
+             Set SHADOWMESH_BOOTSTRAP_NODES with real peer IDs for production."
+        );
+        // Filter out placeholders — they can never connect
+        return defaults
+            .into_iter()
+            .filter(|n| !n.contains("placeholder"))
+            .collect();
     }
     defaults
 }
@@ -161,5 +164,19 @@ mod tests {
             "/dns4/example.com/tcp/4001/p2p/12D3KooWTest"
         ));
         assert!(!is_valid_bootstrap_multiaddr("/ip4/1.2.3.4/tcp/4001")); // no peer ID
+    }
+
+    #[test]
+    fn test_get_bootstrap_nodes_filters_placeholders() {
+        // When no env var is set, placeholders should be filtered out
+        std::env::remove_var("SHADOWMESH_BOOTSTRAP_NODES");
+        let nodes = get_bootstrap_nodes();
+        for node in &nodes {
+            assert!(
+                !node.contains("placeholder"),
+                "Placeholder node should be filtered: {}",
+                node
+            );
+        }
     }
 }
