@@ -20,6 +20,26 @@ use std::process::Command;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Escape a string for safe embedding in HTML content.
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
+/// Escape a string for safe embedding inside a JavaScript single-quoted literal
+/// within an HTML attribute (e.g., onclick="fn('VALUE')").
+fn escape_js_attr(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('"', "&quot;")
+        .replace('<', "\\x3c")
+        .replace('>', "\\x3e")
+        .replace('&', "\\x26")
+}
+
 #[allow(dead_code)]
 pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
     let deployments = read_lock(&state.deployments);
@@ -57,10 +77,20 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
         } else {
             "build-skipped"
         };
+
+        // Escape all user-controlled values for safe HTML/JS embedding
+        let cid_js = escape_js_attr(&d.cid);
+        let name_html = escape_html(&d.name);
+        let branch_html = escape_html(branch_display);
+        let created_html = escape_html(&d.created_at);
+        let status_html = escape_html(&d.status);
+        let build_status_html = escape_html(build_status);
+        let cid_short = escape_html(&d.cid[..8.min(d.cid.len())]);
+
         let redeploy_button = if d.source == "github" {
             format!(
-                r##"<button onclick=\"event.stopPropagation();redeployDeployment('{}')\" class=\"btn-ghost\">Redeploy</button>"##,
-                d.cid
+                r##"<button onclick="event.stopPropagation();redeployDeployment('{}')" class="btn-ghost">Redeploy</button>"##,
+                cid_js
             )
         } else {
             String::new()
@@ -90,21 +120,21 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
                     </div>
                 </div>
             </div>"##,
-            d.cid,
-            d.name,
+            cid_js,
+            name_html,
             source_label,
-            branch_display,
-            d.created_at,
+            branch_html,
+            created_html,
             status_class,
             status_icon,
-            d.status,
+            status_html,
             build_class,
-            build_status,
-            d.cid,
-            &d.cid[..8.min(d.cid.len())],
-            d.cid,
+            build_status_html,
+            cid_js,
+            cid_short,
+            cid_js,
             redeploy_button,
-            d.cid
+            cid_js
         )
     };
 
@@ -114,7 +144,7 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
             let title = if key == "Uploads" {
                 "Uploads".to_string()
             } else {
-                format!("GitHub · {}", key)
+                format!("GitHub · {}", escape_html(key))
             };
             let count = items.len();
             let list = items
@@ -1034,27 +1064,42 @@ struct RepoInfo {
     repo: String,
 }
 
+/// Validate that a GitHub owner or repo name contains only allowed characters.
+/// GitHub allows alphanumeric, hyphens, dots, and underscores.
+fn is_valid_github_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+}
+
 fn parse_github_url(url: &str) -> Option<RepoInfo> {
     let url = url.trim_end_matches('/').trim_end_matches(".git");
-    if let Some(path) = url.strip_prefix("https://github.com/") {
-        let parts: Vec<&str> = path.split('/').collect();
-        if parts.len() >= 2 {
-            return Some(RepoInfo {
-                owner: parts[0].to_string(),
-                repo: parts[1].to_string(),
-            });
-        }
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("github.com/"))?;
+
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() < 2 {
+        return None;
     }
-    if let Some(path) = url.strip_prefix("github.com/") {
-        let parts: Vec<&str> = path.split('/').collect();
-        if parts.len() >= 2 {
-            return Some(RepoInfo {
-                owner: parts[0].to_string(),
-                repo: parts[1].to_string(),
-            });
-        }
+
+    let owner = parts[0];
+    let repo = parts[1];
+
+    // GitHub limits: owner max 39 chars, repo max 100 chars
+    if owner.len() > 39 || repo.len() > 100 {
+        return None;
     }
-    None
+
+    // Validate character sets
+    if !is_valid_github_name(owner) || !is_valid_github_name(repo) {
+        return None;
+    }
+
+    Some(RepoInfo {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+    })
 }
 
 fn extract_github_zip(data: &[u8]) -> Result<tempfile::TempDir, String> {
@@ -1080,7 +1125,15 @@ fn extract_github_zip(data: &[u8]) -> Result<tempfile::TempDir, String> {
         if relative_path.is_empty() {
             continue;
         }
+        // Reject path traversal attempts (e.g. "../../../etc/passwd")
+        if relative_path.contains("..") {
+            return Err(format!("ZIP contains path traversal: {}", relative_path));
+        }
         let out_path = temp_dir.path().join(relative_path);
+        // Double-check the resolved path stays within temp_dir
+        if !out_path.starts_with(temp_dir.path()) {
+            return Err(format!("ZIP path escapes target directory: {}", relative_path));
+        }
         if file.is_dir() {
             std::fs::create_dir_all(&out_path).map_err(|e| format!("Dir failed: {}", e))?;
         } else {
@@ -1228,6 +1281,59 @@ struct BuildOutcome {
     build_logs: String,
 }
 
+/// Maximum time allowed for each npm command (5 minutes)
+const BUILD_TIMEOUT_SECS: u64 = 300;
+
+/// Allowed environment variables to pass through to npm builds.
+/// Everything else is stripped to prevent leaking secrets.
+const BUILD_ENV_ALLOWLIST: &[&str] = &[
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "NODE_ENV",
+    "npm_config_cache", "npm_config_loglevel",
+];
+
+/// Run an npm command with a timeout. Kills the process if it exceeds the limit.
+fn run_npm_with_timeout(
+    args: &[&str],
+    dir: &Path,
+    env: &[(String, String)],
+    timeout_secs: u64,
+) -> Result<std::process::Output, String> {
+    use std::process::Stdio;
+    let mut child = Command::new("npm")
+        .args(args)
+        .current_dir(dir)
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn npm: {}", e))?;
+
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child
+                    .wait_with_output()
+                    .map_err(|e| format!("Failed to read npm output: {}", e));
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "Build timed out after {} seconds — killed",
+                        timeout_secs
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(e) => return Err(format!("Failed to wait for npm: {}", e)),
+        }
+    }
+}
+
 fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
     let package_json = root.join("package.json");
     if package_json.exists() {
@@ -1238,13 +1344,16 @@ fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
             .and_then(|scripts| scripts.get("build").cloned());
 
         if build_script.is_some() {
+            // Collect only safe env vars to prevent leaking secrets to npm scripts
+            let safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
+                .iter()
+                .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
+                .collect();
+
             let mut logs = String::new();
             logs.push_str("$ npm install\n");
-            let output = Command::new("npm")
-                .arg("install")
-                .current_dir(root)
-                .output()
-                .map_err(|e| format!("Failed to run npm install: {}", e))?;
+            let output =
+                run_npm_with_timeout(&["install"], root, &safe_env, BUILD_TIMEOUT_SECS)?;
             logs.push_str(&String::from_utf8_lossy(&output.stdout));
             logs.push_str(&String::from_utf8_lossy(&output.stderr));
             if !output.status.success() {
@@ -1252,12 +1361,8 @@ fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
             }
 
             logs.push_str("\n$ npm run build\n");
-            let output = Command::new("npm")
-                .arg("run")
-                .arg("build")
-                .current_dir(root)
-                .output()
-                .map_err(|e| format!("Failed to run npm build: {}", e))?;
+            let output =
+                run_npm_with_timeout(&["run", "build"], root, &safe_env, BUILD_TIMEOUT_SECS)?;
             logs.push_str(&String::from_utf8_lossy(&output.stdout));
             logs.push_str(&String::from_utf8_lossy(&output.stderr));
             if !output.status.success() {
