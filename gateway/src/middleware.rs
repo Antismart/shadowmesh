@@ -151,3 +151,227 @@ fn normalize_endpoint(path: &str) -> String {
 
     normalized.join("/")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{routing::get, Router};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    /// Trivial handler used by middleware tests.
+    async fn ok_handler() -> &'static str {
+        "ok"
+    }
+
+    // ── security_headers ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn security_headers_sets_x_content_type_options() {
+        let app = Router::new()
+            .route("/api/test", get(ok_handler))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let req = Request::builder()
+            .uri("/api/test")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_headers_sets_x_frame_options() {
+        let app = Router::new()
+            .route("/api/test", get(ok_handler))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let req = Request::builder()
+            .uri("/api/test")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.headers().get("x-frame-options").unwrap(), "DENY");
+    }
+
+    #[tokio::test]
+    async fn security_headers_sets_xss_protection() {
+        let app = Router::new()
+            .route("/api/test", get(ok_handler))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let req = Request::builder()
+            .uri("/api/test")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.headers().get("x-xss-protection").unwrap(),
+            "1; mode=block"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_headers_sets_hsts() {
+        let app = Router::new()
+            .route("/api/test", get(ok_handler))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let req = Request::builder()
+            .uri("/api/test")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let hsts = resp
+            .headers()
+            .get("strict-transport-security")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(hsts.contains("max-age="));
+        assert!(hsts.contains("includeSubDomains"));
+    }
+
+    #[tokio::test]
+    async fn security_headers_sets_api_version_for_api_routes() {
+        let app = Router::new()
+            .route("/api/deploy", get(ok_handler))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let req = Request::builder()
+            .uri("/api/deploy")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.headers().get("x-api-version").unwrap(), "1");
+    }
+
+    #[tokio::test]
+    async fn security_headers_no_api_version_for_non_api_routes() {
+        let app = Router::new()
+            .route("/metrics", get(ok_handler))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert!(resp.headers().get("x-api-version").is_none());
+    }
+
+    #[tokio::test]
+    async fn security_headers_csp_relaxed_for_dashboard() {
+        let app = Router::new()
+            .route("/", get(ok_handler))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let req = Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let csp = resp
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        // Dashboard CSP should allow unsafe-inline styles for Tailwind
+        assert!(csp.contains("'unsafe-inline'"));
+    }
+
+    #[tokio::test]
+    async fn security_headers_csp_strict_for_api() {
+        let app = Router::new()
+            .route("/api/data", get(ok_handler))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let req = Request::builder()
+            .uri("/api/data")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let csp = resp
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(csp, "default-src 'self'");
+    }
+
+    #[tokio::test]
+    async fn security_headers_preserves_response_body() {
+        let app = Router::new()
+            .route("/api/echo", get(ok_handler))
+            .layer(axum::middleware::from_fn(security_headers));
+
+        let req = Request::builder()
+            .uri("/api/echo")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"ok");
+    }
+
+    // ── normalize_endpoint ──────────────────────────────────────────
+
+    #[test]
+    fn normalize_replaces_cid_starting_with_qm() {
+        let result = normalize_endpoint("/api/deployments/QmXyz123456789012345678901234567890");
+        assert_eq!(result, "/api/deployments/:cid");
+    }
+
+    #[test]
+    fn normalize_replaces_cid_starting_with_bafy() {
+        let result = normalize_endpoint("/ipfs/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        assert_eq!(result, "/ipfs/:cid");
+    }
+
+    #[test]
+    fn normalize_replaces_uuid_long_segment() {
+        // A standard UUID with dashes is 36 chars (> 30), so the length
+        // check fires first and normalizes it as ":cid".
+        let result = normalize_endpoint("/api/items/550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(result, "/api/items/:cid");
+    }
+
+    #[test]
+    fn normalize_replaces_uuid_short_segment() {
+        // A UUID without dashes is 32 chars (> 30), still caught by length.
+        let result = normalize_endpoint("/api/items/550e8400e29b41d4a716446655440000");
+        assert_eq!(result, "/api/items/:cid");
+    }
+
+    #[test]
+    fn normalize_leaves_short_segments_alone() {
+        let result = normalize_endpoint("/api/deploy");
+        assert_eq!(result, "/api/deploy");
+    }
+
+    #[test]
+    fn normalize_root_path() {
+        let result = normalize_endpoint("/");
+        assert_eq!(result, "/");
+    }
+
+    #[test]
+    fn normalize_metrics_path() {
+        let result = normalize_endpoint("/metrics");
+        assert_eq!(result, "/metrics");
+    }
+}
