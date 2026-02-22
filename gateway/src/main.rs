@@ -68,6 +68,15 @@ impl Metrics {
     }
 }
 
+/// Escape a string for safe embedding in HTML content.
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Option<Arc<StorageLayer>>,
@@ -183,7 +192,17 @@ async fn main() {
     let redis = if let Some(redis_url) = config.redis.get_url() {
         match redis_client::RedisClient::new(&redis_url, config.redis.key_prefix.clone()).await {
             Ok(client) => {
-                println!("✅ Connected to Redis at {}", redis_url);
+                // Redact credentials from the URL before logging
+                let display_url = if let Some(at_pos) = redis_url.find('@') {
+                    if let Some(scheme_end) = redis_url.find("://") {
+                        format!("{}://***@{}", &redis_url[..scheme_end], &redis_url[at_pos + 1..])
+                    } else {
+                        "redis://***@<redacted>".to_string()
+                    }
+                } else {
+                    redis_url.clone()
+                };
+                println!("✅ Connected to Redis at {}", display_url);
                 Some(Arc::new(client))
             }
             Err(e) => {
@@ -538,8 +557,12 @@ async fn content_or_spa_handler(
     Path(cid): Path<String>,
     uri: Uri,
 ) -> Response {
-    // Only treat paths starting with "Qm" (CIDv0) or "bafy" (CIDv1) as IPFS content
-    if cid.starts_with("Qm") || cid.starts_with("bafy") {
+    // Only treat paths starting with "Qm" (CIDv0) or "bafy" (CIDv1) as IPFS content,
+    // and validate the CID contains only safe characters to prevent injection/XSS.
+    if (cid.starts_with("Qm") || cid.starts_with("bafy"))
+        && cid.len() <= 512
+        && cid.chars().all(|c| c.is_ascii_alphanumeric())
+    {
         return fetch_content(&state, cid, None).await;
     }
 
@@ -624,7 +647,7 @@ async fn content_path_handler(
                 axum::http::StatusCode::NOT_FOUND,
                 Html(format!(
                     r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#,
-                    e
+                    escape_html(&e.to_string())
                 )),
             )
                 .into_response()
@@ -635,7 +658,7 @@ async fn content_path_handler(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 Html(format!(
                     r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#,
-                    e
+                    escape_html(&e.to_string())
                 )),
             )
                 .into_response()
@@ -1146,7 +1169,7 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
                 axum::http::StatusCode::NOT_FOUND,
                 Html(format!(
                     r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#,
-                    e
+                    escape_html(&e.to_string())
                 )),
             )
                 .into_response()
@@ -1167,7 +1190,7 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 Html(format!(
                     r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#,
-                    e
+                    escape_html(&e.to_string())
                 )),
             )
                 .into_response()
