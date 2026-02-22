@@ -119,7 +119,7 @@ impl ReplicationManager {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let status = ReplicationStatus {
@@ -176,7 +176,7 @@ impl ReplicationManager {
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
 
             if let Some(status) = self.replication_status.get_mut(cid) {
