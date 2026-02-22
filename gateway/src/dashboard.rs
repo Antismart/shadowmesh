@@ -2,6 +2,7 @@
 
 use crate::{
     lock_utils::{read_lock, write_lock},
+    metrics,
     redis_client::RedisClient,
     AppState,
 };
@@ -718,8 +719,16 @@ pub async fn redeploy_github(
 
     match deploy_github_project(&state, &repo_url, &branch).await {
         Ok(payload) => {
-            let mut deployments = write_lock(&state.deployments);
-            deployments.retain(|d| d.cid != cid);
+            {
+                let mut deployments = write_lock(&state.deployments);
+                deployments.retain(|d| d.cid != cid);
+            }
+            // Clean old deployment from Redis
+            if let Some(ref redis) = state.redis {
+                if let Err(e) = Deployment::delete_from_redis(&cid, redis).await {
+                    tracing::warn!("Failed to delete old deployment from Redis during redeploy: {}", e);
+                }
+            }
             (StatusCode::OK, Json(payload)).into_response()
         }
         Err((status, message)) => {
@@ -737,17 +746,26 @@ pub async fn delete_deployment(
     State(state): State<AppState>,
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
-    let mut deployments = write_lock(&state.deployments);
-    let before = deployments.len();
-    deployments.retain(|d| d.cid != cid);
+    let found = {
+        let mut deployments = write_lock(&state.deployments);
+        let before = deployments.len();
+        deployments.retain(|d| d.cid != cid);
+        deployments.len() != before
+    };
 
-    if deployments.len() == before {
+    if !found {
         (
             StatusCode::NOT_FOUND,
             Json(json!({"success": false, "error": "Deployment not found"})),
         )
             .into_response()
     } else {
+        // Delete from Redis if available
+        if let Some(ref redis) = state.redis {
+            if let Err(e) = Deployment::delete_from_redis(&cid, redis).await {
+                tracing::warn!("Failed to delete deployment from Redis: {}", e);
+            }
+        }
         Json(json!({"success": true})).into_response()
     }
 }
@@ -1157,7 +1175,7 @@ async fn deploy_github_project(
 
     let cid = result.root_cid;
 
-    let deployment = Deployment::new_github(
+    let mut deployment = Deployment::new_github(
         repo_info.repo.clone(),
         cid.clone(),
         total_size,
@@ -1167,11 +1185,26 @@ async fn deploy_github_project(
         build_outcome.build_status,
         Some(build_outcome.build_logs),
     );
+
+    // Auto-assign .shadow domain
+    deployment.domain = crate::auto_assign_domain(state, &repo_info.repo, &cid);
+
+    // Save to Redis if available
+    if let Some(ref redis) = state.redis {
+        if let Err(e) = deployment.save_to_redis(redis).await {
+            tracing::warn!("Failed to save GitHub deployment to Redis: {}", e);
+        }
+    }
+
+    metrics::record_deployment(true);
+
+    let domain = deployment.domain.clone();
     write_lock(&state.deployments).insert(0, deployment);
 
     Ok(json!({
         "success": true,
         "cid": cid,
+        "domain": domain,
         "repo": format!("{}/{}", repo_info.owner, repo_info.repo),
         "branch": branch,
         "url": format!("http://localhost:8081/ipfs/{}/index.html", cid)
@@ -1274,6 +1307,8 @@ pub struct Deployment {
     pub build_status: String,
     pub build_logs: Option<String>,
     pub status: String,
+    #[serde(default)]
+    pub domain: Option<String>,
 }
 
 impl Deployment {
@@ -1290,6 +1325,7 @@ impl Deployment {
             build_status: "Uploaded".to_string(),
             build_logs: Some("Uploaded ZIP without build step".to_string()),
             status: "Ready".to_string(),
+            domain: None,
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -1315,6 +1351,7 @@ impl Deployment {
             build_status,
             build_logs,
             status: "Ready".to_string(),
+            domain: None,
         }
     }
 
