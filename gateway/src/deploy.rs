@@ -244,8 +244,13 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                     }
                 }
 
-                // Also keep in-memory for immediate access
-                write_lock(&state.deployments).insert(0, deployment);
+                // Also keep in-memory for immediate access (cap to prevent unbounded growth)
+                {
+                    let mut deployments = write_lock(&state.deployments);
+                    deployments.insert(0, deployment);
+                    const MAX_IN_MEMORY_DEPLOYMENTS: usize = 1000;
+                    deployments.truncate(MAX_IN_MEMORY_DEPLOYMENTS);
+                }
 
                 metrics::record_deployment(true);
                 audit::log_deploy_success(
