@@ -77,7 +77,7 @@ pub struct AppState {
     pub start_time: Instant,
     pub deployments: Arc<RwLock<Vec<Deployment>>>,
     pub github_auth: Arc<RwLock<Option<dashboard::GithubAuth>>>,
-    pub github_oauth_state: Arc<RwLock<Option<String>>>,
+    pub github_oauth_states: Arc<RwLock<std::collections::HashMap<String, Instant>>>,
     /// Circuit breaker for IPFS operations
     pub ipfs_circuit_breaker: Arc<circuit_breaker::CircuitBreaker>,
     /// Audit logger for security events
@@ -258,7 +258,7 @@ async fn main() {
         start_time: Instant::now(),
         deployments: Arc::new(RwLock::new(initial_deployments)),
         github_auth: Arc::new(RwLock::new(None)),
-        github_oauth_state: Arc::new(RwLock::new(None)),
+        github_oauth_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
         ipfs_circuit_breaker,
         audit_logger,
         redis: redis.clone(),
@@ -891,10 +891,19 @@ async fn name_assign_handler(
             .into_response();
     }
 
-    if body.cid.is_empty() {
+    if body.cid.is_empty() || body.cid.len() > 512 {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "CID is required"})),
+            Json(serde_json::json!({"error": "CID is required and must be at most 512 characters"})),
+        )
+            .into_response();
+    }
+
+    // Basic CID format validation: must be alphanumeric (base-encoded)
+    if !body.cid.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid CID format"})),
         )
             .into_response();
     }
