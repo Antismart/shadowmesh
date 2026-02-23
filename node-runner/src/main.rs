@@ -12,6 +12,7 @@ mod api;
 mod config;
 mod dashboard;
 mod metrics;
+mod p2p;
 mod storage;
 
 use config::NodeConfig;
@@ -30,10 +31,20 @@ pub struct AppState {
     pub storage: Arc<StorageManager>,
     /// Shutdown signal sender
     pub shutdown_signal: broadcast::Sender<()>,
+    /// P2P state (None if P2P failed to initialize)
+    pub p2p: Option<Arc<p2p::P2pState>>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize structured logging
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     println!("🌐 Starting ShadowMesh Node Runner...");
     println!();
 
@@ -97,27 +108,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create shutdown signal
     let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
 
-    // Initialize the ShadowMesh protocol node
-    let peer_id = match shadowmesh_protocol::ShadowNode::new().await {
-        Ok(node) => {
+    // Initialize the ShadowMesh protocol node and P2P event loop
+    let (peer_id, p2p_state) = match shadowmesh_protocol::ShadowNode::new().await {
+        Ok(mut node) => {
             let peer_id = node.peer_id().to_string();
             println!("✅ P2P node initialized");
             println!("   🆔 Peer ID: {}", &peer_id[..20]);
 
-            // Start P2P networking in background
-            tokio::spawn(async move {
-                let mut node = node;
-                if let Err(e) = node.start().await {
-                    eprintln!("❌ P2P network error: {}", e);
-                }
-            });
+            // Start listening on configured addresses
+            if let Err(e) = node.start().await {
+                eprintln!("❌ Failed to bind P2P addresses: {}", e);
+                (peer_id, None)
+            } else {
+                // Create shared P2P state and spawn the event loop
+                let p2p_state = Arc::new(p2p::P2pState::new());
+                let shutdown_rx = shutdown_tx.subscribe();
 
-            peer_id
+                let loop_state = p2p_state.clone();
+                let loop_metrics = metrics.clone();
+                tokio::spawn(async move {
+                    p2p::run_event_loop(node, loop_state, loop_metrics, shutdown_rx).await;
+                });
+
+                println!("✅ P2P event loop started");
+                (peer_id, Some(p2p_state))
+            }
         }
         Err(e) => {
             println!("⚠️  Failed to initialize P2P node: {}", e);
             println!("   Running in dashboard-only mode");
-            "offline".to_string()
+            ("offline".to_string(), None)
         }
     };
 
@@ -130,6 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics,
         storage,
         shutdown_signal: shutdown_tx,
+        p2p: p2p_state,
     });
 
     // Build CORS layer
