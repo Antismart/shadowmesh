@@ -3,7 +3,7 @@
 //! REST API endpoints for node management and monitoring.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
@@ -11,6 +11,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::metrics::{BandwidthStats, MetricsSnapshot};
 use crate::storage::{StorageStats, StoredContent};
@@ -35,6 +36,7 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .route("/storage/content/:cid", delete(delete_content))
         .route("/storage/pin/:cid", post(pin_content))
         .route("/storage/unpin/:cid", post(unpin_content))
+        .route("/storage/upload", post(upload_content))
         .route("/storage/gc", post(run_garbage_collection))
         // Network
         .route("/network/peers", get(get_peers))
@@ -94,10 +96,10 @@ pub struct HealthChecks {
 /// Health check endpoint
 async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let storage = state.storage.get_stats().await;
-    let network = state.metrics.get_network_stats().await;
 
     let storage_ok = storage.usage_percentage() < 95.0;
-    let network_ok = network.connected_peers > 0 || !state.config.read().await.network.enable_dht;
+    // P2P is considered OK if the event loop is running (p2p is Some) or DHT is disabled
+    let network_ok = state.p2p.is_some() || !state.config.read().await.network.enable_dht;
 
     Json(HealthResponse {
         healthy: storage_ok && network_ok,
@@ -112,10 +114,9 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
 /// Readiness check endpoint (returns 503 when not ready)
 async fn ready_check(State(state): State<Arc<AppState>>) -> Response {
     let storage = state.storage.get_stats().await;
-    let network = state.metrics.get_network_stats().await;
 
     let storage_ok = storage.usage_percentage() < 95.0;
-    let network_ok = network.connected_peers > 0 || !state.config.read().await.network.enable_dht;
+    let network_ok = state.p2p.is_some() || !state.config.read().await.network.enable_dht;
     let all_ready = storage_ok && network_ok;
 
     let response = HealthResponse {
@@ -302,18 +303,31 @@ pub struct PeerInfo {
 }
 
 /// Get connected peers
-///
-/// Returns the local node as a self-entry. Remote peer tracking will be
-/// populated once the P2P swarm is wired into the API layer.
 async fn get_peers(State(state): State<Arc<AppState>>) -> Json<Vec<PeerInfo>> {
-    // Return self as the only known peer until P2P layer integration
     let config = state.config.read().await;
-    Json(vec![PeerInfo {
+
+    // Start with self as the first entry
+    let mut peers = vec![PeerInfo {
         peer_id: state.peer_id.clone(),
         addresses: config.network.listen_addresses.clone(),
         connected: true,
         latency_ms: Some(0),
-    }])
+    }];
+
+    // Append connected peers from the P2P layer
+    if let Some(ref p2p) = state.p2p {
+        let connected = p2p.peers.read().await;
+        for peer in connected.values() {
+            peers.push(PeerInfo {
+                peer_id: peer.peer_id.clone(),
+                addresses: vec![peer.address.clone()],
+                connected: true,
+                latency_ms: None,
+            });
+        }
+    }
+
+    Json(peers)
 }
 
 /// Bandwidth response
@@ -340,6 +354,114 @@ async fn get_bandwidth(State(state): State<Arc<AppState>>) -> Json<BandwidthResp
         limit_inbound: config.network.max_inbound_bandwidth,
         limit_outbound: config.network.max_outbound_bandwidth,
     })
+}
+
+/// Maximum upload size: 100 MB
+const MAX_UPLOAD_SIZE: usize = 100 * 1024 * 1024;
+
+/// Upload response
+#[derive(Debug, Serialize)]
+pub struct UploadResponse {
+    pub success: bool,
+    pub cid: String,
+    pub name: String,
+    pub size: u64,
+    pub mime_type: String,
+}
+
+/// Upload content via multipart form
+async fn upload_content(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>, (StatusCode, String)> {
+    // Read the first file field
+    let field = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid multipart: {}", e)))?
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "No file field provided".to_string()))?;
+
+    let filename = field
+        .file_name()
+        .unwrap_or("unnamed")
+        .to_string();
+
+    // Read data with size limit enforced incrementally
+    let mut data = Vec::new();
+    let mut stream = field;
+
+    loop {
+        match stream.chunk().await {
+            Ok(Some(chunk)) => {
+                if data.len() + chunk.len() > MAX_UPLOAD_SIZE {
+                    return Err((
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        format!("Upload exceeds {} MB limit", MAX_UPLOAD_SIZE / (1024 * 1024)),
+                    ));
+                }
+                data.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(e) => {
+                return Err((StatusCode::BAD_REQUEST, format!("Read error: {}", e)));
+            }
+        }
+    }
+
+    if data.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Empty file".to_string()));
+    }
+
+    // Hash content to produce CID
+    let cid = blake3::hash(&data).to_hex().to_string();
+
+    // Detect MIME type
+    let mime_type = infer::get(&data)
+        .map(|t| t.mime_type().to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    let total_size = data.len() as u64;
+
+    // Store as a single fragment
+    state
+        .storage
+        .store_fragment(&cid, &cid, 0, &data)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Store content metadata
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let content = StoredContent {
+        cid: cid.clone(),
+        name: filename.clone(),
+        total_size,
+        fragment_count: 1,
+        fragments: vec![cid.clone()],
+        stored_at: now,
+        pinned: false,
+        mime_type: mime_type.clone(),
+    };
+
+    state
+        .storage
+        .store_content(content)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Record bandwidth
+    state.metrics.record_received(total_size);
+
+    Ok(Json(UploadResponse {
+        success: true,
+        cid,
+        name: filename,
+        size: total_size,
+        mime_type,
+    }))
 }
 
 /// Shutdown response
