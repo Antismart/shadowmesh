@@ -12,6 +12,7 @@ use libp2p::{
     },
     identity::{self, Keypair},
     kad::{store::MemoryStore, Behaviour as Kademlia},
+    mdns,
     noise,
     swarm::NetworkBehaviour,
     tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
@@ -29,13 +30,15 @@ pub struct ShadowNode {
     naming: NamingManager,
 }
 
-/// Network behaviour combining Kademlia DHT and GossipSub
+/// Network behaviour combining Kademlia DHT, GossipSub, and mDNS
 #[derive(NetworkBehaviour)]
 pub struct ShadowBehaviour {
     /// Kademlia DHT for content discovery
     pub kademlia: Kademlia<MemoryStore>,
     /// GossipSub for pub/sub messaging
     pub gossipsub: Gossipsub,
+    /// mDNS for automatic LAN peer discovery
+    pub mdns: mdns::tokio::Behaviour,
 }
 
 /// Error types for ShadowNode operations
@@ -101,10 +104,15 @@ impl ShadowNode {
         gossipsub.subscribe(&naming_topic)?;
         gossipsub.subscribe(&bootstrap_topic)?;
 
+        // Set up mDNS for LAN peer discovery
+        let mdns_behaviour =
+            mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
+
         // Create behaviour and swarm
         let behaviour = ShadowBehaviour {
             kademlia,
             gossipsub,
+            mdns: mdns_behaviour,
         };
 
         let swarm = Swarm::new(
