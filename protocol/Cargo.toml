@@ -21,6 +21,8 @@ libp2p = { workspace = true, features = [
     "identify",
     # Relay for NAT traversal
     "relay",
+    # mDNS for automatic LAN peer discovery
+    "mdns",
 ] }
 # WebRTC transport (alpha - separate crate)
 libp2p-webrtc = { version = "0.9.0-alpha.1", features = ["tokio"] }
