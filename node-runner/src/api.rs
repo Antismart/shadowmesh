@@ -37,6 +37,7 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .route("/storage/pin/:cid", post(pin_content))
         .route("/storage/unpin/:cid", post(unpin_content))
         .route("/storage/upload", post(upload_content))
+        .route("/storage/fetch/:cid", post(fetch_remote_content))
         .route("/storage/gc", post(run_garbage_collection))
         // Network
         .route("/network/peers", get(get_peers))
@@ -455,12 +456,176 @@ async fn upload_content(
     // Record bandwidth
     state.metrics.record_received(total_size);
 
+    // Announce content availability to the DHT via P2P
+    if let Some(ref p2p) = state.p2p {
+        let _ = p2p
+            .command_tx
+            .send(crate::p2p_commands::P2pCommand::AnnounceContent {
+                content_hash: cid.clone(),
+                fragment_hashes: vec![cid.clone()],
+                total_size,
+                mime_type: mime_type.clone(),
+            })
+            .await;
+    }
+
     Ok(Json(UploadResponse {
         success: true,
         cid,
         name: filename,
         size: total_size,
         mime_type,
+    }))
+}
+
+/// Fetch content from the P2P network by CID.
+///
+/// Checks local storage first. If not found, queries the DHT for providers,
+/// fetches the manifest and fragments from a peer, verifies hashes, and
+/// stores the content locally.
+async fn fetch_remote_content(
+    State(state): State<Arc<AppState>>,
+    Path(cid): Path<String>,
+) -> Result<Json<UploadResponse>, (StatusCode, String)> {
+    // 1. Check if we already have it locally
+    if let Some(content) = state.storage.get_content(&cid).await {
+        return Ok(Json(UploadResponse {
+            success: true,
+            cid: content.cid,
+            name: content.name,
+            size: content.total_size,
+            mime_type: content.mime_type,
+        }));
+    }
+
+    // 2. Need P2P to fetch remotely
+    let p2p = state.p2p.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "P2P not available".to_string(),
+    ))?;
+
+    // 3. Find providers via DHT
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    p2p.command_tx
+        .send(crate::p2p_commands::P2pCommand::FindProviders {
+            content_hash: cid.clone(),
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "P2P channel closed".to_string(),
+            )
+        })?;
+
+    let providers = reply_rx
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "P2P reply channel closed".to_string(),
+            )
+        })?
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    if providers.is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "No providers found for this CID".to_string(),
+        ));
+    }
+
+    // 4. Get manifest from first available provider
+    let peer = providers[0];
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    p2p.command_tx
+        .send(crate::p2p_commands::P2pCommand::FetchManifest {
+            peer_id: peer,
+            content_hash: cid.clone(),
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "P2P channel closed".to_string(),
+            )
+        })?;
+
+    let manifest = reply_rx
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "P2P reply channel closed".to_string(),
+            )
+        })?
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    // 5. Fetch each fragment from the provider
+    for (idx, frag_hash) in manifest.fragment_hashes.iter().enumerate() {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        p2p.command_tx
+            .send(crate::p2p_commands::P2pCommand::FetchFragment {
+                peer_id: peer,
+                fragment_hash: frag_hash.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "P2P channel closed".to_string(),
+                )
+            })?;
+
+        let data = reply_rx
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "P2P reply channel closed".to_string(),
+                )
+            })?
+            .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+        state
+            .storage
+            .store_fragment(frag_hash, &cid, idx as u32, &data)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    // 6. Store content metadata locally
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let content = StoredContent {
+        cid: cid.clone(),
+        name: cid.clone(),
+        total_size: manifest.total_size,
+        fragment_count: manifest.fragment_hashes.len() as u32,
+        fragments: manifest.fragment_hashes,
+        stored_at: now,
+        pinned: false,
+        mime_type: manifest.mime_type.clone(),
+    };
+
+    state
+        .storage
+        .store_content(content)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(UploadResponse {
+        success: true,
+        cid,
+        name: manifest.content_hash,
+        size: manifest.total_size,
+        mime_type: manifest.mime_type,
     }))
 }
 
