@@ -14,7 +14,7 @@ use libp2p::{
 };
 use protocol::{
     content_protocol::{ContentRequest, ContentResponse},
-    DHTManager, ShadowNode,
+    DHTManager, NamingManager, ShadowNode, NAMING_GOSSIP_TOPIC,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -69,6 +69,7 @@ pub async fn run_event_loop(
     mut node: ShadowNode,
     p2p_state: Arc<P2pState>,
     cache: Arc<ContentCache>,
+    naming: Arc<std::sync::RwLock<NamingManager>>,
     mut command_rx: mpsc::Receiver<P2pCommand>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
@@ -77,6 +78,10 @@ pub async fn run_event_loop(
     let mut pending_requests: HashMap<OutboundRequestId, PendingReply> = HashMap::new();
     let mut pending_dht_queries: HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>> =
         HashMap::new();
+    let mut pending_name_queries: HashMap<
+        String,
+        oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
+    > = HashMap::new();
 
     loop {
         tokio::select! {
@@ -86,8 +91,10 @@ pub async fn run_event_loop(
                     &mut node,
                     &p2p_state,
                     &cache,
+                    &naming,
                     &mut pending_requests,
                     &mut pending_dht_queries,
+                    &mut pending_name_queries,
                 ).await;
             }
             Some(cmd) = command_rx.recv() => {
@@ -96,6 +103,7 @@ pub async fn run_event_loop(
                     &mut node,
                     &mut pending_requests,
                     &mut pending_dht_queries,
+                    &mut pending_name_queries,
                 );
             }
             _ = shutdown_rx.recv() => {
@@ -112,8 +120,13 @@ async fn handle_swarm_event(
     node: &mut ShadowNode,
     p2p_state: &P2pState,
     cache: &ContentCache,
+    naming: &std::sync::RwLock<NamingManager>,
     pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
     pending_dht_queries: &mut HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>>,
+    pending_name_queries: &mut HashMap<
+        String,
+        oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
+    >,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -157,8 +170,10 @@ async fn handle_swarm_event(
                 behaviour_event,
                 node,
                 cache,
+                naming,
                 pending_requests,
                 pending_dht_queries,
+                pending_name_queries,
             )
             .await;
         }
@@ -180,8 +195,13 @@ async fn handle_behaviour_event(
     event: protocol::node::ShadowBehaviourEvent,
     node: &mut ShadowNode,
     cache: &ContentCache,
+    naming: &std::sync::RwLock<NamingManager>,
     pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
     pending_dht_queries: &mut HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>>,
+    pending_name_queries: &mut HashMap<
+        String,
+        oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
+    >,
 ) {
     use protocol::node::ShadowBehaviourEvent;
 
@@ -211,7 +231,7 @@ async fn handle_behaviour_event(
             result: kad::QueryResult::GetRecord(result),
             ..
         }) => {
-            handle_kademlia_get_record(result, pending_dht_queries);
+            handle_kademlia_get_record(result, pending_dht_queries, pending_name_queries);
         }
 
         ShadowBehaviourEvent::Kademlia(kad::Event::OutboundQueryProgressed {
@@ -231,6 +251,49 @@ async fn handle_behaviour_event(
         }
 
         // ── GossipSub ────────────────────────────────────────
+        ShadowBehaviourEvent::Gossipsub(libp2p::gossipsub::Event::Message {
+            message, ..
+        }) => {
+            let naming_topic_hash =
+                libp2p::gossipsub::IdentTopic::new(NAMING_GOSSIP_TOPIC).hash();
+            if message.topic == naming_topic_hash {
+                match NamingManager::deserialize_record(&message.data) {
+                    Ok(record) => {
+                        if protocol::naming::validate_record(&record).is_ok() {
+                            if protocol::verify_record(&record).unwrap_or(false) {
+                                if !record.is_revoked() {
+                                    let mut nm =
+                                        naming.write().unwrap_or_else(|p| p.into_inner());
+                                    match nm.cache_record(record.clone()) {
+                                        Ok(()) => {
+                                            tracing::info!(
+                                                name = %record.name,
+                                                "Cached name update from GossipSub"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!(
+                                                name = %record.name,
+                                                %e,
+                                                "Failed to cache GossipSub name update"
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                tracing::debug!("GossipSub name record failed signature verification");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(%e, "Invalid GossipSub naming message");
+                    }
+                }
+            } else {
+                tracing::debug!(?message.topic, "GossipSub message on unknown topic");
+            }
+        }
+
         ShadowBehaviourEvent::Gossipsub(event) => {
             tracing::debug!(?event, "GossipSub event");
         }
@@ -437,12 +500,34 @@ fn resolve_pending(pending: PendingReply, err: Result<(), FetchError>) {
 fn handle_kademlia_get_record(
     result: Result<kad::GetRecordOk, kad::GetRecordError>,
     pending_dht_queries: &mut HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>>,
+    pending_name_queries: &mut HashMap<
+        String,
+        oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
+    >,
 ) {
     match result {
         Ok(kad::GetRecordOk::FoundRecord(peer_record)) => {
-            if let Ok(content_record) =
+            let key_str = String::from_utf8_lossy(peer_record.record.key.as_ref());
+
+            if key_str.starts_with("/shadowmesh/names/") {
+                // Name record — match by hash
+                let hash_suffix = key_str
+                    .strip_prefix("/shadowmesh/names/")
+                    .unwrap_or("");
+                let matching_name = pending_name_queries
+                    .keys()
+                    .find(|name| protocol::naming::name_to_hash(name) == hash_suffix)
+                    .cloned();
+                if let Some(name) = matching_name {
+                    if let Some(reply) = pending_name_queries.remove(&name) {
+                        tracing::debug!(%name, "DHT: found name record");
+                        let _ = reply.send(Ok(Some(peer_record.record.value)));
+                    }
+                }
+            } else if let Ok(content_record) =
                 DHTManager::deserialize_record(&peer_record.record.value)
             {
+                // Content record (existing logic)
                 let cid = content_record.cid.clone();
                 if let Some(reply) = pending_dht_queries.remove(&cid) {
                     let peers: Vec<PeerId> = content_record
@@ -465,7 +550,20 @@ fn handle_kademlia_get_record(
             };
             if let Some(key_bytes) = key_bytes {
                 let key_str = String::from_utf8_lossy(&key_bytes);
-                if let Some(cid) = key_str.strip_prefix("/shadowmesh/content/") {
+                if key_str.starts_with("/shadowmesh/names/") {
+                    let hash_suffix = key_str
+                        .strip_prefix("/shadowmesh/names/")
+                        .unwrap_or("");
+                    let matching_name = pending_name_queries
+                        .keys()
+                        .find(|name| protocol::naming::name_to_hash(name) == hash_suffix)
+                        .cloned();
+                    if let Some(name) = matching_name {
+                        if let Some(reply) = pending_name_queries.remove(&name) {
+                            let _ = reply.send(Ok(None));
+                        }
+                    }
+                } else if let Some(cid) = key_str.strip_prefix("/shadowmesh/content/") {
                     if let Some(reply) = pending_dht_queries.remove(cid) {
                         let _ = reply.send(Err(FetchError::NotFound));
                     }
@@ -483,6 +581,10 @@ fn handle_command(
     node: &mut ShadowNode,
     pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
     pending_dht_queries: &mut HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>>,
+    pending_name_queries: &mut HashMap<
+        String,
+        oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
+    >,
 ) {
     match cmd {
         P2pCommand::FetchFragment {
@@ -542,6 +644,52 @@ fn handle_command(
                 .kademlia
                 .get_record(key);
             pending_dht_queries.insert(content_hash, reply);
+        }
+
+        P2pCommand::PublishName {
+            record_bytes,
+            name,
+        } => {
+            // 1. Store in DHT
+            let key = protocol::naming::name_to_key(&name);
+            let kad_record = kad::Record {
+                key,
+                value: record_bytes.clone(),
+                publisher: None,
+                expires: None,
+            };
+            match node
+                .swarm_mut()
+                .behaviour_mut()
+                .kademlia
+                .put_record(kad_record, kad::Quorum::One)
+            {
+                Ok(_) => tracing::info!(%name, "Published name record to DHT"),
+                Err(e) => tracing::warn!(%name, ?e, "Failed to publish name to DHT"),
+            }
+
+            // 2. Broadcast via GossipSub
+            let topic = libp2p::gossipsub::IdentTopic::new(NAMING_GOSSIP_TOPIC);
+            match node
+                .swarm_mut()
+                .behaviour_mut()
+                .gossipsub
+                .publish(topic, record_bytes)
+            {
+                Ok(_) => tracing::debug!(%name, "Broadcast name update via GossipSub"),
+                Err(e) => {
+                    tracing::debug!(%name, ?e, "GossipSub name publish failed (may have no peers)")
+                }
+            }
+        }
+
+        P2pCommand::ResolveName { name, reply } => {
+            let key = protocol::naming::name_to_key(&name);
+            node.swarm_mut()
+                .behaviour_mut()
+                .kademlia
+                .get_record(key);
+            pending_name_queries.insert(name, reply);
         }
     }
 }
