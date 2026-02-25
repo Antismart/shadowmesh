@@ -21,6 +21,8 @@ pub struct Config {
     pub redis: RedisConfig,
     #[serde(default)]
     pub naming: NamingConfig,
+    #[serde(default)]
+    pub p2p: P2pConfig,
 }
 
 /// Validation errors for configuration
@@ -239,6 +241,37 @@ impl Default for NamingConfig {
     }
 }
 
+/// P2P mesh network configuration
+#[derive(Debug, Deserialize, Clone)]
+pub struct P2pConfig {
+    /// Enable P2P content resolution
+    pub enabled: bool,
+    /// TCP listen port for P2P connections
+    pub tcp_port: u16,
+    /// Bootstrap peer multiaddrs
+    #[serde(default)]
+    pub bootstrap_peers: Vec<String>,
+    /// Enable mDNS for LAN peer discovery
+    pub enable_mdns: bool,
+    /// Content resolution timeout in seconds
+    pub resolve_timeout_seconds: u64,
+    /// Announce gateway content to DHT
+    pub announce_content: bool,
+}
+
+impl Default for P2pConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tcp_port: 4001,
+            bootstrap_peers: Vec::new(),
+            enable_mdns: true,
+            resolve_timeout_seconds: 15,
+            announce_content: true,
+        }
+    }
+}
+
 impl Config {
     /// Load configuration from file and environment variables
     ///
@@ -351,6 +384,14 @@ impl Config {
                 self.monitoring.health_check_interval_seconds
             );
         }
+        if self.p2p.enabled {
+            println!(
+                "   P2P: enabled (port: {}, mDNS: {})",
+                self.p2p.tcp_port, self.p2p.enable_mdns
+            );
+        } else {
+            println!("   P2P: disabled");
+        }
     }
 
     pub fn default() -> Self {
@@ -388,6 +429,7 @@ impl Config {
             telemetry: TelemetryConfig::default(),
             redis: RedisConfig::default(),
             naming: NamingConfig::default(),
+            p2p: P2pConfig::default(),
         }
     }
 }
