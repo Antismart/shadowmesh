@@ -313,10 +313,12 @@ impl StorageManager {
         let fragment_hashes = cont.fragments.clone();
         drop(content);
 
-        let mut fragments = self.fragments.write().await;
-        for hash in fragment_hashes {
-            if let Some(frag) = fragments.get_mut(&hash) {
-                frag.pinned = true;
+        {
+            let mut fragments = self.fragments.write().await;
+            for hash in fragment_hashes {
+                if let Some(frag) = fragments.get_mut(&hash) {
+                    frag.pinned = true;
+                }
             }
         }
 
@@ -343,10 +345,12 @@ impl StorageManager {
         let fragment_hashes = cont.fragments.clone();
         drop(content);
 
-        let mut fragments = self.fragments.write().await;
-        for hash in fragment_hashes {
-            if let Some(frag) = fragments.get_mut(&hash) {
-                frag.pinned = false;
+        {
+            let mut fragments = self.fragments.write().await;
+            for hash in fragment_hashes {
+                if let Some(frag) = fragments.get_mut(&hash) {
+                    frag.pinned = false;
+                }
             }
         }
 
