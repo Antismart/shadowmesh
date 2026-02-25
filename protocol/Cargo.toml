@@ -23,7 +23,10 @@ libp2p = { workspace = true, features = [
     "relay",
     # mDNS for automatic LAN peer discovery
     "mdns",
+    # Request-response for P2P content serving
+    "request-response",
 ] }
+async-trait = "0.1"
 # WebRTC transport (alpha - separate crate)
 libp2p-webrtc = { version = "0.9.0-alpha.1", features = ["tokio"] }
 tokio = { workspace = true }
