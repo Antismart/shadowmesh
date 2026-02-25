@@ -4,6 +4,8 @@ use crate::error::{codes, SdkError};
 use crate::signaling::{PeerInfo, SignalingClient, SignalingMessage};
 use crate::utils::generate_session_id;
 use crate::webrtc::WebRtcConnection;
+use base64::Engine;
+use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -117,6 +119,7 @@ struct PendingFetch {
     cid: String,
     fragments: HashMap<u32, Vec<u8>>,
     total_fragments: Option<u32>,
+    resolver: Option<futures::channel::oneshot::Sender<Result<Vec<u8>, SdkError>>>,
 }
 
 /// ShadowMesh browser client
@@ -129,6 +132,7 @@ pub struct ShadowMeshClient {
     available_peers: Rc<RefCell<Vec<PeerInfo>>>,
     connected: Rc<RefCell<bool>>,
     pending_fetches: Rc<RefCell<HashMap<String, PendingFetch>>>,
+    content_cache: Rc<RefCell<HashMap<String, Vec<u8>>>>,
 }
 
 #[wasm_bindgen]
@@ -146,6 +150,7 @@ impl ShadowMeshClient {
             available_peers: Rc::new(RefCell::new(Vec::new())),
             connected: Rc::new(RefCell::new(false)),
             pending_fetches: Rc::new(RefCell::new(HashMap::new())),
+            content_cache: Rc::new(RefCell::new(HashMap::new())),
         })
     }
 
@@ -189,6 +194,9 @@ impl ShadowMeshClient {
         // Store signaling client
         *self.signaling.borrow_mut() = Some(signaling);
         *self.connected.borrow_mut() = true;
+
+        // Start background signaling message loop
+        self.start_message_loop();
 
         tracing::info!("Connected to ShadowMesh network as {}", self.peer_id);
 
@@ -241,6 +249,28 @@ impl ShadowMeshClient {
                     sdp_mline_index,
                     &session_id_clone,
                 );
+            }
+        });
+
+        // Set up data channel message handler
+        let pending = self.pending_fetches.clone();
+        let cache = self.content_cache.clone();
+        let connections_for_msg = self.connections.clone();
+        let peer_id_for_msg = peer_id.to_string();
+
+        conn.on_message(move |data: Vec<u8>| {
+            let text = match String::from_utf8(data) {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+
+            if let Ok(response) = serde_json::from_str::<ContentResponse>(&text) {
+                handle_content_response(&pending, &cache, response);
+                return;
+            }
+
+            if let Ok(request) = serde_json::from_str::<ContentRequest>(&text) {
+                handle_content_request(&cache, &connections_for_msg, &peer_id_for_msg, request);
             }
         });
 
@@ -300,6 +330,10 @@ impl ShadowMeshClient {
                 match self.fetch_http(gateway_url, cid).await {
                     Ok(data) => {
                         tracing::info!("Content fetched via HTTP: {} bytes", data.len());
+                        // Cache for P2P serving to other peers
+                        self.content_cache
+                            .borrow_mut()
+                            .insert(cid.to_string(), data.clone());
                         let array = js_sys::Uint8Array::new_with_length(data.len() as u32);
                         array.copy_from(&data);
                         return Ok(array);
@@ -364,39 +398,89 @@ impl ShadowMeshClient {
 impl ShadowMeshClient {
     /// Fetch content via P2P WebRTC
     async fn fetch_p2p(&self, cid: &str) -> Result<Vec<u8>, SdkError> {
-        // Check if we have any connected peers
-        let connections = self.connections.borrow();
-        if connections.is_empty() {
-            return Err(SdkError::new(codes::NOT_CONNECTED, "No connected peers"));
+        // Check local cache first
+        if let Some(data) = self.content_cache.borrow().get(cid) {
+            tracing::info!("Content {} found in local cache", cid);
+            return Ok(data.clone());
         }
 
-        // Create content request
-        let request = ContentRequest {
-            request_type: "content_request".to_string(),
-            cid: cid.to_string(),
-            fragment_index: None, // Request all fragments
-        };
+        // Find a connected peer to request from
+        let request_json = {
+            let connections = self.connections.borrow();
+            if connections.is_empty() {
+                return Err(SdkError::new(codes::NOT_CONNECTED, "No connected peers"));
+            }
 
-        let request_json = serde_json::to_string(&request)
-            .map_err(|e| SdkError::new(codes::SIGNALING_ERROR, &e.to_string()))?;
+            let request = ContentRequest {
+                request_type: "content_request".to_string(),
+                cid: cid.to_string(),
+                fragment_index: None,
+            };
 
-        // Send request to first available peer
-        for (peer_id, conn) in connections.iter() {
-            if conn.is_connected() {
-                tracing::info!("Requesting content from peer: {}", peer_id);
-                conn.send(request_json.as_bytes())
-                    .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &e.to_string()))?;
+            let request_json = serde_json::to_string(&request)
+                .map_err(|e| SdkError::new(codes::SIGNALING_ERROR, &e.to_string()))?;
 
-                // Wait for response (simplified - in production would use async channels)
-                // For now, return error as full implementation requires message handling loop
+            // Send to first connected peer
+            let mut sent = false;
+            for (peer_id, conn) in connections.iter() {
+                if conn.is_connected() {
+                    tracing::info!("Requesting content {} from peer {}", cid, peer_id);
+                    conn.send(request_json.as_bytes())
+                        .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &e.to_string()))?;
+                    sent = true;
+                    break;
+                }
+            }
+
+            if !sent {
                 return Err(SdkError::new(
-                    codes::TIMEOUT,
-                    "P2P content fetching requires message handling - use HTTP fallback",
+                    codes::NOT_CONNECTED,
+                    "No connected peers with open data channel",
                 ));
             }
+
+            request_json
+        };
+        let _ = request_json; // consumed above
+
+        // Create oneshot channel for async response
+        let (tx, rx) = futures::channel::oneshot::channel::<Result<Vec<u8>, SdkError>>();
+
+        self.pending_fetches.borrow_mut().insert(
+            cid.to_string(),
+            PendingFetch {
+                cid: cid.to_string(),
+                fragments: HashMap::new(),
+                total_fragments: None,
+                resolver: Some(tx),
+            },
+        );
+
+        // Race response against timeout
+        let timeout = gloo_timers::future::TimeoutFuture::new(self.config.timeout_ms);
+
+        let result = futures::select! {
+            response = rx.fuse() => {
+                match response {
+                    Ok(inner) => inner,
+                    Err(_) => Err(SdkError::new(codes::WEBRTC_ERROR, "Response channel closed")),
+                }
+            }
+            _ = timeout.fuse() => {
+                // Clean up the pending fetch on timeout
+                self.pending_fetches.borrow_mut().remove(cid);
+                Err(SdkError::new(codes::TIMEOUT, "P2P fetch timed out"))
+            }
+        };
+
+        // Cache successful result
+        if let Ok(ref data) = result {
+            self.content_cache
+                .borrow_mut()
+                .insert(cid.to_string(), data.clone());
         }
 
-        Err(SdkError::new(codes::NOT_CONNECTED, "No connected peers"))
+        result
     }
 
     /// Fetch content via HTTP gateway
@@ -437,9 +521,168 @@ impl ShadowMeshClient {
 
     /// Verify content hash using BLAKE3
     fn verify_content(&self, data: &[u8], expected_cid: &str) -> bool {
-        let hash = blake3::hash(data);
-        let computed_cid = format!("baf{}", hex_encode(&hash.as_bytes()[..32]));
-        computed_cid.starts_with(&expected_cid[..expected_cid.len().min(10)])
+        verify_cid(data, expected_cid)
+    }
+
+    /// Start a background signaling message loop.
+    ///
+    /// Handles incoming WebRTC offers, answers, ICE candidates, peer discovery
+    /// responses, and disconnect notifications.
+    fn start_message_loop(&self) {
+        let signaling = self.signaling.clone();
+        let connections = self.connections.clone();
+        let available_peers = self.available_peers.clone();
+        let stun_servers = self.config.stun_servers.clone();
+        let pending = self.pending_fetches.clone();
+        let cache = self.content_cache.clone();
+
+        // Take the message receiver from signaling (can only be called once)
+        let rx = {
+            let sig = signaling.borrow();
+            sig.as_ref().and_then(|s| s.take_message_receiver())
+        };
+
+        let Some(mut rx) = rx else {
+            tracing::warn!("Signaling message receiver already taken");
+            return;
+        };
+
+        wasm_bindgen_futures::spawn_local(async move {
+            while let Some(msg) = rx.next().await {
+                match msg {
+                    SignalingMessage::Peers(peers_msg) => {
+                        *available_peers.borrow_mut() = peers_msg.peers;
+                        tracing::info!(
+                            "Discovered {} peers",
+                            available_peers.borrow().len()
+                        );
+                    }
+                    SignalingMessage::Offer(offer) => {
+                        tracing::info!("Received offer from peer {}", offer.from);
+                        let conn = match WebRtcConnection::new(&stun_servers) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::error!("Failed to create WebRTC connection: {}", e);
+                                continue;
+                            }
+                        };
+
+                        // Wire ICE candidate handler
+                        let sig_for_ice = signaling.clone();
+                        let target = offer.from.clone();
+                        let sid = offer.session_id.clone();
+                        conn.on_ice_candidate(move |candidate, sdp_mid, sdp_mline_index| {
+                            if let Some(ref sig) = *sig_for_ice.borrow() {
+                                let _ = sig.send_ice_candidate(
+                                    &target,
+                                    &candidate,
+                                    sdp_mid.as_deref(),
+                                    sdp_mline_index,
+                                    &sid,
+                                );
+                            }
+                        });
+
+                        // Wire data channel message handler
+                        let p = pending.clone();
+                        let c = cache.clone();
+                        let conns_for_msg = connections.clone();
+                        let pid = offer.from.clone();
+                        conn.on_message(move |data: Vec<u8>| {
+                            let text = match String::from_utf8(data) {
+                                Ok(t) => t,
+                                Err(_) => return,
+                            };
+                            if let Ok(response) =
+                                serde_json::from_str::<ContentResponse>(&text)
+                            {
+                                handle_content_response(&p, &c, response);
+                                return;
+                            }
+                            if let Ok(request) =
+                                serde_json::from_str::<ContentRequest>(&text)
+                            {
+                                handle_content_request(
+                                    &c,
+                                    &conns_for_msg,
+                                    &pid,
+                                    request,
+                                );
+                            }
+                        });
+
+                        // Create answer
+                        match conn.create_answer(&offer.sdp).await {
+                            Ok(answer_sdp) => {
+                                if let Some(ref sig) = *signaling.borrow() {
+                                    let _ = sig.send_answer(
+                                        &offer.from,
+                                        &answer_sdp,
+                                        &offer.session_id,
+                                    );
+                                }
+                                connections
+                                    .borrow_mut()
+                                    .insert(offer.from.clone(), conn);
+                                tracing::info!(
+                                    "Accepted connection from peer {}",
+                                    offer.from
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to create answer for {}: {}",
+                                    offer.from,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    SignalingMessage::Answer(answer) => {
+                        tracing::info!("Received answer from peer {}", answer.from);
+                        let conns = connections.borrow();
+                        if let Some(conn) = conns.get(&answer.from) {
+                            if let Err(e) = conn.set_remote_answer(&answer.sdp).await {
+                                tracing::error!(
+                                    "Failed to set remote answer from {}: {}",
+                                    answer.from,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    SignalingMessage::IceCandidate(ice) => {
+                        let conns = connections.borrow();
+                        if let Some(conn) = conns.get(&ice.from) {
+                            if let Err(e) = conn
+                                .add_ice_candidate(
+                                    &ice.candidate,
+                                    ice.sdp_mid.as_deref(),
+                                    ice.sdp_mline_index,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "Failed to add ICE candidate from {}: {}",
+                                    ice.from,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    SignalingMessage::PeerDisconnected(disc) => {
+                        tracing::info!("Peer disconnected: {}", disc.peer_id);
+                        if let Some(conn) =
+                            connections.borrow_mut().remove(&disc.peer_id)
+                        {
+                            conn.close();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            tracing::info!("Signaling message loop ended");
+        });
     }
 }
 
@@ -458,4 +701,193 @@ fn hex_encode(bytes: &[u8]) -> String {
         result.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
     }
     result
+}
+
+/// BLAKE3 content verification (standalone for use in free functions)
+fn verify_cid(data: &[u8], expected_cid: &str) -> bool {
+    let hash = blake3::hash(data);
+    let computed_cid = format!("baf{}", hex_encode(&hash.as_bytes()[..32]));
+    computed_cid.starts_with(&expected_cid[..expected_cid.len().min(10)])
+}
+
+/// Handle an incoming content response from a peer.
+///
+/// Collects fragments into the pending fetch, and when all fragments have
+/// arrived, reassembles, verifies, caches, and resolves the oneshot.
+fn handle_content_response(
+    pending: &Rc<RefCell<HashMap<String, PendingFetch>>>,
+    cache: &Rc<RefCell<HashMap<String, Vec<u8>>>>,
+    response: ContentResponse,
+) {
+    let cid = response.cid.clone();
+
+    match response.response_type.as_str() {
+        "content_response" => {
+            let fragment_index = match response.fragment_index {
+                Some(idx) => idx,
+                None => return,
+            };
+            let total = match response.total_fragments {
+                Some(t) => t,
+                None => return,
+            };
+            let data_b64 = match response.data {
+                Some(ref d) => d,
+                None => return,
+            };
+            let fragment_data =
+                match base64::engine::general_purpose::STANDARD.decode(data_b64) {
+                    Ok(d) => d,
+                    Err(_) => {
+                        tracing::warn!("Failed to decode base64 fragment data for {}", cid);
+                        return;
+                    }
+                };
+
+            let mut pending_map = pending.borrow_mut();
+            let fetch = match pending_map.get_mut(&cid) {
+                Some(f) => f,
+                None => return, // No pending fetch for this CID
+            };
+
+            fetch.total_fragments = Some(total);
+            fetch.fragments.insert(fragment_index, fragment_data);
+
+            tracing::debug!(
+                "Received fragment {}/{} for {}",
+                fetch.fragments.len(),
+                total,
+                cid
+            );
+
+            // Check if all fragments have arrived
+            if fetch.fragments.len() == total as usize {
+                // Reassemble in order
+                let mut assembled = Vec::new();
+                for i in 0..total {
+                    match fetch.fragments.get(&i) {
+                        Some(frag) => assembled.extend_from_slice(frag),
+                        None => {
+                            // Missing fragment — resolve with error
+                            if let Some(resolver) = fetch.resolver.take() {
+                                let _ = resolver.send(Err(SdkError::new(
+                                    codes::CONTENT_NOT_FOUND,
+                                    "Missing fragment during reassembly",
+                                )));
+                            }
+                            pending_map.remove(&cid);
+                            return;
+                        }
+                    }
+                }
+
+                // Verify BLAKE3 hash
+                if !verify_cid(&assembled, &cid) {
+                    if let Some(resolver) = fetch.resolver.take() {
+                        let _ = resolver.send(Err(SdkError::new(
+                            codes::CONTENT_NOT_FOUND,
+                            "Content hash verification failed",
+                        )));
+                    }
+                    pending_map.remove(&cid);
+                    return;
+                }
+
+                // Cache and resolve
+                cache
+                    .borrow_mut()
+                    .insert(cid.clone(), assembled.clone());
+
+                if let Some(resolver) = fetch.resolver.take() {
+                    let _ = resolver.send(Ok(assembled));
+                }
+                pending_map.remove(&cid);
+            }
+        }
+        "content_not_found" => {
+            let mut pending_map = pending.borrow_mut();
+            if let Some(mut fetch) = pending_map.remove(&cid) {
+                if let Some(resolver) = fetch.resolver.take() {
+                    let _ = resolver.send(Err(SdkError::new(
+                        codes::CONTENT_NOT_FOUND,
+                        "Peer does not have the requested content",
+                    )));
+                }
+            }
+        }
+        "content_error" => {
+            let msg = response
+                .error
+                .unwrap_or_else(|| "Unknown peer error".to_string());
+            let mut pending_map = pending.borrow_mut();
+            if let Some(mut fetch) = pending_map.remove(&cid) {
+                if let Some(resolver) = fetch.resolver.take() {
+                    let _ = resolver.send(Err(SdkError::new(codes::WEBRTC_ERROR, &msg)));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle an incoming content request from a peer — serve from cache.
+fn handle_content_request(
+    cache: &Rc<RefCell<HashMap<String, Vec<u8>>>>,
+    connections: &Rc<RefCell<HashMap<String, WebRtcConnection>>>,
+    peer_id: &str,
+    request: ContentRequest,
+) {
+    let cache_map = cache.borrow();
+    let conns = connections.borrow();
+
+    let conn = match conns.get(peer_id) {
+        Some(c) if c.is_connected() => c,
+        _ => return,
+    };
+
+    match cache_map.get(&request.cid) {
+        Some(data) => {
+            // Chunk into FRAGMENT_SIZE pieces and send each as a response
+            let chunks: Vec<&[u8]> = data.chunks(FRAGMENT_SIZE).collect();
+            let total_fragments = chunks.len() as u32;
+
+            for (i, chunk) in chunks.iter().enumerate() {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
+                let response = ContentResponse {
+                    response_type: "content_response".to_string(),
+                    cid: request.cid.clone(),
+                    fragment_index: Some(i as u32),
+                    total_fragments: Some(total_fragments),
+                    data: Some(encoded),
+                    error: None,
+                };
+
+                if let Ok(json) = serde_json::to_string(&response) {
+                    if let Err(e) = conn.send(json.as_bytes()) {
+                        tracing::warn!("Failed to send fragment {} to {}: {}", i, peer_id, e);
+                        return;
+                    }
+                }
+            }
+            tracing::info!(
+                "Served {} fragments for {} to peer {}",
+                total_fragments,
+                request.cid,
+                peer_id
+            );
+        }
+        None => {
+            let response = ContentResponse {
+                response_type: "content_not_found".to_string(),
+                cid: request.cid.clone(),
+                fragment_index: None,
+                total_fragments: None,
+                data: None,
+                error: None,
+            };
+            if let Ok(json) = serde_json::to_string(&response) {
+                let _ = conn.send(json.as_bytes());
+            }
+        }
+    }
 }
