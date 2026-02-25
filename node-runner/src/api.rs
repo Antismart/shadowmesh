@@ -42,6 +42,8 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         // Network
         .route("/network/peers", get(get_peers))
         .route("/network/bandwidth", get(get_bandwidth))
+        // Replication
+        .route("/replication/health", get(get_replication_health))
         // Node control
         .route("/node/shutdown", post(shutdown_node))
 }
@@ -627,6 +629,25 @@ async fn fetch_remote_content(
         size: manifest.total_size,
         mime_type: manifest.mime_type,
     }))
+}
+
+/// Get replication health report
+async fn get_replication_health(
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match &state.replication {
+        Some(repl) => {
+            let report = repl.health_report().await;
+            (StatusCode::OK, Json(report)).into_response()
+        }
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "Replication is not enabled"
+            })),
+        )
+            .into_response(),
+    }
 }
 
 /// Shutdown response
