@@ -303,11 +303,13 @@ async fn main() {
 
                     let loop_state = p2p_st.clone();
                     let loop_cache = cache.clone();
+                    let loop_naming = naming.clone();
                     tokio::spawn(async move {
                         p2p::run_event_loop(
                             node,
                             loop_state,
                             loop_cache,
+                            loop_naming,
                             command_rx,
                             shutdown_rx,
                         )
@@ -450,6 +452,7 @@ async fn main() {
         .route("/api/services/:service_type", get(service_discovery_handler))
         // Content retrieval (CID paths only — SPA routes handled by fallback)
         .route("/:cid", get(content_or_spa_handler))
+        .route("/:name/*path", get(shadow_or_content_subpath_handler))
         .route("/ipfs/*path", get(ipfs_content_path_handler))
         .with_state(state)
         // API key management routes (separate state)
@@ -615,12 +618,17 @@ async fn shutdown_signal() {
 
 
 /// Handles `/:cid` — if the path looks like a CID, serve IPFS content;
-/// otherwise delegate to the embedded SPA for client-side routing.
+/// if it ends with `.shadow`, resolve the name; otherwise delegate to SPA.
 async fn content_or_spa_handler(
     State(state): State<AppState>,
     Path(cid): Path<String>,
     uri: Uri,
 ) -> Response {
+    // Check for .shadow domain resolution
+    if cid.ends_with(".shadow") && state.config.naming.enabled {
+        return resolve_shadow_name_and_serve(&state, &cid, "").await;
+    }
+
     // Only treat paths starting with "Qm" (CIDv0) or "bafy" (CIDv1) as IPFS content,
     // and validate the CID contains only safe characters to prevent injection/XSS.
     if (cid.starts_with("Qm") || cid.starts_with("bafy"))
@@ -631,6 +639,31 @@ async fn content_or_spa_handler(
     }
 
     // Everything else is a SPA route (e.g. /analytics, /settings, /login)
+    spa::spa_handler(uri).await
+}
+
+/// Handles `/:name/*path` — if the first segment is a .shadow name, resolve and serve
+/// the subpath; otherwise fall through to CID+path or SPA.
+async fn shadow_or_content_subpath_handler(
+    State(state): State<AppState>,
+    Path((name, path)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if name.ends_with(".shadow") && state.config.naming.enabled {
+        return resolve_shadow_name_and_serve(&state, &name, &path).await;
+    }
+
+    // Fall through to CID-with-path behavior
+    if (name.starts_with("Qm") || name.starts_with("bafy"))
+        && name.len() <= 512
+        && name.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        let base_prefix = Some(format!("/{}/", name));
+        let full_path = format!("{}/{}", name, path);
+        return fetch_content(&state, full_path, base_prefix).await;
+    }
+
+    // SPA fallback
     spa::spa_handler(uri).await
 }
 
@@ -762,6 +795,20 @@ fn sanitize_domain_label(name: &str) -> String {
     }
 }
 
+/// Best-effort publish of a name record to DHT + GossipSub (sync context).
+fn publish_name_best_effort(state: &AppState, record: &protocol::NameRecord) {
+    if let Some(ref p2p) = state.p2p {
+        if let Ok(bytes) = protocol::NamingManager::serialize_record(record) {
+            let _ = p2p
+                .command_tx
+                .try_send(p2p_commands::P2pCommand::PublishName {
+                    record_bytes: bytes,
+                    name: record.name.clone(),
+                });
+        }
+    }
+}
+
 /// Try to auto-assign a `.shadow` domain for a deployment.
 /// Returns the assigned domain name, or None if naming is disabled or registration fails.
 pub fn auto_assign_domain(state: &AppState, deploy_name: &str, cid: &str) -> Option<String> {
@@ -784,8 +831,9 @@ pub fn auto_assign_domain(state: &AppState, deploy_name: &str, cid: &str) -> Opt
         &state.naming_key,
         protocol::naming::DEFAULT_NAME_TTL,
     ) {
-        Ok(_) => {
+        Ok(record) => {
             tracing::info!(domain = %full_name, cid = %cid, "Auto-assigned domain");
+            publish_name_best_effort(state, &record);
             return Some(full_name);
         }
         Err(protocol::NamingError::NameTaken) => {
@@ -812,8 +860,9 @@ pub fn auto_assign_domain(state: &AppState, deploy_name: &str, cid: &str) -> Opt
             &state.naming_key,
             protocol::naming::DEFAULT_NAME_TTL,
         ) {
-            Ok(_) => {
+            Ok(record) => {
                 tracing::info!(domain = %name_with_suffix, cid = %cid, "Auto-assigned domain (with suffix)");
+                publish_name_best_effort(state, &record);
                 return Some(name_with_suffix);
             }
             Err(_) => continue,
@@ -855,18 +904,29 @@ async fn name_resolve_handler(
         });
     }
 
-    let naming = lock_utils::read_lock(&state.naming);
-    if let Some(record) = naming.resolve_local(&name) {
-        Json(NameResolveResponse {
-            found: true,
-            record: Some(record.clone()),
-        })
-    } else {
-        Json(NameResolveResponse {
-            found: false,
-            record: None,
-        })
+    // 1. Check local cache first
+    {
+        let naming = lock_utils::read_lock(&state.naming);
+        if let Some(record) = naming.resolve_local(&name) {
+            return Json(NameResolveResponse {
+                found: true,
+                record: Some(record.clone()),
+            });
+        }
     }
+
+    // 2. Try DHT lookup if P2P is available
+    if let Some(record) = resolve_name_from_dht(&state, &name).await {
+        return Json(NameResolveResponse {
+            found: true,
+            record: Some(record),
+        });
+    }
+
+    Json(NameResolveResponse {
+        found: false,
+        record: None,
+    })
 }
 
 /// Register or update a `.shadow` name (client sends a pre-signed record)
@@ -909,15 +969,33 @@ async fn name_register_handler(
         }
     }
 
-    // Store the record
-    let mut naming = lock_utils::write_lock(&state.naming);
-    match naming.cache_record(body.record.clone()) {
-        Ok(()) => Json(serde_json::json!({
-            "success": true,
-            "name": body.record.name,
-            "name_hash": body.record.name_hash,
-        }))
-        .into_response(),
+    // Store the record (lock scoped to avoid holding across .await)
+    let cache_result = {
+        let mut naming = lock_utils::write_lock(&state.naming);
+        naming.cache_record(body.record.clone())
+    };
+
+    match cache_result {
+        Ok(()) => {
+            // Publish to DHT + GossipSub via P2P
+            if let Some(ref p2p) = state.p2p {
+                if let Ok(bytes) = protocol::NamingManager::serialize_record(&body.record) {
+                    let _ = p2p
+                        .command_tx
+                        .send(p2p_commands::P2pCommand::PublishName {
+                            record_bytes: bytes,
+                            name: body.record.name.clone(),
+                        })
+                        .await;
+                }
+            }
+            Json(serde_json::json!({
+                "success": true,
+                "name": body.record.name,
+                "name_hash": body.record.name_hash,
+            }))
+            .into_response()
+        }
         Err(e) => (
             axum::http::StatusCode::CONFLICT,
             Json(serde_json::json!({"error": format!("{}", e)})),
@@ -999,20 +1077,39 @@ async fn name_assign_handler(
         cid: body.cid.clone(),
     }];
 
-    let mut naming = lock_utils::write_lock(&state.naming);
-    match naming.register_name(
-        &full_name,
-        records,
-        &state.naming_key,
-        protocol::naming::DEFAULT_NAME_TTL,
-    ) {
-        Ok(record) => Json(serde_json::json!({
-            "success": true,
-            "name": record.name,
-            "name_hash": record.name_hash,
-            "cid": body.cid,
-        }))
-        .into_response(),
+    // Register (lock scoped to avoid holding across .await)
+    let register_result = {
+        let mut naming = lock_utils::write_lock(&state.naming);
+        naming.register_name(
+            &full_name,
+            records,
+            &state.naming_key,
+            protocol::naming::DEFAULT_NAME_TTL,
+        )
+    };
+
+    match register_result {
+        Ok(record) => {
+            // Publish to DHT + GossipSub via P2P
+            if let Some(ref p2p) = state.p2p {
+                if let Ok(bytes) = protocol::NamingManager::serialize_record(&record) {
+                    let _ = p2p
+                        .command_tx
+                        .send(p2p_commands::P2pCommand::PublishName {
+                            record_bytes: bytes,
+                            name: record.name.clone(),
+                        })
+                        .await;
+                }
+            }
+            Json(serde_json::json!({
+                "success": true,
+                "name": record.name,
+                "name_hash": record.name_hash,
+                "cid": body.cid,
+            }))
+            .into_response()
+        }
         Err(e) => {
             let status = match e {
                 protocol::NamingError::NameTaken => axum::http::StatusCode::CONFLICT,
@@ -1043,26 +1140,185 @@ async fn name_delete_handler(
         format!("{}.shadow", name)
     };
 
-    let mut naming = lock_utils::write_lock(&state.naming);
-    if let Some(record) = naming.resolve_local(&full_name).cloned() {
-        match naming.revoke_name_record(&record, &state.naming_key) {
-            Ok(_revoked) => {
-                naming.invalidate_cache(&full_name);
-                Json(serde_json::json!({"success": true})).into_response()
+    // Revoke (lock scoped to avoid holding across .await)
+    let revoke_result = {
+        let mut naming = lock_utils::write_lock(&state.naming);
+        if let Some(record) = naming.resolve_local(&full_name).cloned() {
+            match naming.revoke_name_record(&record, &state.naming_key) {
+                Ok(revoked) => {
+                    naming.invalidate_cache(&full_name);
+                    Ok(Some(revoked))
+                }
+                Err(e) => Err(e),
             }
-            Err(e) => (
-                axum::http::StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("{}", e)})),
-            )
-                .into_response(),
+        } else {
+            Ok(None) // Not found
         }
-    } else {
-        (
+    };
+
+    match revoke_result {
+        Ok(Some(revoked)) => {
+            // Publish revoked record to DHT so peers learn about it
+            if let Some(ref p2p) = state.p2p {
+                if let Ok(bytes) = protocol::NamingManager::serialize_record(&revoked) {
+                    let _ = p2p
+                        .command_tx
+                        .send(p2p_commands::P2pCommand::PublishName {
+                            record_bytes: bytes,
+                            name: full_name,
+                        })
+                        .await;
+                }
+            }
+            Json(serde_json::json!({"success": true})).into_response()
+        }
+        Ok(None) => (
             axum::http::StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Name not found"})),
         )
-            .into_response()
+            .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{}", e)})),
+        )
+            .into_response(),
     }
+}
+
+// ============================================
+// .shadow Name Resolution Helpers
+// ============================================
+
+/// Resolve a name record from DHT, validate, verify, and cache locally.
+/// Returns None if P2P unavailable, name not found, or validation fails.
+async fn resolve_name_from_dht(
+    state: &AppState,
+    name: &str,
+) -> Option<protocol::NameRecord> {
+    let p2p = state.p2p.as_ref()?;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    p2p.command_tx
+        .send(p2p_commands::P2pCommand::ResolveName {
+            name: name.to_string(),
+            reply: reply_tx,
+        })
+        .await
+        .ok()?;
+
+    let timeout_secs = state.config.p2p.resolve_timeout_seconds;
+    let data = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        reply_rx,
+    )
+    .await
+    .ok()?  // timeout
+    .ok()?  // channel recv
+    .ok()?  // FetchError
+    ?;      // Option<Vec<u8>> → Vec<u8>
+
+    let record = protocol::NamingManager::deserialize_record(&data).ok()?;
+    if protocol::naming::validate_record(&record).is_err() {
+        return None;
+    }
+    if !protocol::verify_record(&record).unwrap_or(false) {
+        return None;
+    }
+    if record.is_revoked() {
+        return None;
+    }
+
+    // Cache for future lookups
+    {
+        let mut naming = lock_utils::write_lock(&state.naming);
+        let _ = naming.cache_record(record.clone());
+    }
+
+    Some(record)
+}
+
+/// Resolve a name record from local cache first, then DHT.
+async fn resolve_name_record(
+    state: &AppState,
+    name: &str,
+) -> Option<protocol::NameRecord> {
+    // Local cache first
+    {
+        let naming = lock_utils::read_lock(&state.naming);
+        if let Some(record) = naming.resolve_local(name) {
+            return Some(record.clone());
+        }
+    }
+
+    // DHT fallback
+    resolve_name_from_dht(state, name).await
+}
+
+/// Maximum alias chain depth to prevent infinite loops.
+const MAX_ALIAS_DEPTH: usize = 8;
+
+/// Resolve a .shadow name (following aliases) and serve the content.
+async fn resolve_shadow_name_and_serve(
+    state: &AppState,
+    name: &str,
+    sub_path: &str,
+) -> Response {
+    let mut current_name = name.to_string();
+
+    'resolve: for _ in 0..MAX_ALIAS_DEPTH {
+        let record = match resolve_name_record(state, &current_name).await {
+            Some(r) => r,
+            None => {
+                return (
+                    axum::http::StatusCode::NOT_FOUND,
+                    axum::response::Html(format!(
+                        "<html><body><h1>Not Found</h1><p>{} could not be resolved</p></body></html>",
+                        escape_html(&current_name)
+                    )),
+                )
+                    .into_response();
+            }
+        };
+
+        // Check for alias — follow the chain
+        if let Some(alias_target) = record.records.iter().find_map(|r| match r {
+            protocol::NameRecordType::Alias { target } => Some(target.clone()),
+            _ => None,
+        }) {
+            current_name = alias_target;
+            continue 'resolve;
+        }
+
+        // Check for content CID
+        if let Some(cid) = record.content_cids().first() {
+            let fetch_path = if sub_path.is_empty() {
+                cid.to_string()
+            } else {
+                format!("{}/{}", cid, sub_path)
+            };
+            let base_prefix = Some(format!("/{}/", name));
+            return fetch_content(state, fetch_path, base_prefix).await;
+        }
+
+        // Name exists but has no serveable records
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::response::Html(format!(
+                "<html><body><h1>No Content</h1><p>{} has no content records</p></body></html>",
+                escape_html(name)
+            )),
+        )
+            .into_response();
+    }
+
+    // Alias depth exceeded
+    (
+        axum::http::StatusCode::LOOP_DETECTED,
+        axum::response::Html(
+            "<html><body><h1>Loop Detected</h1><p>Alias chain too deep</p></body></html>"
+                .to_string(),
+        ),
+    )
+        .into_response()
 }
 
 /// Discover services by type (gateway, signaling, stun, etc.)
