@@ -19,6 +19,7 @@
 //! - `naming` - Decentralized naming layer (DHT-native name resolution)
 //! - `bootstrap` - DNS-free bootstrap configuration
 
+pub mod content_protocol;
 pub mod adaptive_routing;
 pub mod bandwidth;
 pub mod bootstrap;
@@ -48,6 +49,9 @@ pub use fragments::{ContentFragment, ContentManifest, ContentMetadata, FragmentM
 
 // Re-export routing types
 pub use routing::RoutingLayer;
+
+// Re-export content protocol types
+pub use content_protocol::{ContentCodec, ContentRequest, ContentResponse, CONTENT_PROTOCOL};
 
 // Re-export node types
 pub use node::ShadowNode;
