@@ -4,16 +4,18 @@
 
 use axum::{
     extract::{Multipart, Path, Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::fmt::Write;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::metrics::{BandwidthStats, MetricsSnapshot};
+use crate::replication::ReplicationHealthReport;
 use crate::storage::{StorageStats, StoredContent};
 use crate::AppState;
 
@@ -26,6 +28,7 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .route("/ready", get(ready_check))
         .route("/metrics", get(get_metrics))
         .route("/metrics/history", get(get_metrics_history))
+        .route("/metrics/prometheus", get(get_prometheus_metrics))
         // Configuration
         .route("/config", get(get_config))
         .route("/config", put(update_config))
@@ -160,6 +163,106 @@ async fn get_metrics_history(
     Query(query): Query<HistoryQuery>,
 ) -> Json<Vec<crate::metrics::DataPoint>> {
     Json(state.metrics.get_history(query.limit).await)
+}
+
+/// Get metrics in Prometheus text exposition format
+async fn get_prometheus_metrics(State(state): State<Arc<AppState>>) -> Response {
+    let snapshot = state.metrics.get_snapshot().await;
+    let storage = state.storage.get_stats().await;
+    let repl = match &state.replication {
+        Some(r) => Some(r.health_report().await),
+        None => None,
+    };
+
+    let body = render_prometheus(&snapshot, &storage, &repl);
+
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
+
+/// Render all node metrics in Prometheus text exposition format.
+fn render_prometheus(
+    snapshot: &MetricsSnapshot,
+    storage: &StorageStats,
+    repl: &Option<ReplicationHealthReport>,
+) -> String {
+    let mut out = String::with_capacity(4096);
+
+    // ── Node ────────────────────────────────────────────────────────
+    prom_gauge(&mut out, "shadowmesh_uptime_seconds", "Node uptime in seconds", snapshot.uptime_secs as f64);
+
+    // ── Requests ────────────────────────────────────────────────────
+    prom_counter(&mut out, "shadowmesh_requests_total", "Total requests handled", snapshot.requests.total);
+    prom_counter(&mut out, "shadowmesh_requests_successful_total", "Total successful requests", snapshot.requests.successful);
+    prom_counter(&mut out, "shadowmesh_requests_failed_total", "Total failed requests", snapshot.requests.failed);
+    prom_counter(&mut out, "shadowmesh_cache_hits_total", "Total cache hits", snapshot.requests.cache_hits);
+    prom_counter(&mut out, "shadowmesh_cache_misses_total", "Total cache misses", snapshot.requests.cache_misses);
+    prom_gauge(&mut out, "shadowmesh_request_success_rate", "Request success rate percentage", snapshot.requests.success_rate);
+    prom_gauge(&mut out, "shadowmesh_cache_hit_rate", "Cache hit rate percentage", snapshot.requests.cache_hit_rate);
+
+    // ── Bandwidth ───────────────────────────────────────────────────
+    prom_counter(&mut out, "shadowmesh_bandwidth_served_bytes_total", "Total bytes served", snapshot.bandwidth.total_served);
+    prom_counter(&mut out, "shadowmesh_bandwidth_received_bytes_total", "Total bytes received", snapshot.bandwidth.total_received);
+    prom_counter(&mut out, "shadowmesh_bandwidth_uploaded_bytes_total", "Total bytes uploaded", snapshot.bandwidth.total_uploaded);
+    prom_gauge(&mut out, "shadowmesh_bandwidth_served_bps", "Average bytes per second served", snapshot.bandwidth.avg_served_bps as f64);
+    prom_gauge(&mut out, "shadowmesh_bandwidth_received_bps", "Average bytes per second received", snapshot.bandwidth.avg_received_bps as f64);
+    prom_gauge(&mut out, "shadowmesh_bandwidth_uploaded_bps", "Average bytes per second uploaded", snapshot.bandwidth.avg_uploaded_bps as f64);
+
+    // ── Network ─────────────────────────────────────────────────────
+    prom_gauge(&mut out, "shadowmesh_connected_peers", "Number of connected peers", snapshot.network.connected_peers as f64);
+    prom_gauge(&mut out, "shadowmesh_discovered_peers", "Number of discovered peers", snapshot.network.discovered_peers as f64);
+    prom_gauge(&mut out, "shadowmesh_active_connections", "Number of active connections", snapshot.network.active_connections as f64);
+    prom_gauge(&mut out, "shadowmesh_pending_dials", "Number of pending dial attempts", snapshot.network.pending_dials as f64);
+    prom_gauge(&mut out, "shadowmesh_dht_records", "Number of DHT records", snapshot.network.dht_records as f64);
+    prom_gauge(&mut out, "shadowmesh_gossip_topics", "Number of gossip topics", snapshot.network.gossip_topics as f64);
+
+    // ── Storage ─────────────────────────────────────────────────────
+    prom_gauge(&mut out, "shadowmesh_storage_used_bytes", "Bytes currently stored", storage.total_bytes as f64);
+    prom_gauge(&mut out, "shadowmesh_storage_capacity_bytes", "Storage capacity in bytes", storage.capacity_bytes as f64);
+    prom_gauge(&mut out, "shadowmesh_storage_fragments", "Number of stored fragments", storage.fragment_count as f64);
+    prom_gauge(&mut out, "shadowmesh_storage_content_items", "Number of stored content items", storage.content_count as f64);
+    prom_gauge(&mut out, "shadowmesh_storage_pinned_items", "Number of pinned content items", storage.pinned_count as f64);
+
+    let usage_ratio = if storage.capacity_bytes > 0 {
+        storage.total_bytes as f64 / storage.capacity_bytes as f64
+    } else {
+        0.0
+    };
+    prom_gauge(&mut out, "shadowmesh_storage_usage_ratio", "Storage usage ratio (0.0-1.0)", usage_ratio);
+
+    // ── Replication (only when active) ──────────────────────────────
+    if let Some(ref report) = repl {
+        prom_counter(&mut out, "shadowmesh_replication_total", "Total content items replicated", report.stats.total_replicated);
+        prom_counter(&mut out, "shadowmesh_replication_bytes_total", "Total bytes replicated", report.stats.total_bytes_replicated);
+        prom_counter(&mut out, "shadowmesh_replication_failures_total", "Total replication failures", report.stats.total_failures);
+        prom_gauge(&mut out, "shadowmesh_replication_last_cycle_count", "Items replicated in last cycle", report.stats.last_cycle_replicated as f64);
+        prom_gauge(&mut out, "shadowmesh_replication_scan_in_progress", "Whether a replication scan is in progress (0 or 1)", if report.stats.scan_in_progress { 1.0 } else { 0.0 });
+        prom_gauge(&mut out, "shadowmesh_replication_content_total", "Total content tracked by replication", report.health.total_content as f64);
+        prom_gauge(&mut out, "shadowmesh_replication_content_healthy", "Content items with sufficient replicas", report.health.healthy_content as f64);
+        prom_gauge(&mut out, "shadowmesh_replication_content_under_replicated", "Content items with fewer replicas than target", report.health.under_replicated_content as f64);
+        prom_gauge(&mut out, "shadowmesh_replication_content_critical", "Content items with critically low replicas", report.health.critical_content as f64);
+        prom_gauge(&mut out, "shadowmesh_replication_health_ratio", "Replication health ratio (0.0-1.0)", report.health.health_percentage() / 100.0);
+    }
+
+    out
+}
+
+fn prom_gauge(out: &mut String, name: &str, help: &str, val: f64) {
+    let _ = writeln!(out, "# HELP {name} {help}");
+    let _ = writeln!(out, "# TYPE {name} gauge");
+    let _ = writeln!(out, "{name} {val}");
+}
+
+fn prom_counter(out: &mut String, name: &str, help: &str, val: u64) {
+    let _ = writeln!(out, "# HELP {name} {help}");
+    let _ = writeln!(out, "# TYPE {name} counter");
+    let _ = writeln!(out, "{name} {val}");
 }
 
 /// Configuration update request
