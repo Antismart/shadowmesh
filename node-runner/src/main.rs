@@ -13,6 +13,7 @@ mod config;
 mod dashboard;
 mod metrics;
 mod p2p;
+mod p2p_commands;
 mod storage;
 
 use config::NodeConfig;
@@ -120,14 +121,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("❌ Failed to bind P2P addresses: {}", e);
                 (peer_id, None)
             } else {
+                // Create command channel for API → event loop communication
+                let (command_tx, command_rx) =
+                    tokio::sync::mpsc::channel::<p2p_commands::P2pCommand>(256);
+
                 // Create shared P2P state and spawn the event loop
-                let p2p_state = Arc::new(p2p::P2pState::new());
+                let p2p_state = Arc::new(p2p::P2pState::new(command_tx));
                 let shutdown_rx = shutdown_tx.subscribe();
 
                 let loop_state = p2p_state.clone();
                 let loop_metrics = metrics.clone();
+                let loop_storage = storage.clone();
                 tokio::spawn(async move {
-                    p2p::run_event_loop(node, loop_state, loop_metrics, shutdown_rx).await;
+                    p2p::run_event_loop(
+                        node,
+                        loop_state,
+                        loop_metrics,
+                        loop_storage,
+                        command_rx,
+                        shutdown_rx,
+                    )
+                    .await;
                 });
 
                 println!("✅ P2P event loop started");
