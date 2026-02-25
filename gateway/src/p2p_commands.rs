@@ -32,6 +32,22 @@ pub enum P2pCommand {
         content_hash: String,
         reply: oneshot::Sender<Result<Vec<PeerId>, FetchError>>,
     },
+
+    /// Publish a signed NameRecord to the DHT and broadcast via GossipSub.
+    PublishName {
+        /// Serialized NameRecord (JSON bytes)
+        record_bytes: Vec<u8>,
+        /// The .shadow name (used to derive the DHT key)
+        name: String,
+    },
+
+    /// Resolve a .shadow name via DHT lookup.
+    ResolveName {
+        /// The .shadow name to resolve
+        name: String,
+        /// Returns raw DHT record bytes, or None if not found
+        reply: oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
+    },
 }
 
 /// Result of a manifest fetch.
