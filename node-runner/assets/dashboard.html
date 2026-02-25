@@ -15,8 +15,8 @@
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
-        .glow {
-            box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+        .progress-bar {
+            transition: width 0.5s ease;
         }
     </style>
 </head>
@@ -39,7 +39,7 @@
                 <span id="peerId" class="text-gray-500 text-sm font-mono">Loading...</span>
             </div>
         </div>
-        
+
         <!-- Stats Grid -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
             <div class="card p-6 rounded-xl">
@@ -48,97 +48,170 @@
                         <h3 class="text-gray-400 text-sm uppercase tracking-wider">Uptime</h3>
                         <p class="text-3xl font-bold mt-2" id="uptime">--</p>
                     </div>
-                    <div class="text-4xl opacity-50">⏱️</div>
+                    <div class="text-4xl opacity-50">&#9201;</div>
                 </div>
             </div>
-            
+
             <div class="card p-6 rounded-xl">
                 <div class="flex items-center justify-between">
                     <div>
                         <h3 class="text-gray-400 text-sm uppercase tracking-wider">Bandwidth Served</h3>
                         <p class="text-3xl font-bold mt-2" id="bandwidth">--</p>
                     </div>
-                    <div class="text-4xl opacity-50">📡</div>
+                    <div class="text-4xl opacity-50">&#128225;</div>
                 </div>
             </div>
-            
+
             <div class="card p-6 rounded-xl">
                 <div class="flex items-center justify-between">
                     <div>
-                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Fragments Stored</h3>
-                        <p class="text-3xl font-bold mt-2" id="fragments">--</p>
+                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Storage</h3>
+                        <p class="text-2xl font-bold mt-2" id="storageText">--</p>
+                        <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
+                            <div id="storageBar" class="progress-bar h-2 rounded-full bg-green-500" style="width: 0%"></div>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1" id="storagePct">0%</p>
                     </div>
-                    <div class="text-4xl opacity-50">📦</div>
+                    <div class="text-4xl opacity-50">&#128190;</div>
                 </div>
             </div>
-            
-            <div class="card p-6 rounded-xl glow">
+
+            <div class="card p-6 rounded-xl">
                 <div class="flex items-center justify-between">
                     <div>
-                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Earnings</h3>
-                        <p class="text-3xl font-bold mt-2 text-blue-400" id="earnings">--</p>
+                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Connected Peers</h3>
+                        <p class="text-3xl font-bold mt-2" id="peers">--</p>
                     </div>
-                    <div class="text-4xl opacity-50">💰</div>
+                    <div class="text-4xl opacity-50">&#128279;</div>
                 </div>
             </div>
         </div>
-        
+
         <!-- Charts Row -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
             <div class="card p-6 rounded-xl">
                 <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                    📊 Bandwidth Over Time
+                    &#128202; Bandwidth Over Time
                 </h2>
                 <canvas id="bandwidthChart" height="200"></canvas>
             </div>
-            
+
             <div class="card p-6 rounded-xl">
                 <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                    🌍 Network Activity
+                    &#127758; Network Activity
                 </h2>
                 <canvas id="activityChart" height="200"></canvas>
             </div>
         </div>
-        
+
+        <!-- Peers Table -->
+        <div class="card p-6 rounded-xl mb-8">
+            <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                &#128268; Connected Peers
+            </h2>
+            <div id="peersTableContainer">
+                <p class="text-gray-500">Loading...</p>
+            </div>
+        </div>
+
+        <!-- Content Browser -->
+        <div class="card p-6 rounded-xl mb-8">
+            <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                &#128230; Stored Content
+                <span id="contentCount" class="text-sm font-normal text-gray-400 ml-2"></span>
+            </h2>
+            <div id="contentTableContainer">
+                <p class="text-gray-500">Loading...</p>
+            </div>
+        </div>
+
+        <!-- Replication Health (hidden if disabled) -->
+        <div id="replicationPanel" class="card p-6 rounded-xl mb-8" style="display: none;">
+            <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                &#128260; Replication Health
+                <span id="replicationScanStatus" class="text-sm font-normal text-gray-400 ml-2"></span>
+            </h2>
+            <div class="mb-4">
+                <div class="flex justify-between text-sm mb-1">
+                    <span id="replicationHealthLabel">--</span>
+                    <span id="replicationHealthPct">--</span>
+                </div>
+                <div class="w-full bg-gray-700 rounded-full h-3">
+                    <div id="replicationHealthBar" class="progress-bar h-3 rounded-full bg-green-500" style="width: 0%"></div>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                    <p class="text-gray-400 text-xs uppercase">Total Content</p>
+                    <p class="text-lg font-bold" id="replTotal">0</p>
+                </div>
+                <div>
+                    <p class="text-gray-400 text-xs uppercase">Healthy</p>
+                    <p class="text-lg font-bold text-green-400" id="replHealthy">0</p>
+                </div>
+                <div>
+                    <p class="text-gray-400 text-xs uppercase">Under-replicated</p>
+                    <p class="text-lg font-bold text-yellow-400" id="replUnder">0</p>
+                </div>
+                <div>
+                    <p class="text-gray-400 text-xs uppercase">Critical</p>
+                    <p class="text-lg font-bold text-red-400" id="replCritical">0</p>
+                </div>
+                <div>
+                    <p class="text-gray-400 text-xs uppercase">Replicated</p>
+                    <p class="text-lg font-bold" id="replReplicated">0</p>
+                </div>
+                <div>
+                    <p class="text-gray-400 text-xs uppercase">Bytes Pulled</p>
+                    <p class="text-lg font-bold" id="replBytes">0 B</p>
+                </div>
+                <div>
+                    <p class="text-gray-400 text-xs uppercase">Failures</p>
+                    <p class="text-lg font-bold text-red-400" id="replFailures">0</p>
+                </div>
+                <div>
+                    <p class="text-gray-400 text-xs uppercase">Last Scan</p>
+                    <p class="text-lg font-bold" id="replLastScan">--</p>
+                </div>
+            </div>
+        </div>
+
         <!-- Configuration -->
         <div class="card p-6 rounded-xl">
             <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                ⚙️ Node Configuration
+                &#9881; Node Configuration
             </h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
                     <label class="block text-gray-400 text-sm mb-2">Max Storage (GB)</label>
-                    <input type="number" id="maxStorage" 
+                    <input type="number" id="maxStorage"
                         class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500"
                         value="10">
                 </div>
                 <div>
                     <label class="block text-gray-400 text-sm mb-2">Max Bandwidth (MB/s)</label>
-                    <input type="number" id="maxBandwidth" 
+                    <input type="number" id="maxBandwidth"
                         class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500"
                         value="100">
                 </div>
             </div>
-            <button onclick="saveConfig()" 
+            <button onclick="saveConfig()"
                 class="mt-4 bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-semibold transition-colors">
                 Save Configuration
             </button>
         </div>
-        
+
         <!-- Footer -->
         <div class="mt-8 text-center text-gray-500 text-sm">
-            <p>ShadowMesh Protocol v0.1.0 | 
+            <p>ShadowMesh Protocol v0.1.0 |
                 <a href="https://github.com/Antismart/shadowmesh" class="text-blue-400 hover:underline">GitHub</a>
             </p>
         </div>
     </div>
-    
+
     <script>
-        // Bandwidth history for chart
-        const bandwidthHistory = [];
-        const activityHistory = [];
         const maxDataPoints = 20;
-        
+
         // Initialize charts
         const bandwidthCtx = document.getElementById('bandwidthChart').getContext('2d');
         const bandwidthChart = new Chart(bandwidthCtx, {
@@ -165,7 +238,7 @@
                         grid: { color: 'rgba(255,255,255,0.1)' },
                         ticks: { color: 'rgba(255,255,255,0.5)' }
                     },
-                    y: { 
+                    y: {
                         beginAtZero: true,
                         grid: { color: 'rgba(255,255,255,0.1)' },
                         ticks: { color: 'rgba(255,255,255,0.5)' }
@@ -173,12 +246,12 @@
                 }
             }
         });
-        
+
         const activityCtx = document.getElementById('activityChart').getContext('2d');
         const activityChart = new Chart(activityCtx, {
             type: 'bar',
             data: {
-                labels: ['Requests', 'Fragments', 'Peers', 'Uploads'],
+                labels: ['Requests', 'Cache Hits', 'Peers', 'Errors'],
                 datasets: [{
                     label: 'Activity',
                     data: [0, 0, 0, 0],
@@ -201,7 +274,7 @@
                         grid: { color: 'rgba(255,255,255,0.1)' },
                         ticks: { color: 'rgba(255,255,255,0.5)' }
                     },
-                    y: { 
+                    y: {
                         beginAtZero: true,
                         grid: { color: 'rgba(255,255,255,0.1)' },
                         ticks: { color: 'rgba(255,255,255,0.5)' }
@@ -209,79 +282,244 @@
                 }
             }
         });
-        
+
+        // ── Main poll loop ───────────────────────────────────────
+
         async function updateStatus() {
-            try {
-                const response = await fetch('/api/status');
-                const data = await response.json();
-                
-                // Update stats
+            const [statusRes, metricsRes, peersRes, contentRes, replRes] =
+                await Promise.allSettled([
+                    fetch('/api/status').then(r => r.json()),
+                    fetch('/api/metrics').then(r => r.json()),
+                    fetch('/api/network/peers').then(r => r.json()),
+                    fetch('/api/storage/content').then(r => r.json()),
+                    fetch('/api/replication/health').then(r => {
+                        if (!r.ok) throw new Error('disabled');
+                        return r.json();
+                    }),
+                ]);
+
+            // Status card updates
+            if (statusRes.status === 'fulfilled') {
+                const data = statusRes.value;
                 document.getElementById('uptime').textContent = data.uptime_formatted;
                 document.getElementById('bandwidth').textContent = data.bandwidth_served;
-                document.getElementById('fragments').textContent = formatBytes(data.storage_used);
-                document.getElementById('earnings').textContent = `${data.connected_peers} peers`;
-                document.getElementById('peerId').textContent = data.peer_id.substring(0, 16) + '...';
-                
-                // Update bandwidth chart
+                document.getElementById('peers').textContent = data.connected_peers;
+                document.getElementById('peerId').textContent = truncateHash(data.peer_id, 16);
+
+                // Storage gauge
+                const usedPct = data.storage_capacity > 0
+                    ? (data.storage_used / data.storage_capacity * 100)
+                    : 0;
+                document.getElementById('storageText').textContent =
+                    formatBytes(data.storage_used) + ' / ' + formatBytes(data.storage_capacity);
+                document.getElementById('storagePct').textContent = usedPct.toFixed(1) + '%';
+                const bar = document.getElementById('storageBar');
+                bar.style.width = Math.min(usedPct, 100) + '%';
+                bar.className = 'progress-bar h-2 rounded-full ' +
+                    (usedPct > 90 ? 'bg-red-500' : usedPct > 70 ? 'bg-yellow-500' : 'bg-green-500');
+            }
+
+            // Metrics — bandwidth chart + activity chart
+            if (metricsRes.status === 'fulfilled') {
+                const metrics = metricsRes.value;
+
+                // Bandwidth chart: plot actual throughput in MB/s
                 const now = new Date();
-                const timeLabel = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
-                
+                const timeLabel = now.getHours() + ':' + now.getMinutes().toString().padStart(2, '0');
+
                 if (bandwidthChart.data.labels.length >= maxDataPoints) {
                     bandwidthChart.data.labels.shift();
                     bandwidthChart.data.datasets[0].data.shift();
                 }
-                
+
+                const mbps = ((metrics.bandwidth.avg_served_bps || 0) / (1024 * 1024)).toFixed(3);
                 bandwidthChart.data.labels.push(timeLabel);
-                bandwidthChart.data.datasets[0].data.push(
-                    (data.storage_used / (1024 * 1024)).toFixed(2)
-                );
+                bandwidthChart.data.datasets[0].data.push(mbps);
                 bandwidthChart.update('none');
-                
-                // Fetch metrics for activity chart
-                const metricsResponse = await fetch('/api/metrics');
-                const metrics = await metricsResponse.json();
-                
-                // Update activity chart
+
+                // Activity chart
                 activityChart.data.datasets[0].data = [
                     metrics.requests.total || 0,
-                    metrics.network.connected_peers || 0,
                     metrics.requests.cache_hits || 0,
+                    metrics.network.connected_peers || 0,
                     metrics.requests.failed || 0
                 ];
-                activityChart.data.labels = ['Requests', 'Peers', 'Cache Hits', 'Errors'];
                 activityChart.update('none');
-                
-            } catch (error) {
-                console.error('Failed to fetch status:', error);
             }
-        }
-        
-        function formatUptime(seconds) {
-            const days = Math.floor(seconds / 86400);
-            const hours = Math.floor((seconds % 86400) / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            
-            if (days > 0) {
-                return `${days}d ${hours}h ${minutes}m`;
-            } else if (hours > 0) {
-                return `${hours}h ${minutes}m`;
+
+            // Peers table
+            if (peersRes.status === 'fulfilled') {
+                renderPeersTable(peersRes.value);
+            }
+
+            // Content browser
+            if (contentRes.status === 'fulfilled') {
+                renderContentTable(contentRes.value);
+            }
+
+            // Replication health
+            if (replRes.status === 'fulfilled') {
+                renderReplicationHealth(replRes.value);
+                document.getElementById('replicationPanel').style.display = '';
             } else {
-                return `${minutes}m ${seconds % 60}s`;
+                document.getElementById('replicationPanel').style.display = 'none';
             }
         }
-        
+
+        // ── Peers table ──────────────────────────────────────────
+
+        function renderPeersTable(peers) {
+            const container = document.getElementById('peersTableContainer');
+            if (!peers || peers.length === 0) {
+                container.innerHTML = '<p class="text-gray-500">No peers connected</p>';
+                return;
+            }
+
+            let html = `<div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-gray-400 text-left border-b border-gray-700">
+                            <th class="pb-2 pr-4">Peer ID</th>
+                            <th class="pb-2 pr-4">Address</th>
+                            <th class="pb-2">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+            for (const peer of peers) {
+                const isSelf = peer.latency_ms === 0;
+                const label = isSelf ? ' (self)' : '';
+                const addr = peer.addresses.length > 0 ? peer.addresses[0] : '--';
+                html += `<tr class="border-b border-gray-800">
+                    <td class="py-2 pr-4 font-mono text-xs">${truncateHash(peer.peer_id, 20)}${label}</td>
+                    <td class="py-2 pr-4 font-mono text-xs text-gray-400">${addr}</td>
+                    <td class="py-2">
+                        <span class="flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full ${peer.connected ? 'bg-green-500' : 'bg-gray-500'}"></span>
+                            <span class="text-xs ${peer.connected ? 'text-green-400' : 'text-gray-500'}">${peer.connected ? 'Connected' : 'Offline'}</span>
+                        </span>
+                    </td>
+                </tr>`;
+            }
+
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
+        }
+
+        // ── Content browser ──────────────────────────────────────
+
+        function renderContentTable(content) {
+            const container = document.getElementById('contentTableContainer');
+            const countEl = document.getElementById('contentCount');
+            countEl.textContent = content.length > 0 ? `(${content.length} items)` : '';
+
+            if (!content || content.length === 0) {
+                container.innerHTML = '<p class="text-gray-500">No content stored</p>';
+                return;
+            }
+
+            let html = `<div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-gray-400 text-left border-b border-gray-700">
+                            <th class="pb-2 pr-4">Name</th>
+                            <th class="pb-2 pr-4">CID</th>
+                            <th class="pb-2 pr-4">Size</th>
+                            <th class="pb-2 pr-4">Fragments</th>
+                            <th class="pb-2 pr-4">Pinned</th>
+                            <th class="pb-2">Stored</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+            for (const item of content) {
+                const pinBadge = item.pinned
+                    ? '<span class="px-2 py-0.5 rounded text-xs bg-green-900 text-green-300">Pinned</span>'
+                    : '<span class="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-400">No</span>';
+                html += `<tr class="border-b border-gray-800">
+                    <td class="py-2 pr-4 truncate max-w-[160px]" title="${item.name}">${item.name}</td>
+                    <td class="py-2 pr-4 font-mono text-xs text-gray-400" title="${item.cid}">${truncateHash(item.cid, 16)}</td>
+                    <td class="py-2 pr-4">${formatBytes(item.total_size)}</td>
+                    <td class="py-2 pr-4">${item.fragment_count}</td>
+                    <td class="py-2 pr-4">${pinBadge}</td>
+                    <td class="py-2 text-gray-400">${formatTimestamp(item.stored_at)}</td>
+                </tr>`;
+            }
+
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
+        }
+
+        // ── Replication health ───────────────────────────────────
+
+        function renderReplicationHealth(data) {
+            const health = data.health;
+            const stats = data.stats;
+
+            // Health percentage
+            const pct = health.total_content > 0
+                ? (health.healthy_content / health.total_content * 100)
+                : 100;
+            document.getElementById('replicationHealthLabel').textContent =
+                health.healthy_content + ' / ' + health.total_content + ' healthy';
+            document.getElementById('replicationHealthPct').textContent = pct.toFixed(0) + '%';
+
+            const hbar = document.getElementById('replicationHealthBar');
+            hbar.style.width = pct + '%';
+            hbar.className = 'progress-bar h-3 rounded-full ' +
+                (pct >= 80 ? 'bg-green-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-red-500');
+
+            // Stats
+            document.getElementById('replTotal').textContent = health.total_content;
+            document.getElementById('replHealthy').textContent = health.healthy_content;
+            document.getElementById('replUnder').textContent = health.under_replicated_content;
+            document.getElementById('replCritical').textContent = health.critical_content;
+            document.getElementById('replReplicated').textContent = stats.total_replicated;
+            document.getElementById('replBytes').textContent = formatBytes(stats.total_bytes_replicated);
+            document.getElementById('replFailures').textContent = stats.total_failures;
+            document.getElementById('replLastScan').textContent =
+                stats.last_scan_timestamp ? formatTimestamp(stats.last_scan_timestamp) : '--';
+
+            // Scan status
+            document.getElementById('replicationScanStatus').textContent =
+                stats.scan_in_progress ? '(scanning...)' : '';
+        }
+
+        // ── Utilities ────────────────────────────────────────────
+
         function formatBytes(bytes) {
-            if (bytes === 0) return '0 B';
+            if (bytes === 0 || bytes == null) return '0 B';
             const k = 1024;
             const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
-        
+
+        function truncateHash(hash, len) {
+            if (!hash) return '--';
+            if (hash.length <= len + 3) return hash;
+            return hash.substring(0, len) + '...';
+        }
+
+        function formatTimestamp(ts) {
+            if (!ts) return '--';
+            const d = new Date(ts * 1000);
+            const now = new Date();
+            const diffMs = now - d;
+            const diffSec = Math.floor(diffMs / 1000);
+
+            if (diffSec < 60) return diffSec + 's ago';
+            if (diffSec < 3600) return Math.floor(diffSec / 60) + 'm ago';
+            if (diffSec < 86400) return Math.floor(diffSec / 3600) + 'h ago';
+            return Math.floor(diffSec / 86400) + 'd ago';
+        }
+
+        // ── Config ───────────────────────────────────────────────
+
         async function saveConfig() {
             const maxStorage = parseFloat(document.getElementById('maxStorage').value);
             const maxBandwidth = parseInt(document.getElementById('maxBandwidth').value);
-            
+
             try {
                 const response = await fetch('/api/config', {
                     method: 'PUT',
@@ -291,7 +529,7 @@
                         max_bandwidth_mbps: maxBandwidth
                     })
                 });
-                
+
                 if (response.ok) {
                     alert('Configuration saved successfully!');
                 } else {
@@ -302,25 +540,25 @@
                 alert('Failed to save configuration');
             }
         }
-        
+
         async function loadConfig() {
             try {
                 const response = await fetch('/api/config');
                 const data = await response.json();
-                
+
                 document.getElementById('maxStorage').value = (data.storage.max_storage_bytes / (1024 * 1024 * 1024)).toFixed(0);
-                document.getElementById('maxBandwidth').value = data.network.max_outbound_bandwidth 
+                document.getElementById('maxBandwidth').value = data.network.max_outbound_bandwidth
                     ? Math.floor(data.network.max_outbound_bandwidth / (1024 * 1024))
                     : 100;
             } catch (error) {
                 console.error('Failed to load config:', error);
             }
         }
-        
+
         // Initialize
         loadConfig();
         updateStatus();
-        
+
         // Update every 5 seconds
         setInterval(updateStatus, 5000);
     </script>
