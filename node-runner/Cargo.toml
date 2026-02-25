@@ -25,5 +25,5 @@ base64 = "0.22"
 
 [dev-dependencies]
 hyper = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 http-body-util = { workspace = true }
