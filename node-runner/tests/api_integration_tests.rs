@@ -471,6 +471,52 @@ async fn test_metrics_history() {
     assert!(json.as_array().is_some());
 }
 
+// ── Prometheus Metrics ───────────────────────────────────────
+
+#[tokio::test]
+async fn test_prometheus_metrics() {
+    let (app, _, _dir) = test_app().await;
+
+    let req = Request::builder()
+        .uri("/api/metrics/prometheus")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Check content-type header
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(ct.starts_with("text/plain"));
+    assert!(ct.contains("version=0.0.4"));
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let text = std::str::from_utf8(&body).unwrap();
+
+    // Verify key metrics are present
+    assert!(text.contains("shadowmesh_uptime_seconds"));
+    assert!(text.contains("shadowmesh_requests_total"));
+    assert!(text.contains("shadowmesh_bandwidth_served_bytes_total"));
+    assert!(text.contains("shadowmesh_connected_peers"));
+    assert!(text.contains("shadowmesh_storage_used_bytes"));
+    assert!(text.contains("shadowmesh_storage_capacity_bytes"));
+    assert!(text.contains("shadowmesh_storage_usage_ratio"));
+
+    // Verify Prometheus format (TYPE lines)
+    assert!(text.contains("# TYPE shadowmesh_uptime_seconds gauge"));
+    assert!(text.contains("# TYPE shadowmesh_requests_total counter"));
+    assert!(text.contains("# TYPE shadowmesh_bandwidth_served_bytes_total counter"));
+    assert!(text.contains("# TYPE shadowmesh_storage_used_bytes gauge"));
+
+    // Replication metrics should NOT be present (replication=None)
+    assert!(!text.contains("shadowmesh_replication_total"));
+}
+
 // ── Garbage Collection ───────────────────────────────────────────
 
 #[tokio::test]
