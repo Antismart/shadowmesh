@@ -55,8 +55,14 @@ sha2 = "0.10"
 rust-embed = "8"
 mime_guess = "2"
 
-# Naming layer key management
-libp2p = { workspace = true, features = ["ed25519"] }
+# P2P mesh network + naming layer key management
+libp2p = { workspace = true, features = [
+    "ed25519", "tcp", "noise", "yamux", "kad", "gossipsub",
+    "mdns", "request-response", "identify", "macros", "serde", "tokio",
+] }
+
+# Content verification
+blake3 = "1.8"
 
 [dev-dependencies]
 tempfile = { workspace = true }
