@@ -38,6 +38,10 @@ pub struct NodeConfig {
     /// Naming layer configuration
     #[serde(default)]
     pub naming: NamingConfig,
+
+    /// WebRTC bridge configuration (browser ↔ node)
+    #[serde(default)]
+    pub bridge: BridgeConfig,
 }
 
 /// Node identity configuration
@@ -333,6 +337,62 @@ impl Default for NamingConfig {
             enabled: true,
             advertise_services: true,
             cache_size: default_name_cache_size(),
+        }
+    }
+}
+
+/// WebRTC bridge configuration for browser ↔ node-runner connections
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeConfig {
+    /// Enable the WebRTC bridge
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Gateway signaling server WebSocket URL
+    pub signaling_url: Option<String>,
+
+    /// STUN servers for NAT traversal
+    #[serde(default = "default_stun_servers")]
+    pub stun_servers: Vec<String>,
+
+    /// Maximum concurrent browser connections
+    #[serde(default = "default_max_bridge_connections")]
+    pub max_connections: usize,
+
+    /// Heartbeat interval to signaling server (seconds)
+    #[serde(default = "default_bridge_heartbeat")]
+    pub heartbeat_interval_secs: u64,
+
+    /// Delay before reconnecting to signaling server (seconds)
+    #[serde(default = "default_bridge_reconnect")]
+    pub reconnect_delay_secs: u64,
+}
+
+fn default_stun_servers() -> Vec<String> {
+    vec!["stun:stun.l.google.com:19302".to_string()]
+}
+
+fn default_max_bridge_connections() -> usize {
+    20
+}
+
+fn default_bridge_heartbeat() -> u64 {
+    25
+}
+
+fn default_bridge_reconnect() -> u64 {
+    5
+}
+
+impl Default for BridgeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            signaling_url: None,
+            stun_servers: default_stun_servers(),
+            max_connections: default_max_bridge_connections(),
+            heartbeat_interval_secs: default_bridge_heartbeat(),
+            reconnect_delay_secs: default_bridge_reconnect(),
         }
     }
 }
