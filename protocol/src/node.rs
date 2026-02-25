@@ -5,6 +5,7 @@
 use crate::bootstrap::BOOTSTRAP_GOSSIP_TOPIC;
 use crate::naming::{NamingManager, NAMING_GOSSIP_TOPIC};
 use crate::transport::TransportConfig;
+use crate::content_protocol::{ContentCodec, CONTENT_PROTOCOL};
 use libp2p::{
     core::{muxing::StreamMuxerBox, transport::OrTransport, upgrade},
     gossipsub::{
@@ -14,6 +15,7 @@ use libp2p::{
     kad::{store::MemoryStore, Behaviour as Kademlia},
     mdns,
     noise,
+    request_response::{self, ProtocolSupport},
     swarm::NetworkBehaviour,
     tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
 };
@@ -30,7 +32,7 @@ pub struct ShadowNode {
     naming: NamingManager,
 }
 
-/// Network behaviour combining Kademlia DHT, GossipSub, and mDNS
+/// Network behaviour combining Kademlia DHT, GossipSub, mDNS, and content serving
 #[derive(NetworkBehaviour)]
 pub struct ShadowBehaviour {
     /// Kademlia DHT for content discovery
@@ -39,6 +41,8 @@ pub struct ShadowBehaviour {
     pub gossipsub: Gossipsub,
     /// mDNS for automatic LAN peer discovery
     pub mdns: mdns::tokio::Behaviour,
+    /// Request-response for P2P content fragment serving
+    pub content_req_resp: request_response::Behaviour<ContentCodec>,
 }
 
 /// Error types for ShadowNode operations
@@ -108,11 +112,19 @@ impl ShadowNode {
         let mdns_behaviour =
             mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
 
+        // Set up content serving request-response protocol
+        let content_req_resp =
+            request_response::Behaviour::new(
+                [(CONTENT_PROTOCOL, ProtocolSupport::Full)],
+                request_response::Config::default(),
+            );
+
         // Create behaviour and swarm
         let behaviour = ShadowBehaviour {
             kademlia,
             gossipsub,
             mdns: mdns_behaviour,
+            content_req_resp,
         };
 
         let swarm = Swarm::new(
