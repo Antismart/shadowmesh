@@ -59,3 +59,17 @@ enabled = false
 service_name = "shadowmesh-gateway"
 # Sampling rate (0.0 to 1.0, 1.0 = 100% of traces)
 sample_rate = 1.0
+
+[p2p]
+# Enable P2P content resolution from the ShadowMesh peer network
+enabled = false
+# TCP port for P2P connections
+tcp_port = 4001
+# Bootstrap peer multiaddrs (empty = rely on mDNS for LAN discovery)
+bootstrap_peers = []
+# Enable mDNS for automatic LAN peer discovery
+enable_mdns = true
+# Timeout for P2P content resolution (seconds)
+resolve_timeout_seconds = 15
+# Announce gateway content to the DHT so peers can discover it
+announce_content = true
