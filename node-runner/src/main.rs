@@ -9,6 +9,7 @@ use tokio::sync::{broadcast, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 
 mod api;
+mod bridge;
 mod config;
 mod dashboard;
 mod metrics;
@@ -34,6 +35,8 @@ pub struct AppState {
     pub shutdown_signal: broadcast::Sender<()>,
     /// P2P state (None if P2P failed to initialize)
     pub p2p: Option<Arc<p2p::P2pState>>,
+    /// WebRTC bridge state (None if bridge is disabled)
+    pub bridge: Option<Arc<bridge::BridgeState>>,
 }
 
 #[tokio::main]
@@ -155,6 +158,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Initialize WebRTC bridge (browser ↔ node-runner)
+    let bridge_state = if config.bridge.enabled {
+        let bs = Arc::new(bridge::BridgeState::new(true));
+        let loop_config = config.bridge.clone();
+        let loop_peer_id = peer_id.clone();
+        let loop_storage = storage.clone();
+        let loop_metrics = metrics.clone();
+        let loop_bridge = bs.clone();
+        let bridge_shutdown = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            bridge::run_bridge(
+                loop_config,
+                loop_peer_id,
+                loop_storage,
+                loop_metrics,
+                loop_bridge,
+                bridge_shutdown,
+            )
+            .await;
+        });
+        println!("✅ WebRTC bridge started");
+        Some(bs)
+    } else {
+        None
+    };
+
     println!();
 
     // Create shared state
@@ -165,6 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage,
         shutdown_signal: shutdown_tx,
         p2p: p2p_state,
+        bridge: bridge_state,
     });
 
     // Build CORS layer
