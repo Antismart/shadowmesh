@@ -1,6 +1,4 @@
 //! ShadowMesh Node Runner
-//!
-//! A complete node implementation for the ShadowMesh decentralized CDN.
 
 use axum::{response::Html, routing::get, Router};
 use std::sync::Arc;
@@ -8,39 +6,8 @@ use tokio::net::TcpListener;
 use tokio::sync::{broadcast, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 
-mod api;
-mod bridge;
-mod config;
-mod dashboard;
-mod metrics;
-mod p2p;
-mod p2p_commands;
-mod replication;
-mod storage;
-
-use config::NodeConfig;
-use metrics::MetricsCollector;
-use storage::StorageManager;
-
-/// Shared application state
-pub struct AppState {
-    /// Node peer ID
-    pub peer_id: String,
-    /// Node configuration
-    pub config: RwLock<NodeConfig>,
-    /// Metrics collector
-    pub metrics: Arc<MetricsCollector>,
-    /// Storage manager
-    pub storage: Arc<StorageManager>,
-    /// Shutdown signal sender
-    pub shutdown_signal: broadcast::Sender<()>,
-    /// P2P state (None if P2P failed to initialize)
-    pub p2p: Option<Arc<p2p::P2pState>>,
-    /// WebRTC bridge state (None if bridge is disabled)
-    pub bridge: Option<Arc<bridge::BridgeState>>,
-    /// Replication state (None if replication is disabled or P2P unavailable)
-    pub replication: Option<Arc<replication::ReplicationState>>,
-}
+use node_runner::*;
+use node_runner::{api, bridge, config::NodeConfig, metrics, metrics::MetricsCollector, p2p, p2p_commands, replication, storage::StorageManager};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
