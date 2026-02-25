@@ -71,6 +71,9 @@ tracing-wasm = "0.2"
 # Crypto (for content hashing/verification)
 blake3 = "1.8"
 
+# Encoding (for fragment data in JSON messages)
+base64 = "0.22"
+
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
 
