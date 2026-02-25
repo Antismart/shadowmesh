@@ -42,6 +42,10 @@ pub struct NodeConfig {
     /// WebRTC bridge configuration (browser ↔ node)
     #[serde(default)]
     pub bridge: BridgeConfig,
+
+    /// Background content replication configuration
+    #[serde(default)]
+    pub replication: ReplicationConfig,
 }
 
 /// Node identity configuration
@@ -393,6 +397,58 @@ impl Default for BridgeConfig {
             max_connections: default_max_bridge_connections(),
             heartbeat_interval_secs: default_bridge_heartbeat(),
             reconnect_delay_secs: default_bridge_reconnect(),
+        }
+    }
+}
+
+/// Background content replication configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplicationConfig {
+    /// Enable background content replication
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Scan interval in seconds
+    #[serde(default = "default_replication_interval")]
+    pub scan_interval_secs: u64,
+
+    /// Maximum concurrent replication fetches
+    #[serde(default = "default_max_concurrent_replications")]
+    pub max_concurrent_replications: usize,
+
+    /// Stop replicating when storage usage exceeds this percentage (0-100)
+    #[serde(default = "default_max_replication_storage_pct")]
+    pub max_storage_usage_pct: f64,
+
+    /// Maximum items to replicate per scan cycle
+    #[serde(default = "default_max_items_per_cycle")]
+    pub max_items_per_cycle: usize,
+}
+
+fn default_replication_interval() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_max_concurrent_replications() -> usize {
+    3
+}
+
+fn default_max_replication_storage_pct() -> f64 {
+    80.0
+}
+
+fn default_max_items_per_cycle() -> usize {
+    10
+}
+
+impl Default for ReplicationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scan_interval_secs: default_replication_interval(),
+            max_concurrent_replications: default_max_concurrent_replications(),
+            max_storage_usage_pct: default_max_replication_storage_pct(),
+            max_items_per_cycle: default_max_items_per_cycle(),
         }
     }
 }
