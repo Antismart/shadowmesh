@@ -17,6 +17,9 @@ mod middleware;
 mod production;
 mod rate_limit;
 mod redis_client;
+mod p2p;
+mod p2p_commands;
+mod p2p_resolver;
 mod signaling;
 mod spa;
 mod telemetry;
@@ -97,6 +100,8 @@ pub struct AppState {
     pub naming: Arc<RwLock<NamingManager>>,
     /// Ed25519 keypair for signing name records
     pub naming_key: Arc<libp2p::identity::Keypair>,
+    /// P2P mesh state (None if P2P is disabled or failed to start)
+    pub p2p: Option<Arc<p2p::P2pState>>,
 }
 
 #[tokio::main]
@@ -269,6 +274,61 @@ async fn main() {
         println!("✓ Decentralized naming layer enabled (cache: {} entries)", config.naming.cache_size);
     }
 
+    // Initialize P2P mesh network (optional)
+    let (p2p_shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let p2p_state = if config.p2p.enabled {
+        match protocol::ShadowNode::new().await {
+            Ok(mut node) => {
+                let peer_id = node.peer_id().to_string();
+                println!("✓ P2P node initialized (Peer ID: {}...)", &peer_id[..peer_id.len().min(20)]);
+
+                if let Err(e) = node.start().await {
+                    eprintln!("  Failed to bind P2P addresses: {}", e);
+                    None
+                } else {
+                    // Dial bootstrap peers
+                    for addr_str in &config.p2p.bootstrap_peers {
+                        if let Ok(addr) = addr_str.parse::<libp2p::Multiaddr>() {
+                            if let Err(e) = node.dial(addr) {
+                                tracing::warn!("Failed to dial bootstrap peer {}: {}", addr_str, e);
+                            }
+                        }
+                    }
+
+                    let (command_tx, command_rx) =
+                        tokio::sync::mpsc::channel::<p2p_commands::P2pCommand>(256);
+
+                    let p2p_st = Arc::new(p2p::P2pState::new(command_tx));
+                    let shutdown_rx = p2p_shutdown_tx.subscribe();
+
+                    let loop_state = p2p_st.clone();
+                    let loop_cache = cache.clone();
+                    tokio::spawn(async move {
+                        p2p::run_event_loop(
+                            node,
+                            loop_state,
+                            loop_cache,
+                            command_rx,
+                            shutdown_rx,
+                        )
+                        .await;
+                    });
+
+                    println!("✓ P2P event loop started");
+                    Some(p2p_st)
+                }
+            }
+            Err(e) => {
+                println!("⚠  Failed to initialize P2P node: {}", e);
+                println!("   Running without P2P content resolution");
+                None
+            }
+        }
+    } else {
+        println!("ℹ️  P2P content resolution disabled");
+        None
+    };
+
     let state = AppState {
         storage,
         cache,
@@ -283,6 +343,7 @@ async fn main() {
         redis: redis.clone(),
         naming,
         naming_key,
+        p2p: p2p_state,
     };
 
     // Clone audit logger before state is moved into the router
@@ -505,6 +566,9 @@ async fn main() {
 
     // Cancel background tasks
     shutdown_token.cancel();
+
+    // Shutdown P2P event loop
+    let _ = p2p_shutdown_tx.send(());
 
     // Shutdown OpenTelemetry gracefully
     if telemetry_enabled {
@@ -1087,6 +1151,64 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
 
     metrics::record_cache_miss();
 
+    // Try P2P network before IPFS
+    if let Some(ref p2p) = state.p2p {
+        let timeout_secs = state.config.p2p.resolve_timeout_seconds;
+        match p2p_resolver::resolve_content(p2p, &cid, timeout_secs).await {
+            Ok(resolved) => {
+                let content_type = if resolved.mime_type.is_empty() {
+                    content_type_from_path(&cid, &resolved.data)
+                } else {
+                    resolved.mime_type
+                };
+                let data =
+                    rewrite_html_assets(&resolved.data, &content_type, base_prefix.as_deref());
+
+                state
+                    .cache
+                    .set(cid.clone(), data.clone(), content_type.clone());
+                metrics::update_cache_size(state.cache.stats().total_entries as i64);
+
+                // Announce to DHT so other peers can discover us
+                if state.config.p2p.announce_content {
+                    let _ = p2p
+                        .command_tx
+                        .send(p2p_commands::P2pCommand::AnnounceContent {
+                            content_hash: cid.clone(),
+                            fragment_hashes: vec![cid],
+                            total_size: data.len() as u64,
+                            mime_type: content_type.clone(),
+                        })
+                        .await;
+                }
+
+                state.metrics.increment_success();
+                state.metrics.add_bytes(data.len() as u64);
+                metrics::record_bytes_served(data.len() as u64);
+
+                return (
+                    [
+                        (axum::http::header::CONTENT_TYPE, content_type),
+                        (
+                            axum::http::header::HeaderName::from_static("x-cache"),
+                            "MISS".to_string(),
+                        ),
+                        (
+                            axum::http::header::HeaderName::from_static("x-source"),
+                            "P2P".to_string(),
+                        ),
+                    ],
+                    data,
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::debug!(cid = %cid, error = %e,
+                    "P2P resolution failed, falling back to IPFS");
+            }
+        }
+    }
+
     // Check circuit breaker before attempting IPFS operation
     if !state.ipfs_circuit_breaker.allow_request() {
         state.metrics.increment_error();
@@ -1134,8 +1256,23 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
             let content_type = content_type_from_path(&cid, &data);
             let data = rewrite_html_assets(&data, &content_type, base_prefix.as_deref());
 
-            state.cache.set(cid, data.clone(), content_type.clone());
+            state.cache.set(cid.clone(), data.clone(), content_type.clone());
             metrics::update_cache_size(state.cache.stats().total_entries as i64);
+
+            // Announce to P2P network after IPFS fetch
+            if let Some(ref p2p) = state.p2p {
+                if state.config.p2p.announce_content {
+                    let _ = p2p
+                        .command_tx
+                        .send(p2p_commands::P2pCommand::AnnounceContent {
+                            content_hash: cid.clone(),
+                            fragment_hashes: vec![cid],
+                            total_size: data.len() as u64,
+                            mime_type: content_type.clone(),
+                        })
+                        .await;
+                }
+            }
 
             state.metrics.increment_success();
             state.metrics.add_bytes(data.len() as u64);
