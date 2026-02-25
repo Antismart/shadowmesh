@@ -15,6 +15,7 @@ mod dashboard;
 mod metrics;
 mod p2p;
 mod p2p_commands;
+mod replication;
 mod storage;
 
 use config::NodeConfig;
@@ -37,6 +38,8 @@ pub struct AppState {
     pub p2p: Option<Arc<p2p::P2pState>>,
     /// WebRTC bridge state (None if bridge is disabled)
     pub bridge: Option<Arc<bridge::BridgeState>>,
+    /// Replication state (None if replication is disabled or P2P unavailable)
+    pub replication: Option<Arc<replication::ReplicationState>>,
 }
 
 #[tokio::main]
@@ -184,6 +187,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Initialize background content replication
+    let replication_state = if config.replication.enabled {
+        if let Some(ref p2p) = p2p_state {
+            let repl = Arc::new(replication::ReplicationState::new(
+                config.network.replication_factor,
+            ));
+            let loop_config = config.replication.clone();
+            let loop_peer_id = peer_id.clone();
+            let loop_p2p = p2p.clone();
+            let loop_storage = storage.clone();
+            let loop_metrics = metrics.clone();
+            let loop_repl = repl.clone();
+            let repl_shutdown = shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                replication::run_replication_loop(
+                    loop_config,
+                    loop_peer_id,
+                    loop_p2p,
+                    loop_storage,
+                    loop_metrics,
+                    loop_repl,
+                    repl_shutdown,
+                )
+                .await;
+            });
+            println!("✅ Replication loop started");
+            Some(repl)
+        } else {
+            println!("⚠️  Replication enabled but P2P unavailable — skipping");
+            None
+        }
+    } else {
+        None
+    };
+
     println!();
 
     // Create shared state
@@ -195,6 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_signal: shutdown_tx,
         p2p: p2p_state,
         bridge: bridge_state,
+        replication: replication_state,
     });
 
     // Build CORS layer
