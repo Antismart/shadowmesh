@@ -327,7 +327,6 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
 }
 
 /// Deploy from a tarball (.tar.gz)
-#[allow(dead_code)]
 pub async fn deploy_tarball(State(_state): State<AppState>, _multipart: Multipart) -> Response {
     // For now, suggest using ZIP
     (
