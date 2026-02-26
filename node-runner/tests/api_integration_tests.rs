@@ -591,6 +591,130 @@ async fn test_download_content_not_found() {
     assert_eq!(resp.status(), 404);
 }
 
+#[tokio::test]
+async fn test_download_large_content_streams() {
+    let (app, state, _dir) = test_app().await;
+
+    // Create content above STREAM_THRESHOLD_BYTES (5 MB) using 6 x 1MB fragments
+    let fragment_size = 1024 * 1024; // 1 MB
+    let fragment_count = 6usize;
+    let mut fragment_hashes = Vec::new();
+
+    for i in 0..fragment_count {
+        let data = vec![i as u8; fragment_size];
+        let hash = format!("largefrag{:04x}", i);
+        state
+            .storage
+            .store_fragment(&hash, "largecid", i as u32, &data)
+            .await
+            .unwrap();
+        fragment_hashes.push(hash);
+    }
+
+    let total_size = (fragment_size * fragment_count) as u64;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    state
+        .storage
+        .store_content(node_runner::storage::StoredContent {
+            cid: "largecid".to_string(),
+            name: "large.bin".to_string(),
+            total_size,
+            fragment_count: fragment_count as u32,
+            fragments: fragment_hashes,
+            stored_at: now,
+            pinned: false,
+            mime_type: "application/octet-stream".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri("/api/storage/download/largecid")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Verify Content-Length header
+    let cl = resp
+        .headers()
+        .get("content-length")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(cl, total_size.to_string());
+
+    // Verify body length and content integrity
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.len() as u64, total_size);
+
+    for i in 0..fragment_count {
+        let start = i * fragment_size;
+        let end = start + fragment_size;
+        assert!(
+            body[start..end].iter().all(|&b| b == i as u8),
+            "Fragment {} content mismatch",
+            i
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_download_small_content_has_content_length() {
+    let (app, state, _dir) = test_app().await;
+
+    let data = b"small content for header test";
+    let cid = blake3::hash(data).to_hex().to_string();
+    state
+        .storage
+        .store_fragment(&cid, &cid, 0, data)
+        .await
+        .unwrap();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    state
+        .storage
+        .store_content(node_runner::storage::StoredContent {
+            cid: cid.clone(),
+            name: "small.bin".to_string(),
+            total_size: data.len() as u64,
+            fragment_count: 1,
+            fragments: vec![cid.clone()],
+            stored_at: now,
+            pinned: false,
+            mime_type: "application/octet-stream".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .uri(&format!("/api/storage/download/{cid}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let cl = resp
+        .headers()
+        .get("content-length")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(cl, data.len().to_string());
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), data);
+}
+
 // ── Garbage Collection ───────────────────────────────────────────
 
 #[tokio::test]
