@@ -25,10 +25,6 @@ use std::time::{Duration, Instant};
 /// Default cache TTL for ENS resolutions (1 hour)
 const ENS_CACHE_TTL: Duration = Duration::from_secs(3600);
 
-/// Maximum ENS cache entries (used by cache_result when on-chain resolution is implemented)
-#[allow(dead_code)]
-const MAX_ENS_CACHE: usize = 1000;
-
 /// Result of an ENS resolution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EnsResolution {
@@ -139,29 +135,6 @@ impl EnsBridge {
             .retain(|_, entry| entry.cached_at.elapsed() < ENS_CACHE_TTL);
     }
 
-    /// Cache a resolution result. Will be used when on-chain resolution is implemented.
-    #[allow(dead_code)]
-    fn cache_result(&mut self, name: &str, resolution: EnsResolution) {
-        // Evict if over capacity
-        if self.cache.len() >= MAX_ENS_CACHE {
-            if let Some(oldest_key) = self
-                .cache
-                .iter()
-                .min_by_key(|(_, e)| e.cached_at)
-                .map(|(k, _)| k.clone())
-            {
-                self.cache.remove(&oldest_key);
-            }
-        }
-
-        self.cache.insert(
-            name.to_string(),
-            EnsCacheEntry {
-                resolution,
-                cached_at: Instant::now(),
-            },
-        );
-    }
 }
 
 #[cfg(test)]
