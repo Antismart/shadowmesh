@@ -300,7 +300,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
 
                     let body = Body::from_stream(streaming.stream);
 
-                    return axum::http::Response::builder()
+                    return match axum::http::Response::builder()
                         .header(axum::http::header::CONTENT_TYPE, &content_type)
                         .header(
                             axum::http::header::CONTENT_LENGTH,
@@ -309,8 +309,10 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
                         .header("x-cache", "MISS")
                         .header("x-source", "NODE-STREAM")
                         .body(body)
-                        .unwrap()
-                        .into_response();
+                    {
+                        Ok(resp) => resp.into_response(),
+                        Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                    };
                 }
             }
         }
