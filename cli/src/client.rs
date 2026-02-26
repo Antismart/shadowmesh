@@ -92,6 +92,10 @@ impl NodeClient {
         self.get_json("/health").await
     }
 
+    pub async fn get_ready(&self) -> Result<Value> {
+        self.get_json("/ready").await
+    }
+
     pub async fn get_metrics(&self) -> Result<Value> {
         self.get_json("/metrics").await
     }
@@ -204,6 +208,40 @@ impl NodeClient {
 
     pub async fn fetch_remote(&self, cid: &str) -> Result<Value> {
         self.post_empty(&format!("/storage/fetch/{cid}")).await
+    }
+
+    /// Download raw content bytes. Returns (bytes, content_type, content_name).
+    pub async fn download(
+        &self,
+        cid: &str,
+    ) -> Result<(Vec<u8>, Option<String>, Option<String>)> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/storage/download/{cid}")))
+            .send()
+            .await
+            .with_context(|| format!("Cannot connect to node at {}", self.base_url))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await?;
+            bail!("HTTP {} — {}", status.as_u16(), body);
+        }
+
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let content_name = resp
+            .headers()
+            .get("x-content-cid")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let bytes = resp.bytes().await?.to_vec();
+        Ok((bytes, content_type, content_name))
     }
 
     pub async fn run_gc(&self, target_gb: f64) -> Result<Value> {
