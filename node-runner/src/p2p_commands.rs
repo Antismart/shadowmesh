@@ -32,6 +32,20 @@ pub enum P2pCommand {
         content_hash: String,
         reply: oneshot::Sender<Result<Vec<PeerId>, FetchError>>,
     },
+
+    /// Request content catalog from a specific peer.
+    ListPeerContent {
+        peer_id: PeerId,
+        reply: oneshot::Sender<Result<Vec<String>, FetchError>>,
+    },
+
+    /// Broadcast a content announcement via GossipSub.
+    BroadcastContentAnnouncement {
+        cid: String,
+        total_size: u64,
+        fragment_count: u32,
+        mime_type: String,
+    },
 }
 
 /// Result of a manifest fetch.
