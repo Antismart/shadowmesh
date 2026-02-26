@@ -47,7 +47,7 @@ opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
 tracing-opentelemetry = "0.22"
 
 # Config hot-reload
-notify = "6.1"
+notify = "8.2"
 
 # API key hashing
 sha2 = "0.10"
