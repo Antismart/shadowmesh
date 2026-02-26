@@ -3,6 +3,10 @@ name = "shadowmesh-cli"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "shadowmesh_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "shadowmesh-cli"
 path = "src/main.rs"
@@ -14,3 +18,8 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+node-runner = { path = "../node-runner" }
+axum = "0.7.9"
+tempfile = "3"
