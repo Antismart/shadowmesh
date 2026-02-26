@@ -67,7 +67,6 @@ pub enum DHTResult {
 }
 
 /// DHT Manager for content operations
-#[allow(dead_code)]
 pub struct DHTManager {
     /// Local peer ID
     local_peer_id: PeerId,
@@ -76,7 +75,7 @@ pub struct DHTManager {
     /// Known peers
     known_peers: HashMap<PeerId, PeerState>,
     /// Pending queries
-    pending_queries: HashMap<QueryId, QueryType>,
+    _pending_queries: HashMap<QueryId, QueryType>,
     /// Bootstrap nodes
     bootstrap_nodes: Vec<(PeerId, Multiaddr)>,
 }
@@ -109,7 +108,7 @@ impl DHTManager {
             local_peer_id,
             local_records: HashMap::new(),
             known_peers: HashMap::new(),
-            pending_queries: HashMap::new(),
+            _pending_queries: HashMap::new(),
             bootstrap_nodes: Vec::new(),
         }
     }
