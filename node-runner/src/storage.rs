@@ -561,13 +561,6 @@ impl StorageManager {
         self.data_dir.join("fragments").join(subdir).join(hash)
     }
 
-    /// Ensure fragment subdirectory exists
-    #[allow(dead_code)]
-    async fn ensure_fragment_dir(&self, hash: &str) -> Result<(), std::io::Error> {
-        let subdir = &hash[..2.min(hash.len())];
-        let dir = self.data_dir.join("fragments").join(subdir);
-        fs::create_dir_all(&dir).await
-    }
 }
 
 /// Garbage collection result
