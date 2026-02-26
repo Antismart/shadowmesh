@@ -260,6 +260,61 @@ pub struct P2pConfig {
     /// HTTP URLs of node-runners to query for content before IPFS
     #[serde(default)]
     pub node_runners: Vec<String>,
+    /// Node-runner health tracking and load balancing
+    #[serde(default)]
+    pub node_health: NodeHealthConfig,
+}
+
+/// Load balancing strategy for selecting node-runners
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeSelectionStrategy {
+    /// Try nodes in config order (default, backward compatible)
+    Sequential,
+    /// Cycle through nodes evenly
+    RoundRobin,
+    /// Pick the node with lowest moving-average latency
+    LeastLatency,
+    /// Weight selection by combined health score
+    Weighted,
+}
+
+impl Default for NodeSelectionStrategy {
+    fn default() -> Self {
+        Self::Sequential
+    }
+}
+
+/// Configuration for node-runner health tracking and load balancing
+#[derive(Debug, Deserialize, Clone)]
+pub struct NodeHealthConfig {
+    /// Selection strategy for choosing which node-runner to try first
+    #[serde(default)]
+    pub strategy: NodeSelectionStrategy,
+    /// Background health check interval in seconds
+    #[serde(default = "default_health_interval")]
+    pub health_check_interval_seconds: u64,
+    /// Per-node circuit breaker failure threshold
+    #[serde(default = "default_cb_threshold")]
+    pub circuit_breaker_threshold: u32,
+    /// Per-node circuit breaker reset timeout in seconds
+    #[serde(default = "default_cb_reset")]
+    pub circuit_breaker_reset_seconds: u64,
+}
+
+fn default_health_interval() -> u64 { 30 }
+fn default_cb_threshold() -> u32 { 3 }
+fn default_cb_reset() -> u64 { 15 }
+
+impl Default for NodeHealthConfig {
+    fn default() -> Self {
+        Self {
+            strategy: NodeSelectionStrategy::default(),
+            health_check_interval_seconds: default_health_interval(),
+            circuit_breaker_threshold: default_cb_threshold(),
+            circuit_breaker_reset_seconds: default_cb_reset(),
+        }
+    }
 }
 
 impl Default for P2pConfig {
@@ -272,6 +327,7 @@ impl Default for P2pConfig {
             resolve_timeout_seconds: 15,
             announce_content: true,
             node_runners: Vec::new(),
+            node_health: NodeHealthConfig::default(),
         }
     }
 }
@@ -398,8 +454,9 @@ impl Config {
         }
         if !self.p2p.node_runners.is_empty() {
             println!(
-                "   Node Runners: {} configured",
-                self.p2p.node_runners.len()
+                "   Node Runners: {} configured (strategy: {:?})",
+                self.p2p.node_runners.len(),
+                self.p2p.node_health.strategy
             );
         }
     }
