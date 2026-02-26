@@ -66,7 +66,6 @@ pub struct ReplicationHealthReport {
 
 /// Errors during replication.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum ReplicationError {
     NoProviders,
     FetchFailed(String),
