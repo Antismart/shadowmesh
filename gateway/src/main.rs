@@ -365,6 +365,8 @@ async fn main() {
         .route("/ready", get(ready_handler))
         .route("/metrics", get(metrics_handler))
         .route("/metrics/prometheus", get(prometheus_metrics_handler))
+        // Dashboard UI
+        .route("/dashboard", get(dashboard::dashboard_handler))
         // Deploy endpoints (Vercel-like)
         .route("/api/deploy", post(deploy::deploy_zip))
         .route("/api/deploy/info", get(deploy::deploy_info))
