@@ -244,6 +244,22 @@ async fn main() {
         None
     };
 
+    // Build node-runner health tracker (if any node-runners configured)
+    let node_health_tracker = if !config.p2p.node_runners.is_empty() {
+        let tracker = Arc::new(node_health::NodeHealthTracker::new(
+            config.p2p.node_runners.clone(),
+            &config.p2p.node_health,
+        ));
+        println!(
+            "✓ Node health tracker: {} nodes, strategy={:?}",
+            config.p2p.node_runners.len(),
+            config.p2p.node_health.strategy,
+        );
+        Some(tracker)
+    } else {
+        None
+    };
+
     let state = AppState {
         storage,
         cache,
@@ -259,6 +275,7 @@ async fn main() {
         naming,
         naming_key,
         p2p: p2p_state,
+        node_health_tracker: node_health_tracker.clone(),
     };
 
     // Clone audit logger before state is moved into the router
@@ -308,6 +325,24 @@ async fn main() {
             tracing::error!("Signaling cleanup task failed: {}", e);
         }
     });
+
+    // Start background node-runner health probes
+    if let Some(ref tracker) = node_health_tracker {
+        let health_token = shutdown_token.clone();
+        let health_tracker = tracker.clone();
+        let interval_secs = config.p2p.node_health.health_check_interval_seconds;
+        let health_handle = tokio::spawn(node_health::run_health_check_loop(
+            health_tracker,
+            Duration::from_secs(interval_secs),
+            health_token,
+        ));
+        tokio::spawn(async move {
+            if let Err(e) = health_handle.await {
+                tracing::error!("Node health check task failed: {}", e);
+            }
+        });
+        println!("✓ Node health probes started (interval: {}s)", interval_secs);
+    }
 
     // Create rate limiter (distributed when Redis available)
     let rate_limiter = if config.rate_limit.enabled {
