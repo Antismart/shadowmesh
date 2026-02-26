@@ -87,7 +87,6 @@ struct RateLimitError {
 
 impl RateLimiter {
     /// Create a new rate limiter with default config
-    #[allow(dead_code)]
     pub fn new(requests_per_second: u64) -> Self {
         Self::with_config(RateLimitConfig {
             ip_requests_per_second: requests_per_second,
