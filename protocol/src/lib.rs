@@ -51,7 +51,10 @@ pub use fragments::{ContentFragment, ContentManifest, ContentMetadata, FragmentM
 pub use routing::RoutingLayer;
 
 // Re-export content protocol types
-pub use content_protocol::{ContentCodec, ContentRequest, ContentResponse, CONTENT_PROTOCOL};
+pub use content_protocol::{
+    ContentAnnouncement, ContentCodec, ContentRequest, ContentResponse, ContentSummary,
+    CONTENT_GOSSIP_TOPIC, CONTENT_PROTOCOL,
+};
 
 // Re-export node types
 pub use node::ShadowNode;
