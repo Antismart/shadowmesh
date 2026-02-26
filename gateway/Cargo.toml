@@ -70,3 +70,4 @@ tempfile = { workspace = true }
 hyper = { workspace = true }
 tower = { workspace = true }
 http-body-util = { workspace = true }
+node-runner = { path = "../node-runner" }
