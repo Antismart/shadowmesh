@@ -84,6 +84,7 @@ fn gateway_app(node_runner_url: &str) -> Router {
         naming: Arc::new(std::sync::RwLock::new(protocol::NamingManager::new())),
         naming_key: Arc::new(libp2p::identity::Keypair::generate_ed25519()),
         p2p: None,
+        node_health_tracker: None,
     };
 
     gateway::content_router(state)
@@ -186,6 +187,7 @@ async fn test_e2e_cache_hit() {
         naming: Arc::new(std::sync::RwLock::new(protocol::NamingManager::new())),
         naming_key: Arc::new(libp2p::identity::Keypair::generate_ed25519()),
         p2p: None,
+        node_health_tracker: None,
     };
 
     let app1 = gateway::content_router(state.clone());
@@ -315,4 +317,50 @@ async fn test_e2e_large_content_streams() {
             i
         );
     }
+}
+
+#[tokio::test]
+async fn test_e2e_failover_to_second_node() {
+    // Two node-runners: first has no content, second has it.
+    let (url_empty, _s1, _d1) = start_node_runner().await;
+    let (url_with_data, _s2, _d2) = start_node_runner().await;
+
+    // Upload content only to the second node-runner.
+    let data = b"failover payload";
+    let cid = upload_to_node_runner(&url_with_data, "failover.txt", data).await;
+
+    // Gateway configured with empty node first, then the populated one.
+    let mut cfg = config::Config::default();
+    cfg.p2p.node_runners = vec![url_empty.clone(), url_with_data.clone()];
+
+    let state = AppState {
+        storage: None,
+        cache: Arc::new(cache::ContentCache::with_config(100, Duration::from_secs(300))),
+        config: Arc::new(cfg),
+        metrics: Arc::new(Metrics::default()),
+        start_time: Instant::now(),
+        deployments: Arc::new(std::sync::RwLock::new(Vec::new())),
+        github_auth: Arc::new(std::sync::RwLock::new(None)),
+        github_oauth_states: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        ipfs_circuit_breaker: Arc::new(circuit_breaker::CircuitBreaker::new(
+            "ipfs-test", 5, Duration::from_secs(60),
+        )),
+        audit_logger: Arc::new(audit::AuditLogger::new(100)),
+        redis: None,
+        naming: Arc::new(std::sync::RwLock::new(protocol::NamingManager::new())),
+        naming_key: Arc::new(libp2p::identity::Keypair::generate_ed25519()),
+        p2p: None,
+        node_health_tracker: None,
+    };
+
+    let app = gateway::content_router(state);
+    let resp = gateway_get(app, &format!("/ipfs/{}", cid)).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("x-source").unwrap().to_str().unwrap(),
+        "NODE",
+    );
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], data);
 }
