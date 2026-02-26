@@ -18,6 +18,7 @@ pub mod error;
 pub mod lock_utils;
 pub mod metrics;
 pub mod middleware;
+pub mod node_health;
 pub mod node_resolver;
 pub mod p2p;
 pub mod p2p_commands;
@@ -115,6 +116,8 @@ pub struct AppState {
     pub naming_key: Arc<libp2p::identity::Keypair>,
     /// P2P mesh state (None if P2P is disabled or failed to start)
     pub p2p: Option<Arc<p2p::P2pState>>,
+    /// Node-runner health tracker (None when no node-runners configured)
+    pub node_health_tracker: Option<Arc<node_health::NodeHealthTracker>>,
 }
 
 /// Build a Router with just the content-serving routes.
@@ -231,14 +234,21 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
     if !state.config.p2p.node_runners.is_empty() {
         let http = reqwest::Client::new();
         let timeout = state.config.p2p.resolve_timeout_seconds;
-        if let Some(node_content) = node_resolver::resolve_from_nodes_adaptive(
-            &http,
-            &state.config.p2p.node_runners,
-            &cid,
-            timeout,
-        )
-        .await
-        {
+
+        // Use health-aware tracker when available, otherwise fall back.
+        let node_content = if let Some(ref tracker) = state.node_health_tracker {
+            node_resolver::resolve_from_nodes_with_tracking(&http, tracker, &cid, timeout).await
+        } else {
+            node_resolver::resolve_from_nodes_adaptive(
+                &http,
+                &state.config.p2p.node_runners,
+                &cid,
+                timeout,
+            )
+            .await
+        };
+
+        if let Some(node_content) = node_content {
             match node_content {
                 node_resolver::NodeContent::Buffered(resolved) => {
                     let content_type = if resolved.mime_type.is_empty() {
