@@ -40,6 +40,7 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .route("/storage/pin/:cid", post(pin_content))
         .route("/storage/unpin/:cid", post(unpin_content))
         .route("/storage/upload", post(upload_content))
+        .route("/storage/download/:cid", get(download_content))
         .route("/storage/fetch/:cid", post(fetch_remote_content))
         .route("/storage/gc", post(run_garbage_collection))
         // Network
@@ -581,6 +582,40 @@ async fn upload_content(
         size: total_size,
         mime_type,
     }))
+}
+
+/// Download raw content bytes by CID.
+///
+/// Returns the raw file data with the correct Content-Type header,
+/// suitable for direct consumption by gateways or browsers.
+async fn download_content(
+    State(state): State<Arc<AppState>>,
+    Path(cid): Path<String>,
+) -> Response {
+    // 1. Look up content metadata
+    let content = match state.storage.get_content(&cid).await {
+        Some(c) => c,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    // 2. Read and concatenate all fragments in order
+    let mut data = Vec::with_capacity(content.total_size as usize);
+    for frag_hash in &content.fragments {
+        match state.storage.get_fragment(frag_hash).await {
+            Ok(bytes) => data.extend_from_slice(&bytes),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
+
+    // 3. Return raw bytes with correct Content-Type
+    (
+        [
+            (header::CONTENT_TYPE, content.mime_type),
+            (header::HeaderName::from_static("x-content-cid"), cid),
+        ],
+        data,
+    )
+        .into_response()
 }
 
 /// Fetch content from the P2P network by CID.
