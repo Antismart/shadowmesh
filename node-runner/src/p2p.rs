@@ -38,6 +38,8 @@ pub struct P2pState {
     pub listen_addrs: RwLock<Vec<String>>,
     /// Sender half of the command channel for API → event loop communication
     pub command_tx: mpsc::Sender<P2pCommand>,
+    /// Content announcements received via GossipSub (drained by replication loop)
+    pub content_announcements: RwLock<Vec<shadowmesh_protocol::ContentAnnouncement>>,
 }
 
 impl P2pState {
@@ -46,6 +48,7 @@ impl P2pState {
             peers: RwLock::new(HashMap::new()),
             listen_addrs: RwLock::new(Vec::new()),
             command_tx,
+            content_announcements: RwLock::new(Vec::new()),
         }
     }
 }
@@ -58,6 +61,9 @@ enum PendingReply {
     },
     Manifest {
         reply: oneshot::Sender<Result<ManifestResult, FetchError>>,
+    },
+    ContentList {
+        reply: oneshot::Sender<Result<Vec<String>, FetchError>>,
     },
 }
 
@@ -248,6 +254,37 @@ async fn handle_behaviour_event(
         }
 
         // ── GossipSub ────────────────────────────────────────
+        ShadowBehaviourEvent::Gossipsub(libp2p::gossipsub::Event::Message {
+            message, ..
+        }) => {
+            let content_topic_hash = libp2p::gossipsub::IdentTopic::new(
+                shadowmesh_protocol::CONTENT_GOSSIP_TOPIC,
+            )
+            .hash();
+
+            if message.topic == content_topic_hash {
+                match serde_json::from_slice::<shadowmesh_protocol::ContentAnnouncement>(
+                    &message.data,
+                ) {
+                    Ok(announcement) => {
+                        tracing::info!(
+                            cid = %announcement.cid,
+                            peer = %announcement.peer_id,
+                            size = announcement.total_size,
+                            "Received content announcement via GossipSub"
+                        );
+                        let mut anns = _p2p_state.content_announcements.write().await;
+                        anns.push(announcement);
+                    }
+                    Err(e) => {
+                        tracing::debug!(%e, "Invalid GossipSub content announcement");
+                    }
+                }
+            } else {
+                tracing::debug!("GossipSub message on unhandled topic");
+            }
+        }
+
         ShadowBehaviourEvent::Gossipsub(event) => {
             tracing::debug!(?event, "GossipSub event");
         }
@@ -344,6 +381,23 @@ async fn handle_content_request(
         }
 
         ContentRequest::Ping => ContentResponse::Pong,
+
+        ContentRequest::ListContent { limit } => {
+            let content_list = storage.list_content().await;
+            let cap = if limit == 0 { usize::MAX } else { limit as usize };
+            let items: Vec<shadowmesh_protocol::ContentSummary> = content_list
+                .iter()
+                .take(cap)
+                .map(|c| shadowmesh_protocol::ContentSummary {
+                    cid: c.cid.clone(),
+                    total_size: c.total_size,
+                    fragment_count: c.fragment_count,
+                    mime_type: c.mime_type.clone(),
+                })
+                .collect();
+            tracing::debug!(%peer, count = items.len(), "Serving content list to peer");
+            ContentResponse::ContentList { items }
+        }
     };
 
     if node
@@ -405,6 +459,12 @@ fn handle_content_response(
             }));
         }
 
+        // ContentList response
+        (PendingReply::ContentList { reply }, ContentResponse::ContentList { items }) => {
+            let cids: Vec<String> = items.into_iter().map(|i| i.cid).collect();
+            let _ = reply.send(Ok(cids));
+        }
+
         // NotFound
         (pending, ContentResponse::NotFound { .. }) => {
             resolve_pending(pending, Err(FetchError::NotFound));
@@ -434,6 +494,14 @@ fn resolve_pending(pending: PendingReply, err: Result<(), FetchError>) {
             let _ = reply.send(Err(e));
         }
         PendingReply::Manifest { reply, .. } => {
+            let _ = reply.send(Err(match e {
+                FetchError::NotFound => FetchError::NotFound,
+                FetchError::ConnectionFailed(s) => FetchError::ConnectionFailed(s),
+                FetchError::PeerError(s) => FetchError::PeerError(s),
+                FetchError::ChannelClosed => FetchError::ChannelClosed,
+            }));
+        }
+        PendingReply::ContentList { reply, .. } => {
             let _ = reply.send(Err(match e {
                 FetchError::NotFound => FetchError::NotFound,
                 FetchError::ConnectionFailed(s) => FetchError::ConnectionFailed(s),
@@ -558,6 +626,56 @@ fn handle_command(
                 .kademlia
                 .get_record(key);
             pending_dht_queries.insert(content_hash, reply);
+        }
+
+        P2pCommand::ListPeerContent { peer_id, reply } => {
+            let request = ContentRequest::ListContent { limit: 100 };
+            let req_id = node
+                .swarm_mut()
+                .behaviour_mut()
+                .content_req_resp
+                .send_request(&peer_id, request);
+            pending_requests.insert(req_id, PendingReply::ContentList { reply });
+        }
+
+        P2pCommand::BroadcastContentAnnouncement {
+            cid,
+            total_size,
+            fragment_count,
+            mime_type,
+        } => {
+            let peer_id = node.peer_id().to_string();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let announcement = shadowmesh_protocol::ContentAnnouncement {
+                cid: cid.clone(),
+                peer_id,
+                total_size,
+                fragment_count,
+                mime_type,
+                timestamp: now,
+            };
+
+            if let Ok(data) = serde_json::to_vec(&announcement) {
+                let topic =
+                    libp2p::gossipsub::IdentTopic::new(shadowmesh_protocol::CONTENT_GOSSIP_TOPIC);
+                match node
+                    .swarm_mut()
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic, data)
+                {
+                    Ok(_) => {
+                        tracing::debug!(%cid, "Broadcast content announcement via GossipSub")
+                    }
+                    Err(e) => {
+                        tracing::debug!(%cid, ?e, "GossipSub content publish failed")
+                    }
+                }
+            }
         }
     }
 }
