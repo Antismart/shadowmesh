@@ -718,14 +718,34 @@ async fn fetch_remote_content(
                 "P2P reply channel closed".to_string(),
             )
         })?
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+        .unwrap_or_default(); // DHT miss is not fatal — fallback below
 
-    if providers.is_empty() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "No providers found for this CID".to_string(),
-        ));
-    }
+    // 3b. If DHT returned nothing, check GossipSub announcements and connected peers
+    let providers = if providers.is_empty() {
+        // Check if any GossipSub announcement told us who has this CID
+        let announcements = p2p.content_announcements.read().await;
+        let mut gossip_peers: Vec<libp2p::PeerId> = announcements
+            .iter()
+            .filter(|a| a.cid == cid)
+            .filter_map(|a| a.peer_id.parse().ok())
+            .collect();
+
+        if gossip_peers.is_empty() {
+            // Last resort: try all connected peers
+            let peers = p2p.peers.read().await;
+            gossip_peers = peers.keys().copied().collect();
+        }
+
+        if gossip_peers.is_empty() {
+            return Err((
+                StatusCode::NOT_FOUND,
+                "No providers found for this CID".to_string(),
+            ));
+        }
+        gossip_peers
+    } else {
+        providers
+    };
 
     // 4. Get manifest from first available provider
     let peer = providers[0];
