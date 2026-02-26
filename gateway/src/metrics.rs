@@ -192,14 +192,12 @@ pub fn encode_metrics() -> String {
 }
 
 /// Helper for timing operations
-#[allow(dead_code)]
 pub struct Timer {
     start: Instant,
     histogram: &'static HistogramVec,
     labels: Vec<String>,
 }
 
-#[allow(dead_code)]
 impl Timer {
     pub fn new(histogram: &'static HistogramVec, labels: Vec<String>) -> Self {
         Self {
