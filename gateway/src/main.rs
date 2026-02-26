@@ -6,7 +6,7 @@ use axum::{
     extract::{Path, State},
     http::Uri,
     middleware as axum_middleware,
-    response::{Html, IntoResponse, Json, Response},
+    response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
     Router,
 };
@@ -199,11 +199,40 @@ async fn main() {
                     eprintln!("  Failed to bind P2P addresses: {}", e);
                     None
                 } else {
-                    // Dial bootstrap peers
+                    // Dial bootstrap peers and seed Kademlia routing table
                     for addr_str in &config.p2p.bootstrap_peers {
-                        if let Ok(addr) = addr_str.parse::<libp2p::Multiaddr>() {
-                            if let Err(e) = node.dial(addr) {
-                                tracing::warn!("Failed to dial bootstrap peer {}: {}", addr_str, e);
+                        match addr_str.parse::<libp2p::Multiaddr>() {
+                            Ok(addr) => {
+                                if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) =
+                                    addr.iter().last()
+                                {
+                                    node.swarm_mut()
+                                        .behaviour_mut()
+                                        .kademlia
+                                        .add_address(&peer_id, addr.clone());
+                                }
+                                match node.dial(addr) {
+                                    Ok(_) => {
+                                        tracing::info!(
+                                            "Dialing bootstrap peer: {}",
+                                            addr_str
+                                        )
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to dial bootstrap {}: {}",
+                                            addr_str,
+                                            e
+                                        )
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Invalid bootstrap multiaddr '{}': {}",
+                                    addr_str,
+                                    e
+                                );
                             }
                         }
                     }
@@ -615,112 +644,6 @@ async fn shadow_or_content_subpath_handler(
 
     // SPA fallback
     spa::spa_handler(uri).await
-}
-
-#[allow(dead_code)]
-async fn content_path_handler(
-    State(state): State<AppState>,
-    Path((cid, path)): Path<(String, String)>,
-) -> Response {
-    let full_path = format!("{}/{}", cid, path);
-    state.metrics.increment_requests();
-
-    // Check cache first
-    if let Some((data, content_type)) = state.cache.get(&full_path) {
-        state.metrics.increment_success();
-        state.metrics.add_bytes(data.len() as u64);
-        return (
-            [
-                (axum::http::header::CONTENT_TYPE, content_type),
-                (
-                    axum::http::header::HeaderName::from_static("x-cache"),
-                    "HIT".to_string(),
-                ),
-            ],
-            data,
-        )
-            .into_response();
-    }
-
-    // Fetch from IPFS
-    let Some(storage) = &state.storage else {
-        state.metrics.increment_error();
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Html(r#"<html><body><h1>IPFS Not Connected</h1></body></html>"#),
-        )
-            .into_response();
-    };
-
-    let storage = Arc::clone(storage);
-    let path_clone = full_path.clone();
-
-    // Spawn blocking task for IPFS retrieval (handles non-Send stream)
-    let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current()
-            .block_on(async { storage.retrieve_content(&path_clone).await })
-    })
-    .await;
-
-    match result {
-        Ok(Ok(data)) => {
-            let content_type = infer::get(&data)
-                .map(|t| t.mime_type().to_string())
-                .unwrap_or_else(|| "application/octet-stream".to_string());
-
-            // Store in cache
-            state
-                .cache
-                .set(full_path, data.clone(), content_type.clone());
-
-            state.metrics.increment_success();
-            state.metrics.add_bytes(data.len() as u64);
-
-            (
-                [
-                    (axum::http::header::CONTENT_TYPE, content_type),
-                    (
-                        axum::http::header::HeaderName::from_static("x-cache"),
-                        "MISS".to_string(),
-                    ),
-                ],
-                data,
-            )
-                .into_response()
-        }
-        Ok(Err(e)) => {
-            state.metrics.increment_error();
-            (
-                axum::http::StatusCode::NOT_FOUND,
-                Html(format!(
-                    r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#,
-                    escape_html(&e.to_string())
-                )),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            state.metrics.increment_error();
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#,
-                    escape_html(&e.to_string())
-                )),
-            )
-                .into_response()
-        }
-    }
-}
-
-// Handler for /:cid/*path - access files within a directory CID
-#[allow(dead_code)]
-async fn content_with_path_handler(
-    State(state): State<AppState>,
-    Path((cid, path)): Path<(String, String)>,
-) -> Response {
-    let full_path = format!("{}/{}", cid, path);
-    fetch_content(&state, full_path, Some(format!("/{}/", cid))).await
 }
 
 // ============================================
