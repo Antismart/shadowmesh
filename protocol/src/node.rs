@@ -3,6 +3,7 @@
 //! Provides the core P2P networking node with support for multiple transports.
 
 use crate::bootstrap::BOOTSTRAP_GOSSIP_TOPIC;
+use crate::content_protocol::CONTENT_GOSSIP_TOPIC;
 use crate::naming::{NamingManager, NAMING_GOSSIP_TOPIC};
 use crate::transport::TransportConfig;
 use crate::content_protocol::{ContentCodec, CONTENT_PROTOCOL};
@@ -105,8 +106,10 @@ impl ShadowNode {
         // Subscribe to naming and bootstrap topics
         let naming_topic = IdentTopic::new(NAMING_GOSSIP_TOPIC);
         let bootstrap_topic = IdentTopic::new(BOOTSTRAP_GOSSIP_TOPIC);
+        let content_topic = IdentTopic::new(CONTENT_GOSSIP_TOPIC);
         gossipsub.subscribe(&naming_topic)?;
         gossipsub.subscribe(&bootstrap_topic)?;
+        gossipsub.subscribe(&content_topic)?;
 
         // Set up mDNS for LAN peer discovery
         let mdns_behaviour =
