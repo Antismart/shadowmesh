@@ -3,16 +3,19 @@
 //! REST API endpoints for node management and monitoring.
 
 use axum::{
+    body::Body,
     extract::{Multipart, Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
     Json, Router,
 };
+use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio_util::io::ReaderStream;
 
 use crate::metrics::{BandwidthStats, MetricsSnapshot};
 use crate::replication::ReplicationHealthReport;
@@ -584,10 +587,15 @@ async fn upload_content(
     }))
 }
 
+/// Content larger than this threshold is streamed fragment-by-fragment.
+const STREAM_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024;
+
 /// Download raw content bytes by CID.
 ///
 /// Returns the raw file data with the correct Content-Type header,
 /// suitable for direct consumption by gateways or browsers.
+/// Content above 5 MB is streamed fragment-by-fragment to avoid
+/// buffering the entire file in memory.
 async fn download_content(
     State(state): State<Arc<AppState>>,
     Path(cid): Path<String>,
@@ -598,24 +606,57 @@ async fn download_content(
         None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // 2. Read and concatenate all fragments in order
-    let mut data = Vec::with_capacity(content.total_size as usize);
-    for frag_hash in &content.fragments {
-        match state.storage.get_fragment(frag_hash).await {
-            Ok(bytes) => data.extend_from_slice(&bytes),
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        }
-    }
+    let headers = [
+        (header::CONTENT_TYPE, content.mime_type.clone()),
+        (header::CONTENT_LENGTH, content.total_size.to_string()),
+        (header::HeaderName::from_static("x-content-cid"), cid),
+    ];
 
-    // 3. Return raw bytes with correct Content-Type
-    (
-        [
-            (header::CONTENT_TYPE, content.mime_type),
-            (header::HeaderName::from_static("x-content-cid"), cid),
-        ],
-        data,
-    )
-        .into_response()
+    // 2. Decide: buffer small content, stream large content
+    if content.total_size <= STREAM_THRESHOLD_BYTES {
+        // --- BUFFERED PATH ---
+        let mut data = Vec::with_capacity(content.total_size as usize);
+        for frag_hash in &content.fragments {
+            match state.storage.get_fragment(frag_hash).await {
+                Ok(bytes) => data.extend_from_slice(&bytes),
+                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+        (headers, data).into_response()
+    } else {
+        // --- STREAMING PATH ---
+        let storage = state.storage.clone();
+        let fragment_hashes = content.fragments.clone();
+
+        let byte_stream = stream::iter(fragment_hashes)
+            .then(move |frag_hash| {
+                let storage = storage.clone();
+                async move {
+                    match storage.get_fragment_path(&frag_hash).await {
+                        Ok(path) => {
+                            let file = tokio::fs::File::open(&path).await.map_err(|e| {
+                                std::io::Error::other(format!(
+                                    "Failed to open fragment {}: {}",
+                                    frag_hash, e
+                                ))
+                            })?;
+                            Ok::<_, std::io::Error>(ReaderStream::new(file))
+                        }
+                        Err(e) => Err(std::io::Error::other(format!(
+                            "Fragment not found {}: {}",
+                            frag_hash, e
+                        ))),
+                    }
+                }
+            })
+            .flat_map(|result| match result {
+                Ok(reader_stream) => reader_stream.boxed(),
+                Err(e) => stream::once(async move { Err(e) }).boxed(),
+            });
+
+        let body = Body::from_stream(byte_stream);
+        (headers, body).into_response()
+    }
 }
 
 /// Fetch content from the P2P network by CID.
