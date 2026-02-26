@@ -94,6 +94,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("❌ Failed to bind P2P addresses: {}", e);
                 (peer_id, None)
             } else {
+                // Dial configured bootstrap peers
+                for addr_str in &config.network.bootstrap_nodes {
+                    match addr_str.parse::<libp2p::Multiaddr>() {
+                        Ok(addr) => {
+                            // Add peer to Kademlia routing table if /p2p/<id> is present
+                            if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) =
+                                addr.iter().last()
+                            {
+                                node.swarm_mut()
+                                    .behaviour_mut()
+                                    .kademlia
+                                    .add_address(&peer_id, addr.clone());
+                            }
+                            match node.dial(addr) {
+                                Ok(_) => {
+                                    tracing::info!("Dialing bootstrap peer: {}", addr_str)
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to dial bootstrap {}: {}",
+                                        addr_str,
+                                        e
+                                    )
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Invalid bootstrap multiaddr '{}': {}",
+                                addr_str,
+                                e
+                            );
+                        }
+                    }
+                }
+                if !config.network.bootstrap_nodes.is_empty() {
+                    println!(
+                        "✅ Dialing {} bootstrap peer(s)",
+                        config.network.bootstrap_nodes.len()
+                    );
+                }
+
                 // Create command channel for API → event loop communication
                 let (command_tx, command_rx) =
                     tokio::sync::mpsc::channel::<p2p_commands::P2pCommand>(256);
