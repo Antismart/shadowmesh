@@ -267,12 +267,11 @@ impl CreatedHandshake {
 /// Ephemeral keypair for a single circuit hop
 /// These are generated fresh for each circuit and discarded after
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct EphemeralHopKeypair {
     /// The keypair
     keypair: X25519Keypair,
     /// When this was created
-    created_at: Instant,
+    _created_at: Instant,
 }
 
 impl EphemeralHopKeypair {
@@ -280,7 +279,7 @@ impl EphemeralHopKeypair {
     pub fn generate() -> Self {
         Self {
             keypair: X25519Keypair::generate(),
-            created_at: Instant::now(),
+            _created_at: Instant::now(),
         }
     }
 
@@ -664,10 +663,9 @@ impl Default for ZkRelayConfig {
 /// Zero-Knowledge Relay Client
 ///
 /// Used by clients to build circuits and send requests anonymously.
-#[allow(dead_code)]
 pub struct ZkRelayClient {
     /// Client's secret for key derivation
-    secret: [u8; KEY_SIZE],
+    _secret: [u8; KEY_SIZE],
     /// Active circuits
     circuits: HashMap<CircuitId, Circuit>,
     /// Configuration
@@ -678,7 +676,7 @@ impl ZkRelayClient {
     /// Create a new ZK relay client
     pub fn new(secret: [u8; KEY_SIZE]) -> Self {
         Self {
-            secret,
+            _secret: secret,
             circuits: HashMap::new(),
             config: ZkRelayConfig::default(),
         }
@@ -687,7 +685,7 @@ impl ZkRelayClient {
     /// Create with custom config
     pub fn with_config(secret: [u8; KEY_SIZE], config: ZkRelayConfig) -> Self {
         Self {
-            secret,
+            _secret: secret,
             circuits: HashMap::new(),
             config,
         }
@@ -971,10 +969,9 @@ impl ZkRelayClient {
 /// Zero-Knowledge Relay Node
 ///
 /// Used by relay nodes to forward cells without knowing content.
-#[allow(dead_code)]
 pub struct ZkRelayNode {
     /// Node's keypair seed
-    node_secret: [u8; KEY_SIZE],
+    _node_secret: [u8; KEY_SIZE],
     /// Circuit states (minimal info needed for forwarding)
     circuit_states: Arc<RwLock<HashMap<CircuitId, RelayCircuitState>>>,
     /// Configuration
@@ -1004,7 +1001,7 @@ impl ZkRelayNode {
     /// Create a new relay node
     pub fn new(node_secret: [u8; KEY_SIZE]) -> Self {
         Self {
-            node_secret,
+            _node_secret: node_secret,
             circuit_states: Arc::new(RwLock::new(HashMap::new())),
             config: ZkRelayConfig::default(),
             stats: Arc::new(RwLock::new(RelayStats::default())),
@@ -1014,7 +1011,7 @@ impl ZkRelayNode {
     /// Create with custom config
     pub fn with_config(node_secret: [u8; KEY_SIZE], config: ZkRelayConfig) -> Self {
         Self {
-            node_secret,
+            _node_secret: node_secret,
             circuit_states: Arc::new(RwLock::new(HashMap::new())),
             config,
             stats: Arc::new(RwLock::new(RelayStats::default())),
@@ -1335,10 +1332,9 @@ pub struct BlindResponse {
 }
 
 /// Traffic analysis resistance through padding
-#[allow(dead_code)]
 pub struct TrafficPadder {
     /// Minimum cell size
-    min_size: usize,
+    _min_size: usize,
     /// Target cell size (all cells padded to this)
     target_size: usize,
     /// Enable timing jitter
@@ -1350,7 +1346,7 @@ pub struct TrafficPadder {
 impl Default for TrafficPadder {
     fn default() -> Self {
         Self {
-            min_size: 512,
+            _min_size: 512,
             target_size: 512,
             timing_jitter: true,
             max_jitter_ms: 50,
@@ -1362,7 +1358,7 @@ impl TrafficPadder {
     /// Create with custom target size
     pub fn with_size(target_size: usize) -> Self {
         Self {
-            min_size: target_size,
+            _min_size: target_size,
             target_size,
             ..Default::default()
         }
