@@ -530,8 +530,10 @@ async fn serve_data_channel(
     dc.on_open(Box::new(move || {
         let open_tx = open_tx.clone();
         Box::pin(async move {
-            if let Some(tx) = open_tx.lock().unwrap().take() {
-                let _ = tx.send(());
+            if let Ok(mut guard) = open_tx.lock() {
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(());
+                }
             }
         })
     }));
