@@ -517,6 +517,80 @@ async fn test_prometheus_metrics() {
     assert!(!text.contains("shadowmesh_replication_total"));
 }
 
+// ── Raw Download ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_download_content() {
+    let (app, state, _dir) = test_app().await;
+
+    // Upload a file via multipart
+    let boundary = "----DownloadTestBoundary";
+    let file_content = "Hello raw download!";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"raw.txt\"\r\nContent-Type: text/plain\r\n\r\n{file_content}\r\n--{boundary}--\r\n"
+    );
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/storage/upload")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp_body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+    let cid = json["cid"].as_str().unwrap().to_string();
+
+    // Download raw content
+    let app2 = Router::new()
+        .nest("/api", api::api_routes())
+        .with_state(state.clone());
+
+    let req = Request::builder()
+        .uri(&format!("/api/storage/download/{cid}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app2.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Verify Content-Type is set
+    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    assert!(!ct.is_empty());
+
+    // Verify x-content-cid header
+    let x_cid = resp
+        .headers()
+        .get("x-content-cid")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(x_cid, cid);
+
+    // Verify raw bytes match original content
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), file_content.as_bytes());
+}
+
+#[tokio::test]
+async fn test_download_content_not_found() {
+    let (app, _, _dir) = test_app().await;
+
+    let req = Request::builder()
+        .uri("/api/storage/download/nonexistent_cid")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
 // ── Garbage Collection ───────────────────────────────────────────
 
 #[tokio::test]
