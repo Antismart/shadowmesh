@@ -74,7 +74,6 @@ impl ApiKey {
     }
 
     /// Check if key is valid (enabled and not expired)
-    #[allow(dead_code)]
     pub fn is_valid(&self) -> bool {
         self.enabled && !self.is_expired()
     }
@@ -134,7 +133,6 @@ impl ApiKeyStore {
         self.keys_by_hash.insert(key.key_hash.clone(), key);
     }
 
-    #[allow(dead_code)]
     pub fn get_by_hash(&self, hash: &str) -> Option<&ApiKey> {
         self.keys_by_hash.get(hash)
     }
@@ -285,7 +283,6 @@ impl ApiKeyManager {
     }
 
     /// Validate an API key and update last_used
-    #[allow(dead_code)]
     pub async fn validate_key(&self, raw_key: &str) -> Option<ApiKey> {
         let key_hash = hash_key(raw_key);
 
@@ -417,7 +414,6 @@ impl ApiKeyManager {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub enum ApiKeyError {
     #[error("Storage error: {0}")]
