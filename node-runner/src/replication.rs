@@ -261,11 +261,10 @@ async fn scan_and_replicate(
     let mut handles = Vec::new();
 
     for cid in targets {
-        let permit = semaphore.clone().acquire_owned().await;
-        if permit.is_err() {
-            break;
-        }
-        let permit = permit.unwrap();
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => break,
+        };
         let p2p_tx = p2p.command_tx.clone();
         let cid_clone = cid.clone();
 
