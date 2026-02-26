@@ -25,6 +25,10 @@ pub enum ContentRequest {
 
     /// Liveness probe.
     Ping,
+
+    /// Request a list of content CIDs stored by this peer.
+    /// `limit` caps the number of items returned (0 = no limit).
+    ListContent { limit: u32 },
 }
 
 // ─── Response types ──────────────────────────────────────────────
@@ -54,6 +58,34 @@ pub enum ContentResponse {
 
     /// An error occurred while processing the request.
     Error { message: String },
+
+    /// List of stored content summaries.
+    ContentList { items: Vec<ContentSummary> },
+}
+
+// ─── Catalog / announcement types ────────────────────────────────
+
+/// Summary of a content item for catalog exchange.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentSummary {
+    pub cid: String,
+    pub total_size: u64,
+    pub fragment_count: u32,
+    pub mime_type: String,
+}
+
+/// GossipSub topic for content availability announcements.
+pub const CONTENT_GOSSIP_TOPIC: &str = "shadowmesh/content/announcements";
+
+/// Message published via GossipSub when a node has new content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentAnnouncement {
+    pub cid: String,
+    pub peer_id: String,
+    pub total_size: u64,
+    pub fragment_count: u32,
+    pub mime_type: String,
+    pub timestamp: u64,
 }
 
 // ─── Codec ───────────────────────────────────────────────────────
@@ -176,6 +208,7 @@ mod tests {
                 content_hash: "def456".to_string(),
             },
             ContentRequest::Ping,
+            ContentRequest::ListContent { limit: 50 },
         ];
 
         for req in requests {
@@ -205,6 +238,14 @@ mod tests {
             ContentResponse::Error {
                 message: "oops".to_string(),
             },
+            ContentResponse::ContentList {
+                items: vec![ContentSummary {
+                    cid: "abc".to_string(),
+                    total_size: 1024,
+                    fragment_count: 2,
+                    mime_type: "text/html".to_string(),
+                }],
+            },
         ];
 
         for resp in responses {
@@ -212,5 +253,22 @@ mod tests {
             let decoded: ContentResponse = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(format!("{:?}", resp), format!("{:?}", decoded));
         }
+    }
+
+    #[test]
+    fn content_announcement_roundtrip() {
+        let ann = ContentAnnouncement {
+            cid: "xyz".to_string(),
+            peer_id: "12D3KooWTest".to_string(),
+            total_size: 2048,
+            fragment_count: 4,
+            mime_type: "application/octet-stream".to_string(),
+            timestamp: 1700000000,
+        };
+        let bytes = serde_json::to_vec(&ann).unwrap();
+        let decoded: ContentAnnouncement = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(ann.cid, decoded.cid);
+        assert_eq!(ann.peer_id, decoded.peer_id);
+        assert_eq!(ann.total_size, decoded.total_size);
     }
 }
