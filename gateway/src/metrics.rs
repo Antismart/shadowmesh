@@ -9,11 +9,13 @@ use prometheus::{
 };
 use std::time::Instant;
 
-/// Helper macro to create a metric and log on failure instead of panicking.
+/// Helper macro to create a metric, panicking on failure.
+/// Metric registration is a hard startup requirement — if it fails,
+/// the binary cannot serve correct metrics and must not start.
 macro_rules! create_metric {
     ($constructor:expr, $name:expr) => {
         $constructor.unwrap_or_else(|e| {
-            panic!("failed to create metric '{}': {}", $name, e)
+            panic!("fatal: failed to register metric '{}': {}", $name, e)
         })
     };
 }
