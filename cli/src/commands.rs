@@ -465,6 +465,54 @@ pub async fn replication(client: &NodeClient, json: bool) -> Result<()> {
     Ok(())
 }
 
+// ── Download ────────────────────────────────────────────────────
+
+pub async fn download(
+    client: &NodeClient,
+    cid: &str,
+    output: Option<&Path>,
+) -> Result<()> {
+    let (bytes, _content_type, _content_name) = client.download(cid).await?;
+
+    let out_path = match output {
+        Some(p) => p.to_path_buf(),
+        None => std::path::PathBuf::from(format!("{}.bin", truncate(cid, 32))),
+    };
+
+    tokio::fs::write(&out_path, &bytes).await?;
+    println!(
+        "Downloaded {} to {}",
+        format_bytes(bytes.len() as u64),
+        out_path.display()
+    );
+
+    Ok(())
+}
+
+// ── Ready ───────────────────────────────────────────────────────
+
+pub async fn ready(client: &NodeClient, json: bool) -> Result<()> {
+    let val = client.get_ready().await?;
+
+    if json {
+        print_json(&val);
+        return Ok(());
+    }
+
+    let healthy = val["healthy"].as_bool().unwrap_or(false);
+    let icon = if healthy { "OK" } else { "NOT READY" };
+
+    println!("Ready: {icon}");
+    if let Some(checks) = val["checks"].as_object() {
+        for (name, ok) in checks {
+            let mark = if ok.as_bool().unwrap_or(false) { "+" } else { "-" };
+            println!("  [{mark}] {name}");
+        }
+    }
+
+    Ok(())
+}
+
 // ── Shutdown ────────────────────────────────────────────────────────
 
 pub async fn shutdown(client: &NodeClient, json: bool) -> Result<()> {
