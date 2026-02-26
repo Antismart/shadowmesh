@@ -40,7 +40,6 @@ fn escape_js_attr(s: &str) -> String {
         .replace('&', "\\x26")
 }
 
-#[allow(dead_code)]
 pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
     let deployments = read_lock(&state.deployments);
     let mut grouped: BTreeMap<String, Vec<&Deployment>> = BTreeMap::new();
