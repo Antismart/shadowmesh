@@ -257,6 +257,9 @@ pub struct P2pConfig {
     pub resolve_timeout_seconds: u64,
     /// Announce gateway content to DHT
     pub announce_content: bool,
+    /// HTTP URLs of node-runners to query for content before IPFS
+    #[serde(default)]
+    pub node_runners: Vec<String>,
 }
 
 impl Default for P2pConfig {
@@ -268,6 +271,7 @@ impl Default for P2pConfig {
             enable_mdns: true,
             resolve_timeout_seconds: 15,
             announce_content: true,
+            node_runners: Vec::new(),
         }
     }
 }
@@ -391,6 +395,12 @@ impl Config {
             );
         } else {
             println!("   P2P: disabled");
+        }
+        if !self.p2p.node_runners.is_empty() {
+            println!(
+                "   Node Runners: {} configured",
+                self.p2p.node_runners.len()
+            );
         }
     }
 
