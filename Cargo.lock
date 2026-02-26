@@ -1608,6 +1608,7 @@ dependencies = [
  "lazy_static",
  "libp2p",
  "mime_guess",
+ "node-runner",
  "notify",
  "opentelemetry",
  "opentelemetry-otlp",
