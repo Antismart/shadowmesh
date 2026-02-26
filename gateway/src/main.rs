@@ -20,6 +20,7 @@ mod redis_client;
 mod p2p;
 mod p2p_commands;
 mod p2p_resolver;
+mod node_resolver;
 mod signaling;
 mod spa;
 mod telemetry;
@@ -1462,6 +1463,49 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
                 tracing::debug!(cid = %cid, error = %e,
                     "P2P resolution failed, falling back to IPFS");
             }
+        }
+    }
+
+    // Try configured node-runners via HTTP
+    if !state.config.p2p.node_runners.is_empty() {
+        let http = reqwest::Client::new();
+        let timeout = state.config.p2p.resolve_timeout_seconds;
+        if let Some(resolved) =
+            node_resolver::resolve_from_nodes(&http, &state.config.p2p.node_runners, &cid, timeout)
+                .await
+        {
+            let content_type = if resolved.mime_type.is_empty() {
+                content_type_from_path(&cid, &resolved.data)
+            } else {
+                resolved.mime_type
+            };
+            let data =
+                rewrite_html_assets(&resolved.data, &content_type, base_prefix.as_deref());
+
+            state
+                .cache
+                .set(cid.clone(), data.clone(), content_type.clone());
+            metrics::update_cache_size(state.cache.stats().total_entries as i64);
+
+            state.metrics.increment_success();
+            state.metrics.add_bytes(data.len() as u64);
+            metrics::record_bytes_served(data.len() as u64);
+
+            return (
+                [
+                    (axum::http::header::CONTENT_TYPE, content_type),
+                    (
+                        axum::http::header::HeaderName::from_static("x-cache"),
+                        "MISS".to_string(),
+                    ),
+                    (
+                        axum::http::header::HeaderName::from_static("x-source"),
+                        "NODE".to_string(),
+                    ),
+                ],
+                data,
+            )
+                .into_response();
         }
     }
 
