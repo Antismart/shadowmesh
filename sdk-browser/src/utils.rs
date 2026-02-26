@@ -57,13 +57,11 @@ mod hex {
 }
 
 /// Log to browser console
-#[allow(dead_code)]
 pub fn console_log(msg: &str) {
     web_sys::console::log_1(&JsValue::from_str(msg));
 }
 
 /// Log error to browser console
-#[allow(dead_code)]
 pub fn console_error(msg: &str) {
     web_sys::console::error_1(&JsValue::from_str(msg));
 }
