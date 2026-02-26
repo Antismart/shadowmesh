@@ -27,6 +27,7 @@ mod telemetry;
 mod upload;
 
 use axum::{
+    body::Body,
     extract::{Path, State},
     http::Uri,
     middleware as axum_middleware,
@@ -1470,42 +1471,78 @@ async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String
     if !state.config.p2p.node_runners.is_empty() {
         let http = reqwest::Client::new();
         let timeout = state.config.p2p.resolve_timeout_seconds;
-        if let Some(resolved) =
-            node_resolver::resolve_from_nodes(&http, &state.config.p2p.node_runners, &cid, timeout)
-                .await
+        if let Some(node_content) = node_resolver::resolve_from_nodes_adaptive(
+            &http,
+            &state.config.p2p.node_runners,
+            &cid,
+            timeout,
+        )
+        .await
         {
-            let content_type = if resolved.mime_type.is_empty() {
-                content_type_from_path(&cid, &resolved.data)
-            } else {
-                resolved.mime_type
-            };
-            let data =
-                rewrite_html_assets(&resolved.data, &content_type, base_prefix.as_deref());
+            match node_content {
+                node_resolver::NodeContent::Buffered(resolved) => {
+                    let content_type = if resolved.mime_type.is_empty() {
+                        content_type_from_path(&cid, &resolved.data)
+                    } else {
+                        resolved.mime_type
+                    };
+                    let data = rewrite_html_assets(
+                        &resolved.data,
+                        &content_type,
+                        base_prefix.as_deref(),
+                    );
 
-            state
-                .cache
-                .set(cid.clone(), data.clone(), content_type.clone());
-            metrics::update_cache_size(state.cache.stats().total_entries as i64);
+                    state
+                        .cache
+                        .set(cid.clone(), data.clone(), content_type.clone());
+                    metrics::update_cache_size(state.cache.stats().total_entries as i64);
 
-            state.metrics.increment_success();
-            state.metrics.add_bytes(data.len() as u64);
-            metrics::record_bytes_served(data.len() as u64);
+                    state.metrics.increment_success();
+                    state.metrics.add_bytes(data.len() as u64);
+                    metrics::record_bytes_served(data.len() as u64);
 
-            return (
-                [
-                    (axum::http::header::CONTENT_TYPE, content_type),
-                    (
-                        axum::http::header::HeaderName::from_static("x-cache"),
-                        "MISS".to_string(),
-                    ),
-                    (
-                        axum::http::header::HeaderName::from_static("x-source"),
-                        "NODE".to_string(),
-                    ),
-                ],
-                data,
-            )
-                .into_response();
+                    return (
+                        [
+                            (axum::http::header::CONTENT_TYPE, content_type),
+                            (
+                                axum::http::header::HeaderName::from_static("x-cache"),
+                                "MISS".to_string(),
+                            ),
+                            (
+                                axum::http::header::HeaderName::from_static("x-source"),
+                                "NODE".to_string(),
+                            ),
+                        ],
+                        data,
+                    )
+                        .into_response();
+                }
+                node_resolver::NodeContent::Streaming(streaming) => {
+                    let content_type = if streaming.mime_type.is_empty() {
+                        "application/octet-stream".to_string()
+                    } else {
+                        streaming.mime_type
+                    };
+
+                    state.metrics.increment_success();
+                    state.metrics.add_bytes(streaming.content_length);
+                    metrics::record_bytes_served(streaming.content_length);
+
+                    let body = Body::from_stream(streaming.stream);
+
+                    return axum::http::Response::builder()
+                        .header(axum::http::header::CONTENT_TYPE, &content_type)
+                        .header(
+                            axum::http::header::CONTENT_LENGTH,
+                            streaming.content_length.to_string(),
+                        )
+                        .header("x-cache", "MISS")
+                        .header("x-source", "NODE-STREAM")
+                        .body(body)
+                        .unwrap()
+                        .into_response();
+                }
+            }
         }
     }
 
