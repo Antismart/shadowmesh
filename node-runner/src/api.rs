@@ -565,7 +565,7 @@ async fn upload_content(
     // Record bandwidth
     state.metrics.record_received(total_size);
 
-    // Announce content availability to the DHT via P2P
+    // Announce content availability to the DHT and GossipSub via P2P
     if let Some(ref p2p) = state.p2p {
         let _ = p2p
             .command_tx
@@ -573,6 +573,16 @@ async fn upload_content(
                 content_hash: cid.clone(),
                 fragment_hashes: vec![cid.clone()],
                 total_size,
+                mime_type: mime_type.clone(),
+            })
+            .await;
+
+        let _ = p2p
+            .command_tx
+            .send(crate::p2p_commands::P2pCommand::BroadcastContentAnnouncement {
+                cid: cid.clone(),
+                total_size,
+                fragment_count: 1,
                 mime_type: mime_type.clone(),
             })
             .await;
