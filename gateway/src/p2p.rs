@@ -390,6 +390,8 @@ fn handle_content_request(
             }
         }
 
+        ContentRequest::ListContent { .. } => ContentResponse::ContentList { items: vec![] },
+
         ContentRequest::Ping => ContentResponse::Pong,
     };
 
