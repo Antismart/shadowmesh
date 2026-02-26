@@ -2,24 +2,44 @@
 //!
 //! Tries each configured node-runner URL in order until one returns
 //! the requested content. Used as a fallback between P2P and IPFS.
+//!
+//! Small content (<= 5 MB) is buffered for caching and HTML rewriting.
+//! Large content (> 5 MB) is streamed directly to avoid memory pressure.
 
+use bytes::Bytes;
+use futures::stream::Stream;
 use std::time::Duration;
+
+/// Content larger than this is streamed instead of buffered.
+const STREAM_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024;
 
 pub struct ResolvedContent {
     pub data: Vec<u8>,
     pub mime_type: String,
 }
 
-/// Try to resolve content from configured node-runner HTTP endpoints.
+pub struct StreamingResolvedContent {
+    pub stream: Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send + Unpin>,
+    pub mime_type: String,
+    pub content_length: u64,
+}
+
+/// Resolved content from a node-runner, either buffered or streaming.
+pub enum NodeContent {
+    Buffered(ResolvedContent),
+    Streaming(StreamingResolvedContent),
+}
+
+/// Adaptive resolver: buffers small content, streams large content.
 ///
-/// Iterates through `node_urls` sequentially, returning the first
-/// successful response. Returns `None` if no node-runner has the content.
-pub async fn resolve_from_nodes(
+/// Uses the `Content-Length` header from the node-runner response to
+/// decide whether to buffer or stream.
+pub async fn resolve_from_nodes_adaptive(
     http: &reqwest::Client,
     node_urls: &[String],
     cid: &str,
     timeout_secs: u64,
-) -> Option<ResolvedContent> {
+) -> Option<NodeContent> {
     for base_url in node_urls {
         let url = format!(
             "{}/api/storage/download/{}",
@@ -41,11 +61,25 @@ pub async fn resolve_from_nodes(
                     .unwrap_or("application/octet-stream")
                     .to_string();
 
-                if let Ok(data) = resp.bytes().await {
-                    return Some(ResolvedContent {
+                let content_length = resp
+                    .headers()
+                    .get("content-length")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0);
+
+                if content_length > STREAM_THRESHOLD_BYTES {
+                    let stream = resp.bytes_stream();
+                    return Some(NodeContent::Streaming(StreamingResolvedContent {
+                        stream: Box::new(stream),
+                        mime_type: mime,
+                        content_length,
+                    }));
+                } else if let Ok(data) = resp.bytes().await {
+                    return Some(NodeContent::Buffered(ResolvedContent {
                         data: data.to_vec(),
                         mime_type: mime,
-                    });
+                    }));
                 }
             }
             _ => continue,
