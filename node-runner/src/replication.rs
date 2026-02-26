@@ -92,13 +92,21 @@ impl std::error::Error for ReplicationError {}
 /// Run the background replication loop until shutdown.
 pub async fn run_replication_loop(
     config: ReplicationConfig,
-    _peer_id: String,
+    peer_id_str: String,
     p2p: Arc<P2pState>,
     storage: Arc<StorageManager>,
     metrics: Arc<MetricsCollector>,
     replication_state: Arc<ReplicationState>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
+    let self_peer_id: libp2p::PeerId = match peer_id_str.parse() {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(%e, "Invalid peer ID for replication loop; aborting");
+            return;
+        }
+    };
+
     tracing::info!(
         interval_secs = config.scan_interval_secs,
         max_concurrent = config.max_concurrent_replications,
@@ -116,6 +124,7 @@ pub async fn run_replication_loop(
             _ = interval.tick() => {
                 scan_and_replicate(
                     &config,
+                    self_peer_id,
                     &p2p,
                     &storage,
                     &metrics,
@@ -135,6 +144,7 @@ pub async fn run_replication_loop(
 /// Run one replication scan cycle (5 phases).
 async fn scan_and_replicate(
     config: &ReplicationConfig,
+    self_peer_id: libp2p::PeerId,
     p2p: &P2pState,
     storage: &StorageManager,
     metrics: &MetricsCollector,
@@ -182,9 +192,8 @@ async fn scan_and_replicate(
             mgr.register_content(content.cid.clone(), &manifest);
 
             // Mark self as a holder for every fragment we have locally
-            let self_peer: libp2p::PeerId = libp2p::PeerId::random();
             for frag in &content.fragments {
-                mgr.add_fragment_holder(&content.cid, frag, self_peer);
+                mgr.add_fragment_holder(&content.cid, frag, self_peer_id);
             }
         }
     }
@@ -201,19 +210,43 @@ async fn scan_and_replicate(
         }
     }
 
-    // Phase 4: Identify under-replicated content we don't already store
-    let targets: Vec<String> = {
-        let mgr = replication_state.manager.read().await;
-        mgr.get_under_replicated()
-            .iter()
-            .map(|s| s.cid.clone())
-            .filter(|cid| !local_content.iter().any(|c| c.cid == *cid))
-            .take(config.max_items_per_cycle)
-            .collect()
+    // Phase 4: Discover content from peers that we don't have locally.
+    // Sources: (a) GossipSub announcements, (b) peer content catalogs.
+    let local_cids: Vec<String> = local_content.iter().map(|c| c.cid.clone()).collect();
+
+    // 4a: Drain pending GossipSub content announcements
+    let gossip_cids: Vec<String> = {
+        let mut anns = p2p.content_announcements.write().await;
+        anns.drain(..).map(|a| a.cid).collect()
     };
 
+    // 4b: Query connected peers for their content catalogs
+    let mut peer_catalog_cids: Vec<String> = Vec::new();
+    {
+        let peers = p2p.peers.read().await;
+        let peer_ids: Vec<libp2p::PeerId> = peers.keys().cloned().collect();
+        drop(peers);
+
+        for peer_id in peer_ids.iter().take(5) {
+            match list_peer_content(&p2p.command_tx, *peer_id).await {
+                Ok(cids) => peer_catalog_cids.extend(cids),
+                Err(e) => {
+                    tracing::debug!(%peer_id, %e, "Failed to list content from peer");
+                }
+            }
+        }
+    }
+
+    // 4c: Select replication targets
+    let targets = select_replication_targets(
+        &local_cids,
+        &gossip_cids,
+        &peer_catalog_cids,
+        config.max_items_per_cycle,
+    );
+
     if targets.is_empty() {
-        tracing::debug!("No under-replicated content to pull");
+        tracing::debug!("No remote content to replicate");
         finish_scan(replication_state).await;
         return;
     }
@@ -352,6 +385,51 @@ async fn finish_scan(replication_state: &ReplicationState) {
     );
 }
 
+// ── Target selection (pure logic, testable) ─────────────────────
+
+/// Select replication targets from gossip announcements and peer catalogs,
+/// filtering out content we already have locally and deduplicating.
+fn select_replication_targets(
+    local_cids: &[String],
+    gossip_cids: &[String],
+    peer_catalog_cids: &[String],
+    max_items: usize,
+) -> Vec<String> {
+    let local_set: std::collections::HashSet<&String> = local_cids.iter().collect();
+    let mut targets: Vec<String> = Vec::new();
+
+    for cid in gossip_cids.iter().chain(peer_catalog_cids.iter()) {
+        if !local_set.contains(cid) && !targets.contains(cid) {
+            targets.push(cid.clone());
+        }
+        if targets.len() >= max_items {
+            break;
+        }
+    }
+    targets
+}
+
+/// Request a content catalog from a specific peer.
+async fn list_peer_content(
+    tx: &tokio::sync::mpsc::Sender<P2pCommand>,
+    peer_id: libp2p::PeerId,
+) -> Result<Vec<String>, ReplicationError> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.send(P2pCommand::ListPeerContent {
+        peer_id,
+        reply: reply_tx,
+    })
+    .await
+    .map_err(|_| ReplicationError::P2pChannelClosed)?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(15), reply_rx).await {
+        Ok(Ok(Ok(cids))) => Ok(cids),
+        Ok(Ok(Err(e))) => Err(ReplicationError::FetchFailed(e.to_string())),
+        Ok(Err(_)) => Err(ReplicationError::P2pChannelClosed),
+        Err(_) => Ok(Vec::new()), // timeout — treat as no content
+    }
+}
+
 // ── Content fetching ─────────────────────────────────────────────
 
 /// Fetch a single content item from the P2P network.
@@ -483,5 +561,62 @@ async fn fetch_fragment(
         Ok(Ok(Err(e))) => Err(ReplicationError::FetchFailed(e.to_string())),
         Ok(Err(_)) => Err(ReplicationError::P2pChannelClosed),
         Err(_) => Err(ReplicationError::FetchFailed("Fragment fetch timed out".to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_select_targets_filters_local() {
+        let local = vec!["cid_a".to_string(), "cid_b".to_string()];
+        let gossip = vec!["cid_a".to_string(), "cid_c".to_string()];
+        let peer = vec!["cid_b".to_string(), "cid_d".to_string()];
+
+        let targets = select_replication_targets(&local, &gossip, &peer, 10);
+
+        assert!(!targets.contains(&"cid_a".to_string()));
+        assert!(!targets.contains(&"cid_b".to_string()));
+        assert!(targets.contains(&"cid_c".to_string()));
+        assert!(targets.contains(&"cid_d".to_string()));
+    }
+
+    #[test]
+    fn test_select_targets_deduplicates() {
+        let local = vec![];
+        let gossip = vec!["cid_x".to_string(), "cid_y".to_string()];
+        let peer = vec!["cid_x".to_string(), "cid_z".to_string()];
+
+        let targets = select_replication_targets(&local, &gossip, &peer, 10);
+
+        let count_x = targets.iter().filter(|c| *c == "cid_x").count();
+        assert_eq!(count_x, 1);
+        assert_eq!(targets.len(), 3); // cid_x, cid_y, cid_z
+    }
+
+    #[test]
+    fn test_select_targets_respects_limit() {
+        let local = vec![];
+        let gossip: Vec<String> = (0..20).map(|i| format!("cid_{}", i)).collect();
+        let peer = vec![];
+
+        let targets = select_replication_targets(&local, &gossip, &peer, 5);
+
+        assert_eq!(targets.len(), 5);
+    }
+
+    #[test]
+    fn test_select_targets_empty_inputs() {
+        let targets = select_replication_targets(&[], &[], &[], 10);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn test_self_peer_id_stability() {
+        let peer_id = libp2p::PeerId::random();
+        let as_string = peer_id.to_string();
+        let parsed: libp2p::PeerId = as_string.parse().expect("PeerId roundtrip failed");
+        assert_eq!(peer_id, parsed);
     }
 }
