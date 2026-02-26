@@ -1,13 +1,11 @@
 //! ShadowMesh CLI — manage your node from the command line.
 
-mod client;
-mod commands;
-
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process;
 
-use client::NodeClient;
+use shadowmesh_cli::client::NodeClient;
+use shadowmesh_cli::commands;
 
 #[derive(Parser)]
 #[command(name = "shadowmesh-cli", about = "ShadowMesh node management CLI")]
@@ -115,6 +113,18 @@ enum Command {
     /// Show replication health
     Replication,
 
+    /// Download content to a file
+    Download {
+        /// Content ID (CID)
+        cid: String,
+        /// Output file path (defaults to CID-based name)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Check node readiness
+    Ready,
+
     /// Gracefully shutdown the node
     Shutdown,
 }
@@ -148,6 +158,10 @@ async fn main() {
         } => {
             commands::config_set(&client, name, max_peers, storage_gb, bandwidth_mbps, json).await
         }
+        Command::Download { cid, output } => {
+            commands::download(&client, &cid, output.as_deref()).await
+        }
+        Command::Ready => commands::ready(&client, json).await,
         Command::Bandwidth => commands::bandwidth(&client, json).await,
         Command::Replication => commands::replication(&client, json).await,
         Command::Shutdown => commands::shutdown(&client, json).await,
