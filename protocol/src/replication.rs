@@ -43,7 +43,6 @@ pub struct FragmentLocation {
 }
 
 /// Replication manager
-#[allow(dead_code)]
 pub struct ReplicationManager {
     /// Target replication factor
     replication_factor: usize,
@@ -52,7 +51,7 @@ pub struct ReplicationManager {
     /// Content -> Replication status
     replication_status: HashMap<String, ReplicationStatus>,
     /// Pending replication tasks
-    pending_tasks: Vec<ReplicationTask>,
+    _pending_tasks: Vec<ReplicationTask>,
     /// Local pinned content
     pinned_content: HashSet<String>,
 }
@@ -90,7 +89,7 @@ impl ReplicationManager {
             replication_factor: factor,
             content_fragments: HashMap::new(),
             replication_status: HashMap::new(),
-            pending_tasks: Vec::new(),
+            _pending_tasks: Vec::new(),
             pinned_content: HashSet::new(),
         }
     }
