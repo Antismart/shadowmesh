@@ -266,6 +266,31 @@ impl StorageManager {
         Ok(data)
     }
 
+    /// Return the on-disk path for a fragment without reading it into memory.
+    /// Updates access metadata. Used by the streaming download path.
+    pub async fn get_fragment_path(&self, hash: &str) -> Result<PathBuf, StorageError> {
+        {
+            let fragments = self.fragments.read().await;
+            if !fragments.contains_key(hash) {
+                return Err(StorageError::NotFound(hash.to_string()));
+            }
+        }
+
+        // Update access metadata
+        {
+            let mut fragments = self.fragments.write().await;
+            if let Some(frag) = fragments.get_mut(hash) {
+                frag.last_accessed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                frag.access_count += 1;
+            }
+        }
+
+        Ok(self.fragment_path(hash))
+    }
+
     /// Check if fragment exists
     pub async fn has_fragment(&self, hash: &str) -> bool {
         let fragments = self.fragments.read().await;
