@@ -9,7 +9,10 @@ use crate::client::NodeClient;
 // ── Helpers ─────────────────────────────────────────────────────────
 
 fn print_json(val: &Value) {
-    println!("{}", serde_json::to_string_pretty(val).unwrap());
+    match serde_json::to_string_pretty(val) {
+        Ok(s) => println!("{s}"),
+        Err(_) => println!("{val}"),
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -383,10 +386,9 @@ pub async fn config_set(
         body.insert("max_peers".to_string(), Value::Number(p.into()));
     }
     if let Some(s) = storage_gb {
-        body.insert(
-            "max_storage_gb".to_string(),
-            Value::Number(serde_json::Number::from_f64(s).unwrap()),
-        );
+        let num = serde_json::Number::from_f64(s)
+            .ok_or_else(|| anyhow::anyhow!("Invalid storage value: {s} (must be a finite number)"))?;
+        body.insert("max_storage_gb".to_string(), Value::Number(num));
     }
     if let Some(b) = bandwidth_mbps {
         body.insert("max_bandwidth_mbps".to_string(), Value::Number(b.into()));
