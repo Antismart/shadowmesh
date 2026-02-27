@@ -584,7 +584,12 @@ fn handle_kademlia_get_record(
         }
         Ok(kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. }) => {}
         Err(e) => {
-            tracing::debug!(?e, "DHT GetRecord failed");
+            let error_kind = match &e {
+                kad::GetRecordError::NotFound { .. } => "not_found",
+                kad::GetRecordError::QuorumFailed { .. } => "quorum_failed",
+                kad::GetRecordError::Timeout { .. } => "timeout",
+            };
+            tracing::debug!(kind = error_kind, ?e, "DHT GetRecord failed");
             let key_bytes = match &e {
                 kad::GetRecordError::NotFound { key, .. } => Some(key.as_ref().to_vec()),
                 kad::GetRecordError::QuorumFailed { key, .. } => Some(key.as_ref().to_vec()),
