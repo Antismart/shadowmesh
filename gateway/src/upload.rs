@@ -176,7 +176,7 @@ pub async fn upload_multipart(State(state): State<AppState>, mut multipart: Mult
 
         match result {
             Ok(Ok(cid)) => {
-                let port = state.config.server.port;
+                let port = state.config.read().await.server.port;
                 let size = data.len();
                 audit::log_file_upload(
                     &state.audit_logger,
@@ -320,7 +320,7 @@ pub async fn upload_json(
 
     match result {
         Ok(Ok(cid)) => {
-            let port = state.config.server.port;
+            let port = state.config.read().await.server.port;
             Json(UploadResponse {
                 success: true,
                 gateway_url: format!("http://localhost:{}/{}", port, cid),
@@ -413,7 +413,7 @@ pub async fn upload_raw(
 
     match result {
         Ok(Ok(cid)) => {
-            let port = state.config.server.port;
+            let port = state.config.read().await.server.port;
             Json(UploadResponse {
                 success: true,
                 gateway_url: format!("http://localhost:{}/{}", port, cid),
@@ -554,7 +554,7 @@ pub async fn upload_batch(
 
         match result {
             Ok(Ok(cid)) => {
-                let port = state.config.server.port;
+                let port = state.config.read().await.server.port;
                 uploaded.push(UploadResponse {
                     success: true,
                     gateway_url: format!("http://localhost:{}/{}", port, cid),
