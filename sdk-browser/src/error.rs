@@ -67,4 +67,5 @@ pub mod codes {
     pub const TIMEOUT: &str = "TIMEOUT";
     pub const INVALID_CONFIG: &str = "INVALID_CONFIG";
     pub const NOT_CONNECTED: &str = "NOT_CONNECTED";
+    pub const INTEGRITY_ERROR: &str = "INTEGRITY_ERROR";
 }
