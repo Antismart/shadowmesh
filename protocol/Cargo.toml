@@ -21,6 +21,8 @@ libp2p = { workspace = true, features = [
     "mdns",
     # Request-response for P2P content serving
     "request-response",
+    # Rendezvous for namespace-based peer discovery
+    "rendezvous",
 ] }
 async-trait = "0.1"
 # WebRTC transport (alpha - separate crate)
@@ -39,6 +41,8 @@ bincode = "1.3"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 zeroize = "1.7"
 hex = "0.4"
+# DNS TXT record resolution for bootstrap seed discovery
+hickory-resolver = "0.25"
 
 [dev-dependencies]
 tempfile = { workspace = true }
