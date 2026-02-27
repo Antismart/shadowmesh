@@ -198,15 +198,9 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let result = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current()
-                .block_on(async { storage.store_directory(&temp_path).await })
-        })
-        .await;
-
-        match result {
-            Ok(Ok(upload_result)) => {
-                let port = deploy_cfg.server.port;
+        match storage.store_directory(&temp_path).await {
+            Ok(upload_result) => {
+                let base_url = deploy_cfg.server.base_url();
                 let cid = upload_result.root_cid.clone();
 
                 // Strip the temp directory prefix from file paths
@@ -266,7 +260,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
 
                 return Json(DeployResponse {
                     success: true,
-                    url: format!("http://localhost:{}/{}", port, cid),
+                    url: format!("{}/{}", base_url, cid),
                     ipfs_url: format!("https://ipfs.io/ipfs/{}", cid),
                     shadow_url: format!("shadow://{}", cid),
                     cid,
@@ -276,7 +270,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                 })
                 .into_response();
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 metrics::record_deployment(false);
                 audit::log_deploy_failure(
                     &state.audit_logger,
@@ -291,25 +285,6 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                     Json(DeployError::new(
                         format!("Failed to deploy: {}", e),
                         "DEPLOY_ERROR",
-                    )),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                metrics::record_deployment(false);
-                audit::log_deploy_failure(
-                    &state.audit_logger,
-                    "api",
-                    &format!("Internal error: {}", e),
-                    None,
-                    None,
-                )
-                .await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(DeployError::new(
-                        format!("Internal error: {}", e),
-                        "INTERNAL_ERROR",
                     )),
                 )
                     .into_response();
