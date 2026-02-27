@@ -65,8 +65,13 @@ sample_rate = 1.0
 enabled = false
 # TCP port for P2P connections
 tcp_port = 4001
-# Bootstrap peer multiaddrs (empty = rely on mDNS for LAN discovery)
+# Bootstrap peer multiaddrs (empty = rely on compiled-in defaults + mDNS)
+# Example: bootstrap_peers = ["/ip4/1.2.3.4/tcp/4001/p2p/12D3KooW..."]
 bootstrap_peers = []
+# DNS seed domains for bootstrap discovery (TXT records containing multiaddrs)
+# dns_seeds = ["_bootstrap.shadowmesh.example.com"]
+# Rendezvous peer multiaddrs for namespace-based discovery
+# rendezvous_peers = ["/ip4/1.2.3.4/tcp/4001/p2p/12D3KooW..."]
 # Enable mDNS for automatic LAN peer discovery
 enable_mdns = true
 # Timeout for P2P content resolution (seconds)
