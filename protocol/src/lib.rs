@@ -115,6 +115,7 @@ pub use naming::{
 
 // Re-export bootstrap types
 pub use bootstrap::{
-    all_stun_servers, get_bootstrap_nodes, is_valid_bootstrap_multiaddr,
+    all_stun_servers, get_bootstrap_nodes, get_bootstrap_nodes_merged, resolve_dns_seeds,
+    is_valid_bootstrap_multiaddr, DEFAULT_BOOTSTRAP_NODES, RENDEZVOUS_NAMESPACE,
     BOOTSTRAP_GOSSIP_TOPIC, FALLBACK_STUN_SERVERS, PUBLIC_STUN_SERVERS,
 };
