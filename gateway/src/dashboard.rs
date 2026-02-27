@@ -869,10 +869,11 @@ pub async fn github_login(State(state): State<AppState>) -> impl IntoResponse {
         }
     };
 
+    let server_port = state.config.read().await.server.port;
     let redirect_uri = std::env::var("GITHUB_REDIRECT_URL").unwrap_or_else(|_| {
         format!(
             "http://localhost:{}/api/github/callback",
-            state.config.server.port
+            server_port
         )
     });
 
@@ -922,10 +923,11 @@ pub async fn github_callback(
         }
     };
 
+    let server_port = state.config.read().await.server.port;
     let redirect_uri = std::env::var("GITHUB_REDIRECT_URL").unwrap_or_else(|_| {
         format!(
             "http://localhost:{}/api/github/callback",
-            state.config.server.port
+            server_port
         )
     });
 
@@ -1336,7 +1338,7 @@ async fn deploy_github_project(
     );
 
     // Auto-assign .shadow domain
-    deployment.domain = crate::auto_assign_domain(state, &repo_info.repo, &cid);
+    deployment.domain = crate::auto_assign_domain(state, &repo_info.repo, &cid).await;
 
     // Save to Redis if available
     if let Some(ref redis) = state.redis {
