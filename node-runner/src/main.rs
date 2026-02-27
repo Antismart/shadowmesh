@@ -95,6 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (peer_id, None)
             } else {
                 // Dial configured bootstrap peers
+                let mut bootstrap_failures = 0usize;
+                let bootstrap_total = config.network.bootstrap_nodes.len();
                 for addr_str in &config.network.bootstrap_nodes {
                     match addr_str.parse::<libp2p::Multiaddr>() {
                         Ok(addr) => {
@@ -112,6 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     tracing::info!("Dialing bootstrap peer: {}", addr_str)
                                 }
                                 Err(e) => {
+                                    bootstrap_failures += 1;
                                     tracing::warn!(
                                         "Failed to dial bootstrap {}: {}",
                                         addr_str,
@@ -121,6 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         Err(e) => {
+                            bootstrap_failures += 1;
                             tracing::warn!(
                                 "Invalid bootstrap multiaddr '{}': {}",
                                 addr_str,
@@ -129,10 +133,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-                if !config.network.bootstrap_nodes.is_empty() {
+                if bootstrap_total > 0 && bootstrap_failures == bootstrap_total {
+                    tracing::warn!(
+                        "All {} bootstrap peers failed to dial — node may be isolated",
+                        bootstrap_total
+                    );
+                } else if bootstrap_total > 0 {
                     println!(
                         "✅ Dialing {} bootstrap peer(s)",
-                        config.network.bootstrap_nodes.len()
+                        bootstrap_total
                     );
                 }
 

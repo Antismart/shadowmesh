@@ -202,6 +202,8 @@ async fn main() {
                     None
                 } else {
                     // Dial bootstrap peers and seed Kademlia routing table
+                    let mut bootstrap_failures = 0usize;
+                    let bootstrap_total = config.p2p.bootstrap_peers.len();
                     for addr_str in &config.p2p.bootstrap_peers {
                         match addr_str.parse::<libp2p::Multiaddr>() {
                             Ok(addr) => {
@@ -221,6 +223,7 @@ async fn main() {
                                         )
                                     }
                                     Err(e) => {
+                                        bootstrap_failures += 1;
                                         tracing::warn!(
                                             "Failed to dial bootstrap {}: {}",
                                             addr_str,
@@ -230,6 +233,7 @@ async fn main() {
                                 }
                             }
                             Err(e) => {
+                                bootstrap_failures += 1;
                                 tracing::warn!(
                                     "Invalid bootstrap multiaddr '{}': {}",
                                     addr_str,
@@ -237,6 +241,12 @@ async fn main() {
                                 );
                             }
                         }
+                    }
+                    if bootstrap_total > 0 && bootstrap_failures == bootstrap_total {
+                        tracing::warn!(
+                            "All {} bootstrap peers failed to dial — node may be isolated",
+                            bootstrap_total
+                        );
                     }
 
                     let (command_tx, command_rx) =
