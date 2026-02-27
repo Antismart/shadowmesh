@@ -291,6 +291,8 @@ async fn main() {
         None
     };
 
+    let http_client = reqwest::Client::new();
+
     let state = AppState {
         storage,
         cache,
@@ -307,6 +309,7 @@ async fn main() {
         naming_key,
         p2p: p2p_state,
         node_health_tracker: node_health_tracker.clone(),
+        http_client,
     };
 
     // Clone audit logger before state is moved into the router

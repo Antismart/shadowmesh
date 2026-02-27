@@ -85,6 +85,7 @@ fn gateway_app(node_runner_url: &str) -> Router {
         naming_key: Arc::new(libp2p::identity::Keypair::generate_ed25519()),
         p2p: None,
         node_health_tracker: None,
+        http_client: reqwest::Client::new(),
     };
 
     gateway::content_router(state)
@@ -188,6 +189,7 @@ async fn test_e2e_cache_hit() {
         naming_key: Arc::new(libp2p::identity::Keypair::generate_ed25519()),
         p2p: None,
         node_health_tracker: None,
+        http_client: reqwest::Client::new(),
     };
 
     let app1 = gateway::content_router(state.clone());
@@ -351,6 +353,7 @@ async fn test_e2e_failover_to_second_node() {
         naming_key: Arc::new(libp2p::identity::Keypair::generate_ed25519()),
         p2p: None,
         node_health_tracker: None,
+        http_client: reqwest::Client::new(),
     };
 
     let app = gateway::content_router(state);
