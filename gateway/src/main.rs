@@ -407,10 +407,12 @@ async fn main() {
             burst_size: config.rate_limit.burst_size,
             window: std::time::Duration::from_secs(1),
         };
-        Some(distributed_rate_limit::DistributedRateLimiter::new(
+        let limiter = distributed_rate_limit::DistributedRateLimiter::new(
             state.redis.clone(),
             rate_config,
-        ))
+        );
+        limiter.start_cleanup_task();
+        Some(limiter)
     } else {
         None
     };
