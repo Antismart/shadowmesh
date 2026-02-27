@@ -83,7 +83,7 @@ impl IpfsHttpClient {
         // query parameter injection into the IPFS API URL.
         if cid.is_empty()
             || cid.len() > 512
-            || !cid.chars().all(|c| c.is_ascii_alphanumeric())
+            || !cid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return Err(format!("Invalid CID format: '{}'", &cid[..cid.len().min(32)]).into());
         }
