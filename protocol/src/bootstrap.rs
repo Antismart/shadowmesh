@@ -33,9 +33,9 @@ pub fn get_bootstrap_nodes() -> Vec<String> {
         if !nodes.is_empty() {
             for node in &nodes {
                 if !is_valid_bootstrap_multiaddr(node) {
-                    eprintln!(
-                        "WARNING: Bootstrap node '{}' is not a valid IP-based multiaddr",
-                        node
+                    tracing::warn!(
+                        node = %node,
+                        "Bootstrap node is not a valid IP-based multiaddr"
                     );
                 }
             }
