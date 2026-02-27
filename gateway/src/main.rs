@@ -201,10 +201,17 @@ async fn main() {
                     eprintln!("  Failed to bind P2P addresses: {}", e);
                     None
                 } else {
-                    // Dial bootstrap peers and seed Kademlia routing table
+                    // Resolve DNS seeds and merge with config bootstrap peers
+                    let dns_peers = protocol::resolve_dns_seeds(&config.p2p.dns_seeds).await;
+                    let mut all_bootstrap = protocol::get_bootstrap_nodes_merged(&config.p2p.bootstrap_peers);
+                    for peer in dns_peers {
+                        if !all_bootstrap.contains(&peer) {
+                            all_bootstrap.push(peer);
+                        }
+                    }
                     let mut bootstrap_failures = 0usize;
-                    let bootstrap_total = config.p2p.bootstrap_peers.len();
-                    for addr_str in &config.p2p.bootstrap_peers {
+                    let bootstrap_total = all_bootstrap.len();
+                    for addr_str in &all_bootstrap {
                         match addr_str.parse::<libp2p::Multiaddr>() {
                             Ok(addr) => {
                                 if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) =
@@ -249,6 +256,36 @@ async fn main() {
                         );
                     }
 
+                    // Parse rendezvous peer multiaddrs into PeerIds
+                    let rendezvous_peer_ids: std::collections::HashSet<libp2p::PeerId> = config
+                        .p2p
+                        .rendezvous_peers
+                        .iter()
+                        .filter_map(|addr_str| {
+                            let addr: libp2p::Multiaddr = addr_str.parse().ok()?;
+                            if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) =
+                                addr.iter().last()
+                            {
+                                // Also dial the rendezvous peer
+                                node.swarm_mut()
+                                    .behaviour_mut()
+                                    .kademlia
+                                    .add_address(&peer_id, addr.clone());
+                                let _ = node.dial(addr);
+                                Some(peer_id)
+                            } else {
+                                tracing::warn!("Rendezvous peer missing /p2p/<id>: {}", addr_str);
+                                None
+                            }
+                        })
+                        .collect();
+                    if !rendezvous_peer_ids.is_empty() {
+                        println!(
+                            "✓ Dialing {} rendezvous peer(s)",
+                            rendezvous_peer_ids.len()
+                        );
+                    }
+
                     let (command_tx, command_rx) =
                         tokio::sync::mpsc::channel::<p2p_commands::P2pCommand>(256);
 
@@ -266,6 +303,7 @@ async fn main() {
                             loop_naming,
                             command_rx,
                             shutdown_rx,
+                            rendezvous_peer_ids,
                         )
                         .await;
                     });
