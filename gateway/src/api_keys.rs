@@ -205,10 +205,12 @@ impl ApiKeyManager {
         }
     }
 
-    /// Verify an admin key
+    /// Verify an admin key (constant-time comparison of hashed values)
     pub fn verify_admin(&self, key: &str) -> bool {
+        use subtle::ConstantTimeEq;
         if let Some(ref admin_hash) = self.admin_key_hash {
-            hash_key(key) == *admin_hash
+            let input_hash = hash_key(key);
+            input_hash.as_bytes().ct_eq(admin_hash.as_bytes()).into()
         } else {
             false
         }
