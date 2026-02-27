@@ -162,6 +162,8 @@ smesh gc --target-gb 2.0   # Free up space down to 2 GB
 
 ### Change Settings On the Fly
 
+Settings updated via the CLI take effect immediately without restarting the node:
+
 ```bash
 smesh config                          # See current config
 smesh config-set --name "NewName"     # Change your node name
@@ -175,13 +177,15 @@ smesh config-set --bandwidth-mbps 50  # Cap bandwidth at 50 Mbps
 ```bash
 smesh replication     # How well content is replicated
 smesh ready           # Is the node fully connected to the mesh
-smesh fetch <cid>     # Pull content from remote peers
+smesh fetch <cid>     # Pull content from remote peers via P2P
 smesh shutdown        # Graceful stop
 
 # JSON output for scripting
 smesh status --json
 smesh list --json
 ```
+
+The `fetch` command resolves content through the P2P network: it looks up providers via the DHT, fetches the manifest from the first available peer, then retrieves all fragments and verifies each one with BLAKE3. If a peer fails mid-transfer, it tries the next provider.
 
 ---
 
@@ -228,7 +232,15 @@ bootstrap_nodes = [
 ]
 ```
 
+Or set it via environment variable (useful for Docker / CI):
+
+```bash
+export SHADOWMESH_BOOTSTRAP_NODES="/ip4/203.0.113.10/tcp/4001/p2p/12D3KooWGPAjDTsHkY39..."
+```
+
 Restart your node. You'll connect to that peer and through them discover everyone else on the network.
+
+**Important:** Each bootstrap address must include the `/p2p/<peer-id>` suffix. The node adds the peer to its Kademlia routing table before dialing, so DHT lookups work immediately. Malformed addresses are logged as warnings and skipped.
 
 ### Testing the Connection
 
@@ -353,7 +365,9 @@ cargo build --release -p gateway
 RUST_LOG=info ./target/release/gateway
 ```
 
-The gateway connects to the same P2P mesh as the nodes and serves content over HTTP on port 8081. It caches content, rate-limits requests, and provides a dashboard at `/dashboard`.
+The gateway connects to the same P2P mesh as the nodes and serves content over HTTP on port 8081. It resolves content through a fallback chain: local cache, then P2P network (DHT), then configured node-runners via HTTP, then IPFS. It caches content, rate-limits requests, and provides a dashboard at `/dashboard`.
+
+The gateway also supports configuration hot-reload -- edit `gateway/config.toml` and changes take effect automatically without a restart. You can also send `SIGHUP` or call `POST /api/admin/reload`.
 
 This is optional. The network works fine without it.
 
