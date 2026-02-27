@@ -24,12 +24,14 @@ async fn main() {
 
     // Load configuration first (needed for telemetry)
     let config = match config::Config::load() {
-        Ok(c) => Arc::new(c),
+        Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to load configuration: {}", e);
-            Arc::new(config::Config::default())
+            config::Config::default()
         }
     };
+    // Wrap in RwLock for hot-reload support
+    let config_lock = Arc::new(tokio::sync::RwLock::new(config.clone()));
 
     // Initialize telemetry (replaces init_logging)
     if let Err(e) = telemetry::init_telemetry(&config.telemetry) {
@@ -292,7 +294,7 @@ async fn main() {
     let state = AppState {
         storage,
         cache,
-        config: config.clone(),
+        config: config_lock.clone(),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
         deployments: Arc::new(RwLock::new(initial_deployments)),
@@ -373,6 +375,17 @@ async fn main() {
         println!("✓ Node health probes started (interval: {}s)", interval_secs);
     }
 
+    // Start config hot-reload task (watches config file + SIGHUP)
+    {
+        let reload_config = config_lock.clone();
+        let config_paths = vec!["config.toml".to_string(), "gateway/config.toml".to_string()];
+        tokio::spawn(config_watcher::start_config_reload_task(
+            reload_config,
+            config_paths,
+        ));
+        println!("✓ Config hot-reload enabled (file watch + SIGHUP)");
+    }
+
     // Create rate limiter (distributed when Redis available)
     let rate_limiter = if config.rate_limit.enabled {
         let rate_config = rate_limit::RateLimitConfig {
@@ -429,6 +442,8 @@ async fn main() {
         .route("/api/names/:name", delete(name_delete_handler))
         .route("/api/names/:name/assign", post(name_assign_handler))
         .route("/api/services/:service_type", get(service_discovery_handler))
+        // Admin endpoints
+        .route("/api/admin/reload", post(config_watcher::handler::reload_config_handler))
         // Content retrieval (CID paths only — SPA routes handled by fallback)
         .route("/:cid", get(content_or_spa_handler))
         .route("/:name/*path", get(shadow_or_content_subpath_handler))
@@ -604,7 +619,7 @@ async fn content_or_spa_handler(
     uri: Uri,
 ) -> Response {
     // Check for .shadow domain resolution
-    if cid.ends_with(".shadow") && state.config.naming.enabled {
+    if cid.ends_with(".shadow") && state.config.read().await.naming.enabled {
         return resolve_shadow_name_and_serve(&state, &cid, "").await;
     }
 
@@ -628,7 +643,7 @@ async fn shadow_or_content_subpath_handler(
     Path((name, path)): Path<(String, String)>,
     uri: Uri,
 ) -> Response {
-    if name.ends_with(".shadow") && state.config.naming.enabled {
+    if name.ends_with(".shadow") && state.config.read().await.naming.enabled {
         return resolve_shadow_name_and_serve(&state, &name, &path).await;
     }
 
@@ -675,7 +690,7 @@ async fn name_resolve_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Json<NameResolveResponse> {
-    if !state.config.naming.enabled {
+    if !state.config.read().await.naming.enabled {
         return Json(NameResolveResponse {
             found: false,
             record: None,
@@ -712,7 +727,7 @@ async fn name_register_handler(
     State(state): State<AppState>,
     Json(body): Json<NameRegisterRequest>,
 ) -> Response {
-    if !state.config.naming.enabled {
+    if !state.config.read().await.naming.enabled {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"error": "Naming service disabled"})),
@@ -792,7 +807,7 @@ struct NameAssignRequest {
 async fn name_list_handler(
     State(state): State<AppState>,
 ) -> Json<serde_json::Value> {
-    if !state.config.naming.enabled {
+    if !state.config.read().await.naming.enabled {
         return Json(serde_json::json!([]));
     }
 
@@ -812,7 +827,7 @@ async fn name_assign_handler(
     Path(name): Path<String>,
     Json(body): Json<NameAssignRequest>,
 ) -> Response {
-    if !state.config.naming.enabled {
+    if !state.config.read().await.naming.enabled {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"error": "Naming service disabled"})),
@@ -904,7 +919,7 @@ async fn name_delete_handler(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Response {
-    if !state.config.naming.enabled {
+    if !state.config.read().await.naming.enabled {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"error": "Naming service disabled"})),
@@ -983,7 +998,7 @@ async fn resolve_name_from_dht(
         .await
         .ok()?;
 
-    let timeout_secs = state.config.p2p.resolve_timeout_seconds;
+    let timeout_secs = state.config.read().await.p2p.resolve_timeout_seconds;
     let data = tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
         reply_rx,
@@ -1104,7 +1119,7 @@ async fn service_discovery_handler(
     State(state): State<AppState>,
     Path(service_type): Path<String>,
 ) -> Json<serde_json::Value> {
-    if !state.config.naming.enabled {
+    if !state.config.read().await.naming.enabled {
         return Json(serde_json::json!({"entries": []}));
     }
 
@@ -1234,6 +1249,7 @@ struct ConfigMetrics {
 async fn metrics_handler(State(state): State<AppState>) -> Json<MetricsResponse> {
     let uptime = state.start_time.elapsed().as_secs();
     let cache_stats = state.cache.stats();
+    let cfg = state.config.read().await;
 
     Json(MetricsResponse {
         uptime_seconds: uptime,
@@ -1247,10 +1263,10 @@ async fn metrics_handler(State(state): State<AppState>) -> Json<MetricsResponse>
             max_entries: cache_stats.max_entries,
         },
         config: ConfigMetrics {
-            cache_max_size_mb: state.config.cache.max_size_mb,
-            cache_ttl_seconds: state.config.cache.ttl_seconds,
-            rate_limit_enabled: state.config.rate_limit.enabled,
-            rate_limit_rps: state.config.rate_limit.requests_per_second,
+            cache_max_size_mb: cfg.cache.max_size_mb,
+            cache_ttl_seconds: cfg.cache.ttl_seconds,
+            rate_limit_enabled: cfg.rate_limit.enabled,
+            rate_limit_rps: cfg.rate_limit.requests_per_second,
             ipfs_connected: state.storage.is_some(),
         },
     })
