@@ -165,12 +165,19 @@ struct AuthError {
     code: String,
 }
 
-/// Extract Bearer token from Authorization header
-fn extract_bearer_token(req: &Request<Body>) -> Option<String> {
+/// Extract Bearer token from Authorization header (case-insensitive per RFC 7235).
+pub fn extract_bearer_token(req: &Request<Body>) -> Option<String> {
     req.headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer ").map(|s| s.to_string()))
+        .and_then(|value| {
+            // RFC 7235: auth-scheme is case-insensitive
+            if value.len() > 7 && value[..7].eq_ignore_ascii_case("bearer ") {
+                Some(value[7..].trim_start().to_string())
+            } else {
+                None
+            }
+        })
 }
 
 /// API Key authentication middleware
