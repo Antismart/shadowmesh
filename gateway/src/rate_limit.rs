@@ -195,8 +195,13 @@ impl RateLimiter {
 
         // Determine which limit to apply
         let (identifier, limit_type, max_requests) = if let Some(ref key) = api_key {
-            // Use a hash of the key to avoid storing actual keys
-            let key_hash = format!("key:{}", &key[..key.len().min(8)]);
+            // Use a hash of the full key to avoid storing actual keys
+            let key_hash = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                key.hash(&mut h);
+                format!("key:{:016x}", h.finish())
+            };
             (key_hash, "api_key", self.config.key_requests_per_second)
         } else {
             (
