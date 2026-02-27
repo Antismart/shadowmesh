@@ -130,6 +130,17 @@ pub fn content_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Build a Router with upload endpoints for integration tests.
+pub fn upload_router(state: AppState) -> Router {
+    use axum::routing::post;
+    Router::new()
+        .route("/api/upload", post(upload::upload_multipart))
+        .route("/api/upload/json", post(upload::upload_json))
+        .route("/api/upload/raw", post(upload::upload_raw))
+        .route("/api/upload/batch", post(upload::upload_batch))
+        .with_state(state)
+}
+
 // Handler for /ipfs/{*path} - handles /ipfs/cid and /ipfs/cid/path
 pub async fn ipfs_content_path_handler(
     State(state): State<AppState>,
