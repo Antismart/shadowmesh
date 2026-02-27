@@ -8,7 +8,9 @@ use crate::naming::{NamingManager, NAMING_GOSSIP_TOPIC};
 use crate::transport::TransportConfig;
 use crate::content_protocol::{ContentCodec, CONTENT_PROTOCOL};
 use libp2p::{
+    autonat,
     core::{muxing::StreamMuxerBox, transport::OrTransport, upgrade},
+    dcutr,
     gossipsub::{
         Behaviour as Gossipsub, Config as GossipsubConfig, IdentTopic, MessageAuthenticity,
     },
@@ -21,7 +23,7 @@ use libp2p::{
     relay,
     request_response::{self, ProtocolSupport},
     swarm::NetworkBehaviour,
-    tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
+    tcp, upnp, yamux, Multiaddr, PeerId, Swarm, Transport,
 };
 use libp2p_webrtc as webrtc;
 use std::error::Error;
@@ -55,6 +57,12 @@ pub struct ShadowBehaviour {
     pub relay_client: relay::client::Behaviour,
     /// Rendezvous client for namespace-based peer discovery
     pub rendezvous_client: rendezvous::client::Behaviour,
+    /// AutoNAT for external address reachability probing
+    pub autonat: autonat::Behaviour,
+    /// DCUtR for direct connection upgrade through relay (NAT hole punching)
+    pub dcutr: dcutr::Behaviour,
+    /// UPnP for automatic port forwarding on supported routers
+    pub upnp: upnp::tokio::Behaviour,
 }
 
 /// Error types for ShadowNode operations
@@ -149,6 +157,15 @@ impl ShadowNode {
         // Set up Rendezvous client for namespace-based peer discovery
         let rendezvous_client = rendezvous::client::Behaviour::new(keypair.clone());
 
+        // Set up AutoNAT for external address reachability probing
+        let autonat_behaviour = autonat::Behaviour::new(peer_id, autonat::Config::default());
+
+        // Set up DCUtR for direct connection upgrade through relay (NAT hole punching)
+        let dcutr_behaviour = dcutr::Behaviour::new(peer_id);
+
+        // Set up UPnP for automatic port forwarding on supported routers
+        let upnp_behaviour = upnp::tokio::Behaviour::default();
+
         // Create behaviour and swarm
         let behaviour = ShadowBehaviour {
             kademlia,
@@ -159,6 +176,9 @@ impl ShadowNode {
             relay_server,
             relay_client,
             rendezvous_client,
+            autonat: autonat_behaviour,
+            dcutr: dcutr_behaviour,
+            upnp: upnp_behaviour,
         };
 
         let swarm = Swarm::new(
