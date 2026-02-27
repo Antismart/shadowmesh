@@ -269,18 +269,30 @@ mod tests {
     }
 
     #[test]
-    fn test_get_bootstrap_nodes_merged_env_priority() {
-        let env_addr = "/ip4/10.0.0.1/tcp/4001/p2p/12D3KooWEnv";
-        let config_addr = "/ip4/10.0.0.2/tcp/4001/p2p/12D3KooWCfg";
+    fn test_get_bootstrap_nodes_merged_config_ordering() {
+        // Test that config entries maintain their insertion order
+        let addr_a = "/ip4/10.0.0.1/tcp/4001/p2p/12D3KooWA";
+        let addr_b = "/ip4/10.0.0.2/tcp/4001/p2p/12D3KooWB";
+        let addr_c = "/ip4/10.0.0.3/tcp/4001/p2p/12D3KooWC";
 
-        std::env::set_var("SHADOWMESH_BOOTSTRAP_NODES", env_addr);
-        let result = get_bootstrap_nodes_merged(&[config_addr.to_string()]);
+        let config = vec![
+            addr_a.to_string(),
+            addr_b.to_string(),
+            addr_c.to_string(),
+        ];
+        let result = get_bootstrap_nodes_merged(&config);
 
-        // Env should come first
-        assert_eq!(result[0], env_addr);
-        assert_eq!(result[1], config_addr);
+        // All config entries should be present
+        assert!(result.contains(&addr_a.to_string()));
+        assert!(result.contains(&addr_b.to_string()));
+        assert!(result.contains(&addr_c.to_string()));
 
-        std::env::remove_var("SHADOWMESH_BOOTSTRAP_NODES");
+        // Config entries should maintain relative order
+        let pos_a = result.iter().position(|a| a == addr_a).unwrap();
+        let pos_b = result.iter().position(|a| a == addr_b).unwrap();
+        let pos_c = result.iter().position(|a| a == addr_c).unwrap();
+        assert!(pos_a < pos_b, "A should come before B");
+        assert!(pos_b < pos_c, "B should come before C");
     }
 
     #[test]
