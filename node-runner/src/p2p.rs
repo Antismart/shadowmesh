@@ -67,6 +67,17 @@ enum PendingReply {
     },
 }
 
+impl PendingReply {
+    /// Returns true if the receiver has been dropped (caller no longer waiting).
+    fn is_closed(&self) -> bool {
+        match self {
+            PendingReply::Fragment { reply, .. } => reply.is_closed(),
+            PendingReply::Manifest { reply } => reply.is_closed(),
+            PendingReply::ContentList { reply } => reply.is_closed(),
+        }
+    }
+}
+
 /// Run the P2P swarm event loop.
 ///
 /// Takes ownership of the `ShadowNode` and processes swarm events until
@@ -89,6 +100,9 @@ pub async fn run_event_loop(
     let mut pending_dht_queries: HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>> =
         HashMap::new();
 
+    let mut cleanup_interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    cleanup_interval.tick().await; // consume the immediate first tick
+
     loop {
         tokio::select! {
             event = node.swarm_mut().select_next_some() => {
@@ -109,6 +123,15 @@ pub async fn run_event_loop(
                     &mut pending_requests,
                     &mut pending_dht_queries,
                 );
+            }
+            _ = cleanup_interval.tick() => {
+                let before = pending_requests.len() + pending_dht_queries.len();
+                pending_requests.retain(|_, p| !p.is_closed());
+                pending_dht_queries.retain(|_, tx| !tx.is_closed());
+                let after = pending_requests.len() + pending_dht_queries.len();
+                if before > after {
+                    tracing::debug!(removed = before - after, "Cleaned up stale pending queries");
+                }
             }
             _ = shutdown_rx.recv() => {
                 tracing::info!("P2P event loop shutting down");
