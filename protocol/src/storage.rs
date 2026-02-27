@@ -77,15 +77,15 @@ impl IpfsHttpClient {
         self.client.post(&url).multipart(form).send().await?.json().await
     }
 
-    async fn cat(&self, cid: &str) -> Result<Vec<u8>, reqwest::Error> {
+    async fn cat(&self, cid: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         // Validate CID contains only safe base-encoded characters to prevent
         // query parameter injection into the IPFS API URL.
-        assert!(
-            !cid.is_empty()
-                && cid.len() <= 512
-                && cid.chars().all(|c| c.is_ascii_alphanumeric()),
-            "Invalid CID format"
-        );
+        if cid.is_empty()
+            || cid.len() > 512
+            || !cid.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err(format!("Invalid CID format: '{}'", &cid[..cid.len().min(32)]).into());
+        }
         let url = format!("{}/api/v0/cat?arg={}", self.base_url, cid);
         let resp = self.client.post(&url).send().await?;
         Ok(resp.bytes().await?.to_vec())
@@ -125,9 +125,10 @@ impl StorageLayer {
 
         match client.version().await {
             Ok(version) => {
-                println!(
-                    "✓ Connected to IPFS at {} (version: {})",
-                    config.api_url, version
+                tracing::info!(
+                    url = %config.api_url,
+                    version = %version,
+                    "Connected to IPFS"
                 );
             }
             Err(e) => {
@@ -154,16 +155,19 @@ impl StorageLayer {
             match tokio::time::timeout(self.config.timeout, self.ipfs_client.add(data.clone())).await {
                 Ok(Ok(response)) => return Ok(response.hash),
                 Ok(Err(e)) => {
-                    println!(
-                        "✗ IPFS add attempt {}/{} failed: {}",
-                        attempt, self.config.retry_attempts, e
+                    tracing::warn!(
+                        attempt = attempt,
+                        max_attempts = self.config.retry_attempts,
+                        error = %e,
+                        "IPFS add failed"
                     );
                     last_error = Some(Box::new(std::io::Error::other(e.to_string())));
                 }
                 Err(_) => {
-                    println!(
-                        "✗ IPFS add attempt {}/{} timed out",
-                        attempt, self.config.retry_attempts
+                    tracing::warn!(
+                        attempt = attempt,
+                        max_attempts = self.config.retry_attempts,
+                        "IPFS add timed out"
                     );
                     last_error = Some(Box::new(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
@@ -175,7 +179,7 @@ impl StorageLayer {
             // Exponential backoff with jitter before retry
             if attempt < self.config.retry_attempts {
                 let delay = calculate_backoff_delay(attempt);
-                println!("  ↳ Retrying in {:?}...", delay);
+                tracing::debug!(delay_ms = delay.as_millis() as u64, "Retrying IPFS add");
                 tokio::time::sleep(delay).await;
             }
         }
@@ -188,28 +192,33 @@ impl StorageLayer {
         &self,
         cid: &str,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        println!("→ Attempting to retrieve CID: {}", cid);
+        tracing::debug!(cid = %cid, "Attempting to retrieve content from IPFS");
 
         let mut last_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
 
         for attempt in 1..=self.config.retry_attempts {
             match tokio::time::timeout(self.config.timeout, self.ipfs_client.cat(cid)).await {
                 Ok(Ok(data)) => {
-                    println!("✓ Retrieved {} bytes", data.len());
+                    tracing::debug!(cid = %cid, bytes = data.len(), "Retrieved content from IPFS");
                     return Ok(data);
                 }
                 Ok(Err(e)) => {
-                    println!(
-                        "✗ IPFS cat attempt {}/{} failed: {}",
-                        attempt, self.config.retry_attempts, e
+                    tracing::warn!(
+                        cid = %cid,
+                        attempt = attempt,
+                        max_attempts = self.config.retry_attempts,
+                        error = %e,
+                        "IPFS cat failed"
                     );
-                    last_error = Some(Box::new(std::io::Error::other(e.to_string()))
-                        as Box<dyn std::error::Error + Send + Sync>);
+                    last_error = Some(e);
                 }
                 Err(_) => {
-                    println!(
-                        "✗ IPFS cat attempt {}/{} timed out",
-                        attempt, self.config.retry_attempts
+                    tracing::warn!(
+                        cid = %cid,
+                        attempt = attempt,
+                        max_attempts = self.config.retry_attempts,
+                        timeout_secs = self.config.timeout.as_secs(),
+                        "IPFS cat timed out"
                     );
                     last_error = Some(Box::new(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
@@ -222,7 +231,7 @@ impl StorageLayer {
             // Exponential backoff with jitter before retry
             if attempt < self.config.retry_attempts {
                 let delay = calculate_backoff_delay(attempt);
-                println!("  ↳ Retrying in {:?}...", delay);
+                tracing::debug!(cid = %cid, delay_ms = delay.as_millis() as u64, "Retrying IPFS cat");
                 tokio::time::sleep(delay).await;
             }
         }
