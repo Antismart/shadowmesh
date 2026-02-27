@@ -20,10 +20,15 @@ fn getrandom(dest: &mut [u8]) {
     let win = match window() {
         Ok(w) => w,
         Err(_) => {
-            // Fallback: fill with timestamp-based pseudo-random bytes
-            tracing::warn!("No window object, using fallback random");
-            for (i, byte) in dest.iter_mut().enumerate() {
-                *byte = (i as u8).wrapping_mul(137).wrapping_add(43);
+            // Fallback: use getrandom crate which works in WASM contexts
+            // without window (e.g. web workers, Node.js)
+            tracing::warn!("No window object, using getrandom fallback");
+            if getrandom::getrandom(dest).is_err() {
+                tracing::error!("All random sources failed — session IDs will be insecure");
+                // Last resort: use index-based fill (NOT cryptographically secure)
+                for (i, byte) in dest.iter_mut().enumerate() {
+                    *byte = (i as u8).wrapping_mul(137).wrapping_add(43);
+                }
             }
             return;
         }

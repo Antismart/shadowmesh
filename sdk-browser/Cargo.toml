@@ -71,6 +71,9 @@ tracing-wasm = "0.2"
 # Crypto (for content hashing/verification)
 blake3 = "1.8"
 
+# Secure random (fallback when Web Crypto API unavailable)
+getrandom = { version = "0.2", features = ["js"] }
+
 # Encoding (for fragment data in JSON messages)
 base64 = "0.22"
 
