@@ -4,7 +4,7 @@
 
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Default peer score
@@ -37,7 +37,7 @@ pub struct PeerInfo {
     /// Content this peer provides
     pub provides: Vec<String>,
     /// Latency measurements (ms)
-    pub latency_history: Vec<u32>,
+    pub latency_history: VecDeque<u32>,
     /// Bandwidth estimate (bytes/sec)
     pub bandwidth_estimate: Option<u64>,
     /// Failed connection attempts
@@ -58,7 +58,7 @@ impl PeerInfo {
             state: PeerState::Discovered,
             score: DEFAULT_PEER_SCORE,
             provides: Vec::new(),
-            latency_history: Vec::new(),
+            latency_history: VecDeque::new(),
             bandwidth_estimate: None,
             failed_attempts: 0,
             successful_transfers: 0,
@@ -71,16 +71,16 @@ impl PeerInfo {
         if self.latency_history.is_empty() {
             return None;
         }
-        let sum: u32 = self.latency_history.iter().sum();
-        Some(sum / self.latency_history.len() as u32)
+        let sum: u64 = self.latency_history.iter().map(|&v| v as u64).sum();
+        Some((sum / self.latency_history.len() as u64) as u32)
     }
 
     /// Record a latency measurement
     pub fn record_latency(&mut self, latency_ms: u32) {
-        self.latency_history.push(latency_ms);
+        self.latency_history.push_back(latency_ms);
         // Keep only last 100 measurements
         if self.latency_history.len() > 100 {
-            self.latency_history.remove(0);
+            self.latency_history.pop_front();
         }
     }
 
