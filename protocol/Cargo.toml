@@ -7,10 +7,6 @@ edition = "2021"
 name = "shadowmesh_protocol"
 path = "src/lib.rs"
 
-[[bin]]
-name = "protocol"
-path = "src/main.rs"
-
 [dependencies]
 libp2p = { workspace = true, features = [
     # Existing features
