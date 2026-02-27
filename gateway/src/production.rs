@@ -97,7 +97,7 @@ pub fn enforce_production_validation(config: &Config) -> Result<(), String> {
         if in_production {
             tracing::warn!("Production warning: {}", warning);
         } else {
-            println!("ℹ️  {}", warning);
+            tracing::info!("{}", warning);
         }
     }
 
@@ -116,7 +116,7 @@ pub fn enforce_production_validation(config: &Config) -> Result<(), String> {
     // In non-production mode, just warn about errors
     if !in_production && validation.has_errors() {
         for error in &validation.errors {
-            println!("⚠️  Would fail in production: {}", error);
+            tracing::warn!("Would fail in production: {}", error);
         }
     }
 

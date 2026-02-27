@@ -88,10 +88,7 @@ pub fn init_telemetry(config: &TelemetryConfig) -> Result<(), TelemetryError> {
         .with(otel_layer)
         .init();
 
-    eprintln!(
-        "✓ OpenTelemetry tracing initialized (endpoint: {})",
-        otlp_endpoint
-    );
+    tracing::info!(endpoint = %otlp_endpoint, "OpenTelemetry tracing initialized");
 
     Ok(())
 }
