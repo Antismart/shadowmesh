@@ -394,10 +394,11 @@ fn select_replication_targets(
     max_items: usize,
 ) -> Vec<String> {
     let local_set: std::collections::HashSet<&String> = local_cids.iter().collect();
+    let mut seen = std::collections::HashSet::new();
     let mut targets: Vec<String> = Vec::new();
 
     for cid in gossip_cids.iter().chain(peer_catalog_cids.iter()) {
-        if !local_set.contains(cid) && !targets.contains(cid) {
+        if !local_set.contains(cid) && seen.insert(cid) {
             targets.push(cid.clone());
         }
         if targets.len() >= max_items {
