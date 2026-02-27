@@ -106,10 +106,7 @@ impl RateLimiter {
 
     /// Extract API key from request if present
     fn extract_api_key(req: &Request<Body>) -> Option<String> {
-        req.headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer ").map(|s| s.to_string()))
+        crate::auth::extract_bearer_token(req)
     }
 
     /// Extract client IP from request.
@@ -176,12 +173,23 @@ impl RateLimiter {
         let mut limits = limits.write().await;
         let now = Instant::now();
 
-        // Always evict stale entries when map grows beyond a modest threshold
-        if limits.len() > 1000 {
-            limits.retain(|_, limit| {
-                now.duration_since(limit.window_start) < Duration::from_secs(60)
-            });
-        }
+        limits.retain(|_, limit| {
+            now.duration_since(limit.window_start) < Duration::from_secs(120)
+        });
+    }
+
+    /// Spawn a background task that periodically cleans up stale rate limit entries.
+    pub fn start_cleanup_task(&self) {
+        let ip_limits = self.ip_limits.clone();
+        let key_limits = self.key_limits.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                Self::cleanup_old_entries(&ip_limits).await;
+                Self::cleanup_old_entries(&key_limits).await;
+            }
+        });
     }
 
     /// Check rate limit middleware
@@ -229,17 +237,6 @@ impl RateLimiter {
         .await
         {
             Ok(()) => {
-                // Periodically cleanup old entries
-                if rand::random::<u8>() < 25 {
-                    // ~10% chance
-                    let ip_limits = self.ip_limits.clone();
-                    let key_limits = self.key_limits.clone();
-                    tokio::spawn(async move {
-                        Self::cleanup_old_entries(&ip_limits).await;
-                        Self::cleanup_old_entries(&key_limits).await;
-                    });
-                }
-
                 Ok(next.run(req).await)
             }
             Err((retry_after, id)) => {
