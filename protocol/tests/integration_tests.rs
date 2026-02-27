@@ -161,7 +161,7 @@ fn test_crypto_manager_encryption_decryption() {
 
 #[test]
 fn test_crypto_manager_random_key() {
-    let (crypto, key) = CryptoManager::new_random();
+    let (crypto, key) = CryptoManager::new_random().unwrap();
 
     let plaintext = b"Test message with random key";
 
@@ -641,7 +641,7 @@ fn test_full_content_encryption_workflow() {
     assert!(!content_hash.is_empty());
 
     // 3. Create crypto manager and encrypt
-    let (crypto, _key) = CryptoManager::new_random();
+    let (crypto, _key) = CryptoManager::new_random().unwrap();
     let encrypted = crypto.encrypt(content).expect("Encryption failed");
 
     // 4. Verify encrypted data is different
@@ -663,7 +663,7 @@ fn test_fragment_and_encrypt_workflow() {
     let fragment = FragmentManager::create_fragment(content.to_vec(), 0, 1);
 
     // Encrypt fragment data
-    let (crypto, _key) = CryptoManager::new_random();
+    let (crypto, _key) = CryptoManager::new_random().unwrap();
     let encrypted = crypto.encrypt(&fragment.data).expect("Encryption failed");
 
     // Decrypt
@@ -700,7 +700,7 @@ async fn test_peer_discovery_and_bandwidth_tracking() {
 
 #[test]
 fn test_empty_content_encryption() {
-    let (crypto, _key) = CryptoManager::new_random();
+    let (crypto, _key) = CryptoManager::new_random().unwrap();
     let empty_content = b"";
 
     let encrypted = crypto.encrypt(empty_content).expect("Should encrypt empty");
@@ -711,7 +711,7 @@ fn test_empty_content_encryption() {
 
 #[test]
 fn test_large_content_encryption() {
-    let (crypto, _key) = CryptoManager::new_random();
+    let (crypto, _key) = CryptoManager::new_random().unwrap();
     let large_content = vec![0xAB; 1024 * 1024]; // 1MB
 
     let encrypted = crypto

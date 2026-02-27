@@ -68,12 +68,14 @@ impl CryptoManager {
     }
 
     /// Create a new crypto manager with a random key
-    pub fn new_random() -> (Self, [u8; KEY_SIZE]) {
+    pub fn new_random() -> Result<(Self, [u8; KEY_SIZE]), CryptoError> {
         let key = ChaCha20Poly1305::generate_key(&mut OsRng);
-        let key_bytes: [u8; KEY_SIZE] = key.as_slice().try_into()
-            .expect("ChaCha20Poly1305 key must be exactly 32 bytes");
+        let key_bytes: [u8; KEY_SIZE] = key
+            .as_slice()
+            .try_into()
+            .map_err(|_| CryptoError::InvalidKeySize)?;
 
-        (Self::new(&key_bytes), key_bytes)
+        Ok((Self::new(&key_bytes), key_bytes))
     }
 
     /// Encrypt data and return EncryptedData structure
@@ -265,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_random_key() {
-        let (manager, _key) = CryptoManager::new_random();
+        let (manager, _key) = CryptoManager::new_random().unwrap();
 
         let plaintext = b"Random key test";
         let encrypted = manager.encrypt(plaintext).unwrap();
