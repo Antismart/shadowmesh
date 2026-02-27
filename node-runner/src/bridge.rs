@@ -599,8 +599,9 @@ async fn handle_content_request(
         }
     };
 
-    // Collect all fragment data
-    let mut all_data = Vec::with_capacity(content.total_size as usize);
+    // Collect all fragment data (cap pre-allocation to prevent OOM from bogus manifests)
+    const MAX_PREALLOC: usize = 256 * 1024 * 1024; // 256 MB
+    let mut all_data = Vec::with_capacity((content.total_size as usize).min(MAX_PREALLOC));
     for frag_hash in &content.fragments {
         match storage.get_fragment(frag_hash).await {
             Ok(data) => all_data.extend_from_slice(&data),
