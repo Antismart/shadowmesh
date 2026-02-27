@@ -98,7 +98,7 @@ pub fn escape_html(s: &str) -> String {
 pub struct AppState {
     pub storage: Option<Arc<protocol::StorageLayer>>,
     pub cache: Arc<cache::ContentCache>,
-    pub config: Arc<config::Config>,
+    pub config: Arc<tokio::sync::RwLock<config::Config>>,
     pub metrics: Arc<Metrics>,
     pub start_time: Instant,
     pub deployments: Arc<RwLock<Vec<dashboard::Deployment>>>,
@@ -151,6 +151,7 @@ pub async fn ipfs_content_path_handler(
 // Unified content fetching logic with circuit breaker protection
 pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String>) -> Response {
     state.metrics.increment_requests();
+    let cfg = state.config.read().await.clone();
 
     // Check cache first (bypasses circuit breaker)
     if let Some((data, content_type)) = state.cache.get(&cid) {
@@ -174,7 +175,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
 
     // Try P2P network before IPFS
     if let Some(ref p2p) = state.p2p {
-        let timeout_secs = state.config.p2p.resolve_timeout_seconds;
+        let timeout_secs = cfg.p2p.resolve_timeout_seconds;
         match p2p_resolver::resolve_content(p2p, &cid, timeout_secs).await {
             Ok(resolved) => {
                 let content_type = if resolved.mime_type.is_empty() {
@@ -191,7 +192,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
                 metrics::update_cache_size(state.cache.stats().total_entries as i64);
 
                 // Announce to DHT so other peers can discover us
-                if state.config.p2p.announce_content {
+                if cfg.p2p.announce_content {
                     let _ = p2p
                         .command_tx
                         .send(p2p_commands::P2pCommand::AnnounceContent {
@@ -231,9 +232,9 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
     }
 
     // Try configured node-runners via HTTP
-    if !state.config.p2p.node_runners.is_empty() {
+    if !cfg.p2p.node_runners.is_empty() {
         let http = reqwest::Client::new();
-        let timeout = state.config.p2p.resolve_timeout_seconds;
+        let timeout = cfg.p2p.resolve_timeout_seconds;
 
         // Use health-aware tracker when available, otherwise fall back.
         let node_content = if let Some(ref tracker) = state.node_health_tracker {
@@ -241,7 +242,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
         } else {
             node_resolver::resolve_from_nodes_adaptive(
                 &http,
-                &state.config.p2p.node_runners,
+                &cfg.p2p.node_runners,
                 &cid,
                 timeout,
             )
@@ -370,7 +371,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
 
             // Announce to P2P network after IPFS fetch
             if let Some(ref p2p) = state.p2p {
-                if state.config.p2p.announce_content {
+                if cfg.p2p.announce_content {
                     let _ = p2p
                         .command_tx
                         .send(p2p_commands::P2pCommand::AnnounceContent {
@@ -566,8 +567,8 @@ fn publish_name_best_effort(state: &AppState, record: &protocol::NameRecord) {
 
 /// Try to auto-assign a `.shadow` domain for a deployment.
 /// Returns the assigned domain name, or None if naming is disabled or registration fails.
-pub fn auto_assign_domain(state: &AppState, deploy_name: &str, cid: &str) -> Option<String> {
-    if !state.config.naming.enabled {
+pub async fn auto_assign_domain(state: &AppState, deploy_name: &str, cid: &str) -> Option<String> {
+    if !state.config.read().await.naming.enabled {
         return None;
     }
 
