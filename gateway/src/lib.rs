@@ -118,6 +118,8 @@ pub struct AppState {
     pub p2p: Option<Arc<p2p::P2pState>>,
     /// Node-runner health tracker (None when no node-runners configured)
     pub node_health_tracker: Option<Arc<node_health::NodeHealthTracker>>,
+    /// Shared HTTP client (connection-pooled)
+    pub http_client: reqwest::Client,
 }
 
 /// Build a Router with just the content-serving routes.
@@ -233,7 +235,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
 
     // Try configured node-runners via HTTP
     if !cfg.p2p.node_runners.is_empty() {
-        let http = reqwest::Client::new();
+        let http = &state.http_client;
         let timeout = cfg.p2p.resolve_timeout_seconds;
 
         // Use health-aware tracker when available, otherwise fall back.
@@ -345,19 +347,14 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
     };
 
     let storage = Arc::clone(storage);
-    let cid_clone = cid.clone();
     let start_time = std::time::Instant::now();
 
-    let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current()
-            .block_on(async { storage.retrieve_content(&cid_clone).await })
-    })
-    .await;
+    let result = storage.retrieve_content(&cid).await;
 
     let duration = start_time.elapsed();
 
     match result {
-        Ok(Ok(data)) => {
+        Ok(data) => {
             // Record success with circuit breaker and metrics
             state.ipfs_circuit_breaker.record_success();
             metrics::record_ipfs_operation("retrieve", true, duration.as_secs_f64());
@@ -400,7 +397,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
             )
                 .into_response()
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             // Record failure with circuit breaker
             state.ipfs_circuit_breaker.record_failure();
             metrics::record_ipfs_operation("retrieve", false, duration.as_secs_f64());
@@ -416,27 +413,6 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
                 axum::http::StatusCode::NOT_FOUND,
                 Html(format!(
                     r#"<html><body><h1>Not Found</h1><p>{}</p></body></html>"#,
-                    escape_html(&e.to_string())
-                )),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            // Record failure with circuit breaker (task panic/cancellation)
-            state.ipfs_circuit_breaker.record_failure();
-            metrics::record_ipfs_operation("retrieve", false, duration.as_secs_f64());
-            metrics::update_circuit_breaker_state(
-                state.ipfs_circuit_breaker.is_open(),
-                state.ipfs_circuit_breaker.state() == crate::circuit_breaker::CircuitState::HalfOpen,
-            );
-            state.metrics.increment_error();
-
-            tracing::error!(cid = %cid, error = %e, "IPFS retrieval task failed");
-
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    r#"<html><body><h1>Error</h1><p>{}</p></body></html>"#,
                     escape_html(&e.to_string())
                 )),
             )
