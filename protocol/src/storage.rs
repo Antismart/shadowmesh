@@ -54,10 +54,11 @@ impl IpfsHttpClient {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .build()
-            .unwrap_or_else(|e| {
-                tracing::error!("Failed to create HTTP client: {}", e);
-                reqwest::Client::new()
-            });
+            .map_err(|e| {
+                tracing::error!(%e, "Failed to create HTTP client with configured timeout");
+                e
+            })
+            .unwrap_or_default();
         Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
