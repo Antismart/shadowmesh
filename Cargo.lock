@@ -516,6 +516,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bimap"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230c5f1ca6a325a32553f8640d31ac9b49f2411e901e427570154868b46da4f7"
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2522,6 +2528,7 @@ dependencies = [
  "libp2p-noise",
  "libp2p-quic",
  "libp2p-relay",
+ "libp2p-rendezvous",
  "libp2p-request-response",
  "libp2p-swarm",
  "libp2p-tcp",
@@ -2797,6 +2804,29 @@ dependencies = [
  "quick-protobuf-codec",
  "rand 0.8.5",
  "static_assertions",
+ "thiserror 2.0.17",
+ "tracing",
+ "web-time 1.1.0",
+]
+
+[[package]]
+name = "libp2p-rendezvous"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15285d828c2b4a34cb660c2e74cd6938116daceab1f4357bae933d5b08cca933"
+dependencies = [
+ "async-trait",
+ "asynchronous-codec",
+ "bimap",
+ "futures",
+ "futures-timer",
+ "libp2p-core",
+ "libp2p-identity",
+ "libp2p-request-response",
+ "libp2p-swarm",
+ "quick-protobuf",
+ "quick-protobuf-codec",
+ "rand 0.8.5",
  "thiserror 2.0.17",
  "tracing",
  "web-time 1.1.0",
@@ -4016,6 +4046,7 @@ dependencies = [
  "chacha20poly1305",
  "futures",
  "hex",
+ "hickory-resolver",
  "libp2p",
  "libp2p-webrtc",
  "rand 0.8.5",
