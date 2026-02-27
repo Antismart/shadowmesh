@@ -1,39 +1,28 @@
-//! DNS-Free Bootstrap Configuration for ShadowMesh
+//! Bootstrap Configuration for ShadowMesh
 //!
-//! Provides hardcoded IP-based bootstrap nodes, STUN servers, and the bootstrap
-//! sequence for joining the ShadowMesh network without any DNS dependency.
+//! In ShadowMesh, there are no centralized "official" bootstrap nodes.
+//! Any node can serve as a bootstrap peer for others. Nodes discover
+//! peers through:
+//!
+//! 1. **Config-based bootstrap** — dial known peers from config file
+//! 2. **mDNS** — automatic LAN peer discovery
+//! 3. **DHT** — Kademlia routing table propagation after initial connection
+//! 4. **GossipSub** — real-time peer and content announcements
 //!
 //! # Bootstrap Sequence
 //!
-//! 1. Dial `OFFICIAL_BOOTSTRAP_NODES` (IP-based multiaddrs)
+//! 1. Dial bootstrap peers from config (`bootstrap_nodes` / `bootstrap_peers`)
 //! 2. Kademlia `FIND_NODE` on own PeerId to populate routing table
-//! 3. Resolve `_bootstrap.shadow` via DHT for community bootstrap peers
-//! 4. Resolve `_gateway.shadow`, `_signaling.shadow`, `_stun.shadow` for services
-//! 5. Subscribe to GossipSub topics for real-time updates
+//! 3. mDNS discovers LAN peers automatically
+//! 4. GossipSub subscribes to topics for real-time updates
 
-/// Default bootstrap nodes (PLACEHOLDERS — override via `SHADOWMESH_BOOTSTRAP_NODES` env var).
+/// Returns bootstrap nodes from the `SHADOWMESH_BOOTSTRAP_NODES` environment variable.
 ///
-/// These use raw IP addresses — no DNS resolution required.
-/// At least one must be reachable to join the network.
+/// This is an alternative to config-file-based bootstrap. The env var takes a
+/// comma-separated list of multiaddrs (e.g., `/ip4/1.2.3.4/tcp/4001/p2p/12D3KooW...`).
 ///
-/// Format: `/ip4/{ip}/tcp/{port}/p2p/{peer_id}`
-const DEFAULT_BOOTSTRAP_NODES: &[&str] = &[
-    // US East (New York)
-    "/ip4/45.33.32.156/tcp/4001/p2p/12D3KooWBootstrapUSEast1placeholder",
-    // EU West (Amsterdam)
-    "/ip4/178.62.8.237/tcp/4001/p2p/12D3KooWBootstrapEUWest1placeholder",
-    // Asia Pacific (Singapore)
-    "/ip4/103.43.75.104/tcp/4001/p2p/12D3KooWBootstrapAPAC1placeholder",
-];
-
-/// Backward-compatible alias for default bootstrap nodes.
-pub const OFFICIAL_BOOTSTRAP_NODES: &[&str] = DEFAULT_BOOTSTRAP_NODES;
-
-/// Returns the effective bootstrap nodes.
-///
-/// Reads from `SHADOWMESH_BOOTSTRAP_NODES` (comma-separated multiaddrs).
-/// Falls back to `DEFAULT_BOOTSTRAP_NODES` if the env var is not set.
-/// Warns if placeholder peer IDs are still in use.
+/// Returns an empty list if the env var is not set, which is normal —
+/// bootstrap peers are typically configured in config files instead.
 pub fn get_bootstrap_nodes() -> Vec<String> {
     if let Ok(env_nodes) = std::env::var("SHADOWMESH_BOOTSTRAP_NODES") {
         let nodes: Vec<String> = env_nodes
@@ -54,36 +43,22 @@ pub fn get_bootstrap_nodes() -> Vec<String> {
         }
     }
 
-    let defaults: Vec<String> = DEFAULT_BOOTSTRAP_NODES.iter().map(|s| s.to_string()).collect();
-    let has_placeholders = defaults.iter().any(|n| n.contains("placeholder"));
-    if has_placeholders {
-        eprintln!(
-            "WARNING: Default bootstrap nodes contain placeholder peer IDs and will be skipped. \
-             Set SHADOWMESH_BOOTSTRAP_NODES with real peer IDs for production."
-        );
-        // Filter out placeholders — they can never connect
-        return defaults
-            .into_iter()
-            .filter(|n| !n.contains("placeholder"))
-            .collect();
-    }
-    defaults
+    // No env var set — bootstrap peers come from config files
+    Vec::new()
 }
 
-/// ShadowMesh-operated STUN servers (IP-only, no DNS dependency).
+/// STUN servers for WebRTC NAT traversal.
 ///
-/// These replace the Google STUN defaults for WebRTC NAT traversal.
-pub const SHADOWMESH_STUN_SERVERS: &[&str] = &[
-    "stun:45.33.32.156:3478",
-    "stun:178.62.8.237:3478",
-];
-
-/// Fallback STUN servers (third-party, DNS-based).
-/// Used only when ShadowMesh STUN servers are unreachable.
-pub const FALLBACK_STUN_SERVERS: &[&str] = &[
+/// Uses well-known public STUN servers. Operators can deploy their own
+/// and configure them via the browser SDK's `stun_servers` option.
+pub const PUBLIC_STUN_SERVERS: &[&str] = &[
     "stun:stun.l.google.com:19302",
     "stun:stun1.l.google.com:19302",
+    "stun:stun2.l.google.com:19302",
 ];
+
+/// Backward-compatible alias.
+pub const FALLBACK_STUN_SERVERS: &[&str] = PUBLIC_STUN_SERVERS;
 
 /// GossipSub topic for bootstrap peer announcements.
 pub const BOOTSTRAP_GOSSIP_TOPIC: &str = "shadowmesh/bootstrap";
@@ -94,26 +69,17 @@ pub const MIN_BOOTSTRAP_CONNECTIONS: usize = 1;
 /// Maximum time to wait for bootstrap connections before falling back.
 pub const BOOTSTRAP_TIMEOUT_SECS: u64 = 30;
 
-/// Returns all STUN servers: ShadowMesh-operated first, then fallbacks.
+/// Returns all available STUN servers.
 pub fn all_stun_servers() -> Vec<&'static str> {
-    let mut servers = Vec::with_capacity(
-        SHADOWMESH_STUN_SERVERS.len() + FALLBACK_STUN_SERVERS.len(),
-    );
-    servers.extend_from_slice(SHADOWMESH_STUN_SERVERS);
-    servers.extend_from_slice(FALLBACK_STUN_SERVERS);
-    servers
+    PUBLIC_STUN_SERVERS.to_vec()
 }
 
-/// Parse a multiaddr string into its components for validation.
-/// Returns `true` if the multiaddr looks like a valid IP-based peer address.
+/// Validate that a multiaddr string looks like a valid IP-based peer address.
+/// Returns `true` if it has an IP protocol, a transport, and a peer ID.
 pub fn is_valid_bootstrap_multiaddr(addr: &str) -> bool {
-    // Must start with /ip4/ or /ip6/ (no DNS)
     let is_ip = addr.starts_with("/ip4/") || addr.starts_with("/ip6/");
-    // Must contain /p2p/ for peer ID
     let has_peer_id = addr.contains("/p2p/");
-    // Must contain a transport (/tcp/ or /udp/)
     let has_transport = addr.contains("/tcp/") || addr.contains("/udp/");
-
     is_ip && has_peer_id && has_transport
 }
 
@@ -122,34 +88,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_bootstrap_nodes_are_ip_based() {
-        for addr in OFFICIAL_BOOTSTRAP_NODES {
-            assert!(
-                addr.starts_with("/ip4/") || addr.starts_with("/ip6/"),
-                "Bootstrap node must use IP address, not DNS: {}",
-                addr
-            );
-            assert!(
-                addr.contains("/p2p/"),
-                "Bootstrap node must include peer ID: {}",
-                addr
-            );
-        }
-    }
-
-    #[test]
     fn test_stun_servers_not_empty() {
-        assert!(!SHADOWMESH_STUN_SERVERS.is_empty());
+        assert!(!PUBLIC_STUN_SERVERS.is_empty());
         assert!(!all_stun_servers().is_empty());
-    }
-
-    #[test]
-    fn test_all_stun_prioritizes_shadowmesh() {
-        let servers = all_stun_servers();
-        // ShadowMesh servers should come first
-        for (i, sm_server) in SHADOWMESH_STUN_SERVERS.iter().enumerate() {
-            assert_eq!(servers[i], *sm_server);
-        }
     }
 
     #[test]
@@ -167,16 +108,16 @@ mod tests {
     }
 
     #[test]
-    fn test_get_bootstrap_nodes_filters_placeholders() {
-        // When no env var is set, placeholders should be filtered out
+    fn test_get_bootstrap_nodes_env_handling() {
+        // Test env-based bootstrap (single test to avoid parallel env var races)
+        let addr = "/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWTest";
+        std::env::set_var("SHADOWMESH_BOOTSTRAP_NODES", addr);
+        let nodes = get_bootstrap_nodes();
+        assert_eq!(nodes, vec![addr.to_string()]);
+
+        // Clear and verify empty default
         std::env::remove_var("SHADOWMESH_BOOTSTRAP_NODES");
         let nodes = get_bootstrap_nodes();
-        for node in &nodes {
-            assert!(
-                !node.contains("placeholder"),
-                "Placeholder node should be filtered: {}",
-                node
-            );
-        }
+        assert!(nodes.is_empty(), "Should be empty when no env var set");
     }
 }
