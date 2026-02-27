@@ -37,7 +37,9 @@ struct RateLimitError {
 }
 
 impl DistributedRateLimiter {
-    /// Create a new distributed rate limiter
+    /// Create a new distributed rate limiter.
+    ///
+    /// Call `start_cleanup_task()` after creation to enable background cleanup.
     pub fn new(redis: Option<Arc<RedisClient>>, config: RateLimitConfig) -> Self {
         Self {
             redis,
@@ -46,12 +48,14 @@ impl DistributedRateLimiter {
         }
     }
 
+    /// Spawn the background cleanup task for stale rate limit entries.
+    pub fn start_cleanup_task(&self) {
+        self.local.start_cleanup_task();
+    }
+
     /// Extract API key from request if present
     fn extract_api_key(req: &Request<Body>) -> Option<String> {
-        req.headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer ").map(|s| s.to_string()))
+        crate::auth::extract_bearer_token(req)
     }
 
     /// Extract client IP from request.
