@@ -293,6 +293,7 @@ async fn handle_signaling_message(
             let our_peer_id = our_peer_id.to_string();
 
             tokio::spawn(async move {
+                let session_id = offer.session_id.clone();
                 handle_browser_offer(
                     offer,
                     ice_rx,
@@ -309,7 +310,7 @@ async fn handle_signaling_message(
                 active_sessions
                     .write()
                     .await
-                    .remove(&our_peer_id);
+                    .remove(&session_id);
             });
         }
 
