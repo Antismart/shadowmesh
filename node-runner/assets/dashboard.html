@@ -3,564 +3,1162 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ShadowMesh Node Dashboard</title>
+    <title>ShadowMesh Node</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        mesh: {
+                            bg: '#08080f',
+                            sidebar: '#0c0c14',
+                            surface: '#12121c',
+                            'surface-hover': '#1a1a28',
+                            border: '#1e1e30',
+                            'border-hover': '#2a2a44',
+                            accent: '#3b82f6',
+                            purple: '#8b5cf6',
+                            text: '#e2e8f0',
+                            muted: '#64748b',
+                            dim: '#475569',
+                        }
+                    },
+                    fontFamily: {
+                        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
     <style>
-        .gradient-bg {
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        body { font-family: 'Inter', system-ui, sans-serif; }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #1e1e30; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #2a2a44; }
+
+        /* Animations */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+
+        .animate-fade { animation: fadeIn 0.3s ease-out; }
+        .animate-slide { animation: slideIn 0.3s ease-out; }
+        .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+        .skeleton {
+            background: linear-gradient(90deg, #12121c 25%, #1a1a28 50%, #12121c 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 6px;
         }
+
+        /* Card hover */
         .card {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(18, 18, 28, 0.8);
+            border: 1px solid rgba(30, 30, 48, 0.8);
+            backdrop-filter: blur(12px);
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
         }
-        .progress-bar {
-            transition: width 0.5s ease;
+        .card:hover {
+            border-color: rgba(59, 130, 246, 0.2);
+        }
+
+        /* Stat card glow */
+        .stat-card { position: relative; overflow: hidden; }
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--accent, #3b82f6), transparent);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        .stat-card:hover::before { opacity: 1; }
+
+        /* Progress bar */
+        .progress-track { background: rgba(30, 30, 48, 0.8); }
+        .progress-fill { transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1); }
+
+        /* Upload zone */
+        .upload-zone {
+            border: 2px dashed rgba(59, 130, 246, 0.3);
+            transition: border-color 0.2s, background-color 0.2s;
+        }
+        .upload-zone:hover, .upload-zone.drag-over {
+            border-color: rgba(59, 130, 246, 0.7);
+            background: rgba(59, 130, 246, 0.05);
+        }
+
+        /* Toast */
+        .toast-container { pointer-events: none; }
+        .toast-container > * { pointer-events: auto; }
+
+        /* Nav active */
+        .nav-item {
+            transition: background 0.15s, color 0.15s;
+        }
+        .nav-item.active {
+            background: rgba(59, 130, 246, 0.1);
+            color: #3b82f6;
+        }
+        .nav-item.active svg { color: #3b82f6; }
+
+        /* Table row hover */
+        .table-row { transition: background 0.15s; }
+        .table-row:hover { background: rgba(30, 30, 48, 0.5); }
+
+        /* Buttons */
+        .btn {
+            transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+        }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* Modal */
+        .modal-overlay {
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+        }
+
+        /* Mobile bottom nav */
+        @media (max-width: 768px) {
+            .sidebar { display: none !important; }
+            .mobile-nav { display: flex !important; }
+            .main-content { margin-left: 0 !important; }
         }
     </style>
 </head>
-<body class="gradient-bg min-h-screen text-white">
-    <div class="container mx-auto p-8">
-        <!-- Header -->
-        <div class="flex items-center justify-between mb-8">
-            <div>
-                <h1 class="text-4xl font-bold flex items-center gap-3">
-                    <span class="text-5xl">🌐</span>
-                    ShadowMesh Node
-                </h1>
-                <p class="text-gray-400 mt-2">Decentralized Content Delivery Network</p>
-            </div>
-            <div class="flex items-center gap-4">
-                <span class="flex items-center gap-2">
-                    <span class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
-                    <span class="text-green-400">Online</span>
-                </span>
-                <span id="peerId" class="text-gray-500 text-sm font-mono">Loading...</span>
-            </div>
-        </div>
+<body class="bg-mesh-bg text-mesh-text min-h-screen">
 
-        <!-- Stats Grid -->
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            <div class="card p-6 rounded-xl">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Uptime</h3>
-                        <p class="text-3xl font-bold mt-2" id="uptime">--</p>
-                    </div>
-                    <div class="text-4xl opacity-50">&#9201;</div>
-                </div>
-            </div>
+<!-- Toast Container -->
+<div id="toastContainer" class="toast-container fixed top-4 right-4 z-50 flex flex-col gap-2"></div>
 
-            <div class="card p-6 rounded-xl">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Bandwidth Served</h3>
-                        <p class="text-3xl font-bold mt-2" id="bandwidth">--</p>
-                    </div>
-                    <div class="text-4xl opacity-50">&#128225;</div>
-                </div>
-            </div>
-
-            <div class="card p-6 rounded-xl">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Storage</h3>
-                        <p class="text-2xl font-bold mt-2" id="storageText">--</p>
-                        <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
-                            <div id="storageBar" class="progress-bar h-2 rounded-full bg-green-500" style="width: 0%"></div>
-                        </div>
-                        <p class="text-xs text-gray-500 mt-1" id="storagePct">0%</p>
-                    </div>
-                    <div class="text-4xl opacity-50">&#128190;</div>
-                </div>
-            </div>
-
-            <div class="card p-6 rounded-xl">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <h3 class="text-gray-400 text-sm uppercase tracking-wider">Connected Peers</h3>
-                        <p class="text-3xl font-bold mt-2" id="peers">--</p>
-                    </div>
-                    <div class="text-4xl opacity-50">&#128279;</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Charts Row -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-            <div class="card p-6 rounded-xl">
-                <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                    &#128202; Bandwidth Over Time
-                </h2>
-                <canvas id="bandwidthChart" height="200"></canvas>
-            </div>
-
-            <div class="card p-6 rounded-xl">
-                <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                    &#127758; Network Activity
-                </h2>
-                <canvas id="activityChart" height="200"></canvas>
-            </div>
-        </div>
-
-        <!-- Peers Table -->
-        <div class="card p-6 rounded-xl mb-8">
-            <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                &#128268; Connected Peers
-            </h2>
-            <div id="peersTableContainer">
-                <p class="text-gray-500">Loading...</p>
-            </div>
-        </div>
-
-        <!-- Content Browser -->
-        <div class="card p-6 rounded-xl mb-8">
-            <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                &#128230; Stored Content
-                <span id="contentCount" class="text-sm font-normal text-gray-400 ml-2"></span>
-            </h2>
-            <div id="contentTableContainer">
-                <p class="text-gray-500">Loading...</p>
-            </div>
-        </div>
-
-        <!-- Replication Health (hidden if disabled) -->
-        <div id="replicationPanel" class="card p-6 rounded-xl mb-8" style="display: none;">
-            <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                &#128260; Replication Health
-                <span id="replicationScanStatus" class="text-sm font-normal text-gray-400 ml-2"></span>
-            </h2>
-            <div class="mb-4">
-                <div class="flex justify-between text-sm mb-1">
-                    <span id="replicationHealthLabel">--</span>
-                    <span id="replicationHealthPct">--</span>
-                </div>
-                <div class="w-full bg-gray-700 rounded-full h-3">
-                    <div id="replicationHealthBar" class="progress-bar h-3 rounded-full bg-green-500" style="width: 0%"></div>
-                </div>
-            </div>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div>
-                    <p class="text-gray-400 text-xs uppercase">Total Content</p>
-                    <p class="text-lg font-bold" id="replTotal">0</p>
-                </div>
-                <div>
-                    <p class="text-gray-400 text-xs uppercase">Healthy</p>
-                    <p class="text-lg font-bold text-green-400" id="replHealthy">0</p>
-                </div>
-                <div>
-                    <p class="text-gray-400 text-xs uppercase">Under-replicated</p>
-                    <p class="text-lg font-bold text-yellow-400" id="replUnder">0</p>
-                </div>
-                <div>
-                    <p class="text-gray-400 text-xs uppercase">Critical</p>
-                    <p class="text-lg font-bold text-red-400" id="replCritical">0</p>
-                </div>
-                <div>
-                    <p class="text-gray-400 text-xs uppercase">Replicated</p>
-                    <p class="text-lg font-bold" id="replReplicated">0</p>
-                </div>
-                <div>
-                    <p class="text-gray-400 text-xs uppercase">Bytes Pulled</p>
-                    <p class="text-lg font-bold" id="replBytes">0 B</p>
-                </div>
-                <div>
-                    <p class="text-gray-400 text-xs uppercase">Failures</p>
-                    <p class="text-lg font-bold text-red-400" id="replFailures">0</p>
-                </div>
-                <div>
-                    <p class="text-gray-400 text-xs uppercase">Last Scan</p>
-                    <p class="text-lg font-bold" id="replLastScan">--</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- Configuration -->
-        <div class="card p-6 rounded-xl">
-            <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                &#9881; Node Configuration
-            </h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                    <label class="block text-gray-400 text-sm mb-2">Max Storage (GB)</label>
-                    <input type="number" id="maxStorage"
-                        class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500"
-                        value="10">
-                </div>
-                <div>
-                    <label class="block text-gray-400 text-sm mb-2">Max Bandwidth (MB/s)</label>
-                    <input type="number" id="maxBandwidth"
-                        class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500"
-                        value="100">
-                </div>
-            </div>
-            <button onclick="saveConfig()"
-                class="mt-4 bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg font-semibold transition-colors">
-                Save Configuration
-            </button>
-        </div>
-
-        <!-- Footer -->
-        <div class="mt-8 text-center text-gray-500 text-sm">
-            <p>ShadowMesh Protocol v0.1.0 |
-                <a href="https://github.com/Antismart/shadowmesh" class="text-blue-400 hover:underline">GitHub</a>
-            </p>
+<!-- Confirm Modal -->
+<div id="confirmModal" class="fixed inset-0 z-40 hidden items-center justify-center">
+    <div class="modal-overlay absolute inset-0" onclick="closeConfirm()"></div>
+    <div class="card rounded-2xl p-6 w-full max-w-sm relative z-10 animate-fade">
+        <h3 id="confirmTitle" class="text-lg font-semibold mb-2"></h3>
+        <p id="confirmMessage" class="text-mesh-muted text-sm mb-6"></p>
+        <div class="flex gap-3 justify-end">
+            <button onclick="closeConfirm()" class="btn px-4 py-2 rounded-lg text-sm text-mesh-muted border border-mesh-border hover:bg-mesh-surface-hover">Cancel</button>
+            <button id="confirmAction" class="btn px-4 py-2 rounded-lg text-sm bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30">Confirm</button>
         </div>
     </div>
+</div>
 
-    <script>
-        const maxDataPoints = 20;
+<!-- Layout -->
+<div class="flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="sidebar w-56 bg-mesh-sidebar border-r border-mesh-border fixed h-full flex flex-col z-30">
+        <!-- Logo -->
+        <div class="p-5 border-b border-mesh-border">
+            <div class="flex items-center gap-3">
+                <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-mesh-accent to-mesh-purple flex items-center justify-center">
+                    <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="font-bold text-sm">ShadowMesh</h1>
+                    <p class="text-[10px] text-mesh-muted">Node Runner</p>
+                </div>
+            </div>
+        </div>
 
-        // Initialize charts
-        const bandwidthCtx = document.getElementById('bandwidthChart').getContext('2d');
-        const bandwidthChart = new Chart(bandwidthCtx, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Bandwidth (MB/s)',
-                    data: [],
-                    borderColor: 'rgb(59, 130, 246)',
-                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                    fill: true,
-                    tension: 0.4
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
-                },
-                scales: {
-                    x: {
-                        grid: { color: 'rgba(255,255,255,0.1)' },
-                        ticks: { color: 'rgba(255,255,255,0.5)' }
-                    },
-                    y: {
-                        beginAtZero: true,
-                        grid: { color: 'rgba(255,255,255,0.1)' },
-                        ticks: { color: 'rgba(255,255,255,0.5)' }
-                    }
-                }
-            }
-        });
+        <!-- Status -->
+        <div class="px-5 py-3 border-b border-mesh-border">
+            <div class="flex items-center gap-2 mb-1">
+                <span id="statusDot" class="w-2 h-2 rounded-full bg-green-500 pulse-dot"></span>
+                <span id="statusLabel" class="text-xs text-green-400">Online</span>
+            </div>
+            <p id="sidebarPeerId" class="text-[10px] font-mono text-mesh-dim truncate cursor-pointer" title="Click to copy" onclick="copyText(this.dataset.full, 'Peer ID copied')">Loading...</p>
+        </div>
 
-        const activityCtx = document.getElementById('activityChart').getContext('2d');
-        const activityChart = new Chart(activityCtx, {
-            type: 'bar',
-            data: {
-                labels: ['Requests', 'Cache Hits', 'Peers', 'Errors'],
-                datasets: [{
-                    label: 'Activity',
-                    data: [0, 0, 0, 0],
-                    backgroundColor: [
-                        'rgba(59, 130, 246, 0.8)',
-                        'rgba(16, 185, 129, 0.8)',
-                        'rgba(245, 158, 11, 0.8)',
-                        'rgba(239, 68, 68, 0.8)'
-                    ]
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
-                },
-                scales: {
-                    x: {
-                        grid: { color: 'rgba(255,255,255,0.1)' },
-                        ticks: { color: 'rgba(255,255,255,0.5)' }
-                    },
-                    y: {
-                        beginAtZero: true,
-                        grid: { color: 'rgba(255,255,255,0.1)' },
-                        ticks: { color: 'rgba(255,255,255,0.5)' }
-                    }
-                }
-            }
-        });
+        <!-- Navigation -->
+        <nav class="flex-1 p-3 space-y-1">
+            <button onclick="switchTab('overview')" data-tab="overview" class="nav-item active w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-mesh-muted hover:bg-mesh-surface-hover">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+                Overview
+            </button>
+            <button onclick="switchTab('content')" data-tab="content" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-mesh-muted hover:bg-mesh-surface-hover">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+                Content
+                <span id="contentBadge" class="ml-auto text-[10px] bg-mesh-accent/20 text-mesh-accent px-1.5 py-0.5 rounded-full hidden">0</span>
+            </button>
+            <button onclick="switchTab('network')" data-tab="network" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-mesh-muted hover:bg-mesh-surface-hover">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                Network
+            </button>
+            <button onclick="switchTab('settings')" data-tab="settings" class="nav-item w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-mesh-muted hover:bg-mesh-surface-hover">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                Settings
+            </button>
+        </nav>
 
-        // ── Main poll loop ───────────────────────────────────────
+        <!-- Footer -->
+        <div class="p-4 border-t border-mesh-border">
+            <p class="text-[10px] text-mesh-dim">ShadowMesh v0.1.0</p>
+            <a href="https://github.com/Antismart/shadowmesh" target="_blank" class="text-[10px] text-mesh-accent hover:underline">GitHub</a>
+        </div>
+    </aside>
 
-        async function updateStatus() {
-            const [statusRes, metricsRes, peersRes, contentRes, replRes] =
-                await Promise.allSettled([
-                    fetch('/api/status').then(r => r.json()),
-                    fetch('/api/metrics').then(r => r.json()),
-                    fetch('/api/network/peers').then(r => r.json()),
-                    fetch('/api/storage/content').then(r => r.json()),
-                    fetch('/api/replication/health').then(r => {
-                        if (!r.ok) throw new Error('disabled');
-                        return r.json();
-                    }),
-                ]);
+    <!-- Mobile Bottom Nav -->
+    <nav class="mobile-nav hidden fixed bottom-0 left-0 right-0 bg-mesh-sidebar border-t border-mesh-border z-30 justify-around py-2 px-1">
+        <button onclick="switchTab('overview')" data-tab="overview" class="nav-item active flex flex-col items-center gap-1 px-3 py-1 rounded-lg text-mesh-muted">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+            <span class="text-[10px]">Overview</span>
+        </button>
+        <button onclick="switchTab('content')" data-tab="content" class="nav-item flex flex-col items-center gap-1 px-3 py-1 rounded-lg text-mesh-muted">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+            <span class="text-[10px]">Content</span>
+        </button>
+        <button onclick="switchTab('network')" data-tab="network" class="nav-item flex flex-col items-center gap-1 px-3 py-1 rounded-lg text-mesh-muted">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+            <span class="text-[10px]">Network</span>
+        </button>
+        <button onclick="switchTab('settings')" data-tab="settings" class="nav-item flex flex-col items-center gap-1 px-3 py-1 rounded-lg text-mesh-muted">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <span class="text-[10px]">Settings</span>
+        </button>
+    </nav>
 
-            // Status card updates
-            if (statusRes.status === 'fulfilled') {
-                const data = statusRes.value;
-                document.getElementById('uptime').textContent = data.uptime_formatted;
-                document.getElementById('bandwidth').textContent = data.bandwidth_served;
-                document.getElementById('peers').textContent = data.connected_peers;
-                document.getElementById('peerId').textContent = truncateHash(data.peer_id, 16);
+    <!-- Main Content -->
+    <main class="main-content flex-1 ml-56 pb-20 md:pb-0">
+        <div class="max-w-6xl mx-auto px-6 py-8">
 
-                // Storage gauge
-                const usedPct = data.storage_capacity > 0
-                    ? (data.storage_used / data.storage_capacity * 100)
-                    : 0;
-                document.getElementById('storageText').textContent =
-                    formatBytes(data.storage_used) + ' / ' + formatBytes(data.storage_capacity);
-                document.getElementById('storagePct').textContent = usedPct.toFixed(1) + '%';
-                const bar = document.getElementById('storageBar');
-                bar.style.width = Math.min(usedPct, 100) + '%';
-                bar.className = 'progress-bar h-2 rounded-full ' +
-                    (usedPct > 90 ? 'bg-red-500' : usedPct > 70 ? 'bg-yellow-500' : 'bg-green-500');
-            }
+            <!-- ═══════════════ OVERVIEW TAB ═══════════════ -->
+            <div id="tab-overview" class="tab-content">
+                <!-- Stat Cards -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    <div class="card stat-card rounded-xl p-5" style="--accent: #3b82f6">
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-mesh-muted text-xs font-medium uppercase tracking-wider">Uptime</span>
+                            <svg class="w-4 h-4 text-mesh-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        </div>
+                        <p class="text-2xl font-bold" id="uptime">--</p>
+                    </div>
+                    <div class="card stat-card rounded-xl p-5" style="--accent: #8b5cf6">
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-mesh-muted text-xs font-medium uppercase tracking-wider">Bandwidth Served</span>
+                            <svg class="w-4 h-4 text-mesh-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
+                        </div>
+                        <p class="text-2xl font-bold" id="bandwidth">--</p>
+                    </div>
+                    <div class="card stat-card rounded-xl p-5" style="--accent: #22c55e">
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-mesh-muted text-xs font-medium uppercase tracking-wider">Storage</span>
+                            <svg class="w-4 h-4 text-mesh-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/></svg>
+                        </div>
+                        <p class="text-lg font-bold mb-2" id="storageText">--</p>
+                        <div class="progress-track rounded-full h-1.5">
+                            <div id="storageBar" class="progress-fill h-1.5 rounded-full bg-green-500" style="width: 0%"></div>
+                        </div>
+                        <p class="text-[10px] text-mesh-dim mt-1" id="storagePct">0%</p>
+                    </div>
+                    <div class="card stat-card rounded-xl p-5" style="--accent: #f59e0b">
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-mesh-muted text-xs font-medium uppercase tracking-wider">Connected Peers</span>
+                            <svg class="w-4 h-4 text-mesh-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        </div>
+                        <p class="text-2xl font-bold" id="peers">--</p>
+                    </div>
+                </div>
 
-            // Metrics — bandwidth chart + activity chart
-            if (metricsRes.status === 'fulfilled') {
-                const metrics = metricsRes.value;
+                <!-- Health Checks -->
+                <div class="card rounded-xl p-4 mb-6">
+                    <div class="flex items-center gap-6 flex-wrap">
+                        <span class="text-xs font-medium text-mesh-muted uppercase tracking-wider">Health</span>
+                        <div class="flex items-center gap-2">
+                            <span id="healthStorage" class="w-2 h-2 rounded-full bg-mesh-dim"></span>
+                            <span class="text-xs text-mesh-muted">Storage</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span id="healthNetwork" class="w-2 h-2 rounded-full bg-mesh-dim"></span>
+                            <span class="text-xs text-mesh-muted">Network</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span id="healthApi" class="w-2 h-2 rounded-full bg-mesh-dim"></span>
+                            <span class="text-xs text-mesh-muted">API</span>
+                        </div>
+                        <div class="ml-auto flex items-center gap-4 text-xs text-mesh-dim">
+                            <span>Requests: <strong class="text-mesh-text" id="metricRequests">--</strong></span>
+                            <span>Success: <strong class="text-mesh-text" id="metricSuccessRate">--</strong></span>
+                            <span>Cache Hit: <strong class="text-mesh-text" id="metricCacheRate">--</strong></span>
+                        </div>
+                    </div>
+                </div>
 
-                // Bandwidth chart: plot actual throughput in MB/s
-                const now = new Date();
-                const timeLabel = now.getHours() + ':' + now.getMinutes().toString().padStart(2, '0');
+                <!-- Charts -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+                    <div class="card rounded-xl p-5">
+                        <h3 class="text-sm font-semibold mb-4 text-mesh-muted">Bandwidth Over Time</h3>
+                        <div style="height: 200px"><canvas id="bandwidthChart"></canvas></div>
+                    </div>
+                    <div class="card rounded-xl p-5">
+                        <h3 class="text-sm font-semibold mb-4 text-mesh-muted">Network Activity</h3>
+                        <div style="height: 200px"><canvas id="activityChart"></canvas></div>
+                    </div>
+                </div>
+            </div>
 
-                if (bandwidthChart.data.labels.length >= maxDataPoints) {
-                    bandwidthChart.data.labels.shift();
-                    bandwidthChart.data.datasets[0].data.shift();
-                }
+            <!-- ═══════════════ CONTENT TAB ═══════════════ -->
+            <div id="tab-content" class="tab-content hidden">
+                <!-- Upload Zone -->
+                <div class="card rounded-xl p-6 mb-6">
+                    <h3 class="text-sm font-semibold mb-4">Upload Content</h3>
+                    <div id="uploadZone" class="upload-zone rounded-xl p-8 text-center cursor-pointer"
+                         onclick="document.getElementById('fileInput').click()"
+                         ondragover="event.preventDefault(); this.classList.add('drag-over')"
+                         ondragleave="this.classList.remove('drag-over')"
+                         ondrop="handleDrop(event)">
+                        <svg class="w-10 h-10 mx-auto mb-3 text-mesh-accent/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+                        <p class="text-sm text-mesh-muted mb-1">Drop files here or click to browse</p>
+                        <p class="text-[10px] text-mesh-dim">Max 100 MB per file</p>
+                        <input type="file" id="fileInput" class="hidden" onchange="handleFileSelect(this.files)">
+                    </div>
+                    <div id="uploadProgress" class="hidden mt-4">
+                        <div class="flex items-center gap-3">
+                            <div class="flex-1 progress-track rounded-full h-2">
+                                <div id="uploadBar" class="progress-fill h-2 rounded-full bg-mesh-accent" style="width: 0%"></div>
+                            </div>
+                            <span id="uploadStatus" class="text-xs text-mesh-muted">Uploading...</span>
+                        </div>
+                    </div>
+                </div>
 
-                const mbps = ((metrics.bandwidth.avg_served_bps || 0) / (1024 * 1024)).toFixed(3);
-                bandwidthChart.data.labels.push(timeLabel);
-                bandwidthChart.data.datasets[0].data.push(mbps);
-                bandwidthChart.update('none');
+                <!-- Fetch from Network -->
+                <div class="card rounded-xl p-5 mb-6">
+                    <h3 class="text-sm font-semibold mb-3">Fetch from Network</h3>
+                    <div class="flex gap-3">
+                        <input type="text" id="fetchCidInput" placeholder="Enter content CID to fetch from peers..."
+                               class="flex-1 bg-mesh-bg border border-mesh-border rounded-lg px-4 py-2.5 text-sm font-mono placeholder-mesh-dim focus:outline-none focus:border-mesh-accent/50">
+                        <button onclick="fetchFromNetwork()" class="btn bg-mesh-accent/10 text-mesh-accent border border-mesh-accent/30 px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-mesh-accent/20">
+                            Fetch
+                        </button>
+                    </div>
+                </div>
 
-                // Activity chart
-                activityChart.data.datasets[0].data = [
-                    metrics.requests.total || 0,
-                    metrics.requests.cache_hits || 0,
-                    metrics.network.connected_peers || 0,
-                    metrics.requests.failed || 0
-                ];
-                activityChart.update('none');
-            }
+                <!-- Content Table -->
+                <div class="card rounded-xl overflow-hidden mb-6">
+                    <div class="flex items-center justify-between p-5 border-b border-mesh-border">
+                        <div class="flex items-center gap-3">
+                            <h3 class="text-sm font-semibold">Stored Content</h3>
+                            <span id="contentCountLabel" class="text-[10px] bg-mesh-surface-hover text-mesh-muted px-2 py-0.5 rounded-full"></span>
+                        </div>
+                        <button onclick="runGC()" class="btn text-xs text-mesh-muted border border-mesh-border px-3 py-1.5 rounded-lg hover:bg-mesh-surface-hover" title="Run garbage collection">
+                            <svg class="w-3.5 h-3.5 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                            Run GC
+                        </button>
+                    </div>
+                    <div id="contentTableContainer" class="p-5">
+                        <div class="text-center py-8">
+                            <svg class="w-12 h-12 mx-auto mb-3 text-mesh-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+                            <p class="text-sm text-mesh-muted">No content stored yet</p>
+                            <p class="text-xs text-mesh-dim mt-1">Upload files or fetch from the network</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-            // Peers table
-            if (peersRes.status === 'fulfilled') {
-                renderPeersTable(peersRes.value);
-            }
+            <!-- ═══════════════ NETWORK TAB ═══════════════ -->
+            <div id="tab-network" class="tab-content hidden">
+                <!-- Bandwidth Stats -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    <div class="card rounded-xl p-4">
+                        <p class="text-[10px] text-mesh-muted uppercase tracking-wider mb-1">Inbound Rate</p>
+                        <p class="text-lg font-bold" id="bwInbound">--</p>
+                    </div>
+                    <div class="card rounded-xl p-4">
+                        <p class="text-[10px] text-mesh-muted uppercase tracking-wider mb-1">Outbound Rate</p>
+                        <p class="text-lg font-bold" id="bwOutbound">--</p>
+                    </div>
+                    <div class="card rounded-xl p-4">
+                        <p class="text-[10px] text-mesh-muted uppercase tracking-wider mb-1">Total Inbound</p>
+                        <p class="text-lg font-bold" id="bwTotalIn">--</p>
+                    </div>
+                    <div class="card rounded-xl p-4">
+                        <p class="text-[10px] text-mesh-muted uppercase tracking-wider mb-1">Total Outbound</p>
+                        <p class="text-lg font-bold" id="bwTotalOut">--</p>
+                    </div>
+                </div>
 
-            // Content browser
-            if (contentRes.status === 'fulfilled') {
-                renderContentTable(contentRes.value);
-            }
+                <!-- Peers Table -->
+                <div class="card rounded-xl overflow-hidden mb-6">
+                    <div class="flex items-center gap-3 p-5 border-b border-mesh-border">
+                        <h3 class="text-sm font-semibold">Connected Peers</h3>
+                        <span id="peerCountLabel" class="text-[10px] bg-mesh-surface-hover text-mesh-muted px-2 py-0.5 rounded-full"></span>
+                    </div>
+                    <div id="peersTableContainer" class="p-5">
+                        <div class="text-center py-8">
+                            <svg class="w-12 h-12 mx-auto mb-3 text-mesh-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                            <p class="text-sm text-mesh-muted">No peers connected</p>
+                            <p class="text-xs text-mesh-dim mt-1">Waiting for peer discovery...</p>
+                        </div>
+                    </div>
+                </div>
 
-            // Replication health
+                <!-- Replication Health -->
+                <div id="replicationPanel" class="card rounded-xl overflow-hidden" style="display: none;">
+                    <div class="flex items-center gap-3 p-5 border-b border-mesh-border">
+                        <h3 class="text-sm font-semibold">Replication Health</h3>
+                        <span id="replicationScanStatus" class="text-[10px] text-mesh-accent"></span>
+                    </div>
+                    <div class="p-5">
+                        <div class="mb-4">
+                            <div class="flex justify-between text-xs mb-1.5">
+                                <span id="replicationHealthLabel" class="text-mesh-muted">--</span>
+                                <span id="replicationHealthPct" class="text-mesh-muted">--</span>
+                            </div>
+                            <div class="progress-track rounded-full h-2">
+                                <div id="replicationHealthBar" class="progress-fill h-2 rounded-full bg-green-500" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div>
+                                <p class="text-[10px] text-mesh-muted uppercase tracking-wider">Total</p>
+                                <p class="text-lg font-bold" id="replTotal">0</p>
+                            </div>
+                            <div>
+                                <p class="text-[10px] text-mesh-muted uppercase tracking-wider">Healthy</p>
+                                <p class="text-lg font-bold text-green-400" id="replHealthy">0</p>
+                            </div>
+                            <div>
+                                <p class="text-[10px] text-mesh-muted uppercase tracking-wider">Under-replicated</p>
+                                <p class="text-lg font-bold text-yellow-400" id="replUnder">0</p>
+                            </div>
+                            <div>
+                                <p class="text-[10px] text-mesh-muted uppercase tracking-wider">Critical</p>
+                                <p class="text-lg font-bold text-red-400" id="replCritical">0</p>
+                            </div>
+                            <div>
+                                <p class="text-[10px] text-mesh-muted uppercase tracking-wider">Replicated</p>
+                                <p class="text-lg font-bold" id="replReplicated">0</p>
+                            </div>
+                            <div>
+                                <p class="text-[10px] text-mesh-muted uppercase tracking-wider">Bytes Pulled</p>
+                                <p class="text-lg font-bold" id="replBytes">0 B</p>
+                            </div>
+                            <div>
+                                <p class="text-[10px] text-mesh-muted uppercase tracking-wider">Failures</p>
+                                <p class="text-lg font-bold text-red-400" id="replFailures">0</p>
+                            </div>
+                            <div>
+                                <p class="text-[10px] text-mesh-muted uppercase tracking-wider">Last Scan</p>
+                                <p class="text-lg font-bold" id="replLastScan">--</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════════ SETTINGS TAB ═══════════════ -->
+            <div id="tab-settings" class="tab-content hidden">
+                <div class="card rounded-xl p-6 mb-6">
+                    <h3 class="text-sm font-semibold mb-5">Node Configuration</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <div>
+                            <label class="block text-xs text-mesh-muted mb-1.5">Node Name</label>
+                            <input type="text" id="cfgNodeName"
+                                   class="w-full bg-mesh-bg border border-mesh-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-mesh-accent/50">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-mesh-muted mb-1.5">Max Storage (GB)</label>
+                            <input type="number" id="cfgMaxStorage"
+                                   class="w-full bg-mesh-bg border border-mesh-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-mesh-accent/50"
+                                   value="10">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-mesh-muted mb-1.5">Max Bandwidth (MB/s)</label>
+                            <input type="number" id="cfgMaxBandwidth"
+                                   class="w-full bg-mesh-bg border border-mesh-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-mesh-accent/50"
+                                   value="100">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-mesh-muted mb-1.5">Max Peers</label>
+                            <input type="number" id="cfgMaxPeers"
+                                   class="w-full bg-mesh-bg border border-mesh-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-mesh-accent/50"
+                                   value="50">
+                        </div>
+                    </div>
+                    <button onclick="saveConfig()" class="btn mt-5 bg-mesh-accent text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-blue-600">
+                        Save Configuration
+                    </button>
+                </div>
+
+                <!-- Danger Zone -->
+                <div class="card rounded-xl p-6 border-red-500/20">
+                    <h3 class="text-sm font-semibold text-red-400 mb-2">Danger Zone</h3>
+                    <p class="text-xs text-mesh-muted mb-4">These actions cannot be undone.</p>
+                    <button onclick="confirmShutdown()" class="btn bg-red-500/10 text-red-400 border border-red-500/30 px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-red-500/20">
+                        Shutdown Node
+                    </button>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// State & Constants
+// ═══════════════════════════════════════════════════════
+const MAX_CHART_POINTS = 30;
+let currentTab = 'overview';
+let confirmCallback = null;
+
+// ═══════════════════════════════════════════════════════
+// Charts
+// ═══════════════════════════════════════════════════════
+const chartDefaults = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+        x: {
+            grid: { color: 'rgba(30, 30, 48, 0.5)', drawBorder: false },
+            ticks: { color: '#475569', font: { size: 10 } }
+        },
+        y: {
+            beginAtZero: true,
+            grid: { color: 'rgba(30, 30, 48, 0.5)', drawBorder: false },
+            ticks: { color: '#475569', font: { size: 10 } }
+        }
+    }
+};
+
+const bandwidthChart = new Chart(document.getElementById('bandwidthChart'), {
+    type: 'line',
+    data: {
+        labels: [],
+        datasets: [{
+            label: 'MB/s',
+            data: [],
+            borderColor: '#3b82f6',
+            backgroundColor: 'rgba(59, 130, 246, 0.08)',
+            fill: true,
+            tension: 0.4,
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+        }]
+    },
+    options: chartDefaults
+});
+
+const activityChart = new Chart(document.getElementById('activityChart'), {
+    type: 'bar',
+    data: {
+        labels: ['Requests', 'Cache Hits', 'Peers', 'Errors'],
+        datasets: [{
+            data: [0, 0, 0, 0],
+            backgroundColor: ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444'],
+            borderRadius: 4,
+            borderSkipped: false,
+        }]
+    },
+    options: chartDefaults
+});
+
+// ═══════════════════════════════════════════════════════
+// Tab Navigation
+// ═══════════════════════════════════════════════════════
+function switchTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+    document.getElementById('tab-' + tab).classList.remove('hidden');
+    document.getElementById('tab-' + tab).classList.add('animate-fade');
+
+    document.querySelectorAll('.nav-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.tab === tab);
+    });
+
+    // Trigger data refresh for the new tab
+    updateAll();
+}
+
+// ═══════════════════════════════════════════════════════
+// Toast Notifications
+// ═══════════════════════════════════════════════════════
+function showToast(message, type = 'info') {
+    const colors = {
+        success: 'border-green-500/50 bg-green-500/10 text-green-400',
+        error: 'border-red-500/50 bg-red-500/10 text-red-400',
+        info: 'border-mesh-accent/50 bg-mesh-accent/10 text-mesh-accent',
+    };
+    const toast = document.createElement('div');
+    toast.className = `animate-slide border rounded-lg px-4 py-3 text-sm ${colors[type] || colors.info}`;
+    toast.textContent = message;
+    document.getElementById('toastContainer').appendChild(toast);
+    setTimeout(() => {
+        toast.style.transition = 'opacity 0.3s';
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 300);
+    }, 4000);
+}
+
+// ═══════════════════════════════════════════════════════
+// Confirm Modal
+// ═══════════════════════════════════════════════════════
+function showConfirm(title, message, callback) {
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMessage').textContent = message;
+    confirmCallback = callback;
+    const modal = document.getElementById('confirmModal');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    document.getElementById('confirmAction').onclick = () => { closeConfirm(); callback(); };
+}
+
+function closeConfirm() {
+    const modal = document.getElementById('confirmModal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+    confirmCallback = null;
+}
+
+// ═══════════════════════════════════════════════════════
+// Clipboard
+// ═══════════════════════════════════════════════════════
+function copyText(text, label) {
+    navigator.clipboard.writeText(text).then(() => {
+        showToast(label || 'Copied to clipboard', 'success');
+    }).catch(() => {});
+}
+
+// ═══════════════════════════════════════════════════════
+// Data Fetching
+// ═══════════════════════════════════════════════════════
+async function updateAll() {
+    try {
+        const [statusRes, healthRes, metricsRes] = await Promise.allSettled([
+            fetch('/api/status').then(r => r.json()),
+            fetch('/api/health').then(r => r.json()),
+            fetch('/api/metrics').then(r => r.json()),
+        ]);
+
+        if (statusRes.status === 'fulfilled') updateStatus(statusRes.value);
+        if (healthRes.status === 'fulfilled') updateHealth(healthRes.value);
+        if (metricsRes.status === 'fulfilled') updateMetrics(metricsRes.value);
+
+        // Tab-specific data
+        if (currentTab === 'content') {
+            const contentRes = await fetch('/api/storage/content').then(r => r.json()).catch(() => []);
+            renderContentTable(contentRes);
+        }
+
+        if (currentTab === 'network') {
+            const [peersRes, bwRes, replRes] = await Promise.allSettled([
+                fetch('/api/network/peers').then(r => r.json()),
+                fetch('/api/network/bandwidth').then(r => r.json()),
+                fetch('/api/replication/health').then(r => { if (!r.ok) throw 'disabled'; return r.json(); }),
+            ]);
+            if (peersRes.status === 'fulfilled') renderPeersTable(peersRes.value);
+            if (bwRes.status === 'fulfilled') updateBandwidth(bwRes.value);
             if (replRes.status === 'fulfilled') {
                 renderReplicationHealth(replRes.value);
                 document.getElementById('replicationPanel').style.display = '';
-            } else {
-                document.getElementById('replicationPanel').style.display = 'none';
             }
         }
 
-        // ── Peers table ──────────────────────────────────────────
-
-        function renderPeersTable(peers) {
-            const container = document.getElementById('peersTableContainer');
-            if (!peers || peers.length === 0) {
-                container.innerHTML = '<p class="text-gray-500">No peers connected</p>';
-                return;
-            }
-
-            let html = `<div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead>
-                        <tr class="text-gray-400 text-left border-b border-gray-700">
-                            <th class="pb-2 pr-4">Peer ID</th>
-                            <th class="pb-2 pr-4">Address</th>
-                            <th class="pb-2">Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>`;
-
-            for (const peer of peers) {
-                const isSelf = peer.latency_ms === 0;
-                const label = isSelf ? ' (self)' : '';
-                const addr = peer.addresses.length > 0 ? peer.addresses[0] : '--';
-                html += `<tr class="border-b border-gray-800">
-                    <td class="py-2 pr-4 font-mono text-xs">${truncateHash(peer.peer_id, 20)}${label}</td>
-                    <td class="py-2 pr-4 font-mono text-xs text-gray-400">${addr}</td>
-                    <td class="py-2">
-                        <span class="flex items-center gap-1">
-                            <span class="w-2 h-2 rounded-full ${peer.connected ? 'bg-green-500' : 'bg-gray-500'}"></span>
-                            <span class="text-xs ${peer.connected ? 'text-green-400' : 'text-gray-500'}">${peer.connected ? 'Connected' : 'Offline'}</span>
-                        </span>
-                    </td>
-                </tr>`;
-            }
-
-            html += '</tbody></table></div>';
-            container.innerHTML = html;
-        }
-
-        // ── Content browser ──────────────────────────────────────
-
-        function renderContentTable(content) {
-            const container = document.getElementById('contentTableContainer');
-            const countEl = document.getElementById('contentCount');
-            countEl.textContent = content.length > 0 ? `(${content.length} items)` : '';
-
-            if (!content || content.length === 0) {
-                container.innerHTML = '<p class="text-gray-500">No content stored</p>';
-                return;
-            }
-
-            let html = `<div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead>
-                        <tr class="text-gray-400 text-left border-b border-gray-700">
-                            <th class="pb-2 pr-4">Name</th>
-                            <th class="pb-2 pr-4">CID</th>
-                            <th class="pb-2 pr-4">Size</th>
-                            <th class="pb-2 pr-4">Fragments</th>
-                            <th class="pb-2 pr-4">Pinned</th>
-                            <th class="pb-2">Stored</th>
-                        </tr>
-                    </thead>
-                    <tbody>`;
-
-            for (const item of content) {
-                const pinBadge = item.pinned
-                    ? '<span class="px-2 py-0.5 rounded text-xs bg-green-900 text-green-300">Pinned</span>'
-                    : '<span class="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-400">No</span>';
-                html += `<tr class="border-b border-gray-800">
-                    <td class="py-2 pr-4 truncate max-w-[160px]" title="${item.name}">${item.name}</td>
-                    <td class="py-2 pr-4 font-mono text-xs text-gray-400" title="${item.cid}">${truncateHash(item.cid, 16)}</td>
-                    <td class="py-2 pr-4">${formatBytes(item.total_size)}</td>
-                    <td class="py-2 pr-4">${item.fragment_count}</td>
-                    <td class="py-2 pr-4">${pinBadge}</td>
-                    <td class="py-2 text-gray-400">${formatTimestamp(item.stored_at)}</td>
-                </tr>`;
-            }
-
-            html += '</tbody></table></div>';
-            container.innerHTML = html;
-        }
-
-        // ── Replication health ───────────────────────────────────
-
-        function renderReplicationHealth(data) {
-            const health = data.health;
-            const stats = data.stats;
-
-            // Health percentage
-            const pct = health.total_content > 0
-                ? (health.healthy_content / health.total_content * 100)
-                : 100;
-            document.getElementById('replicationHealthLabel').textContent =
-                health.healthy_content + ' / ' + health.total_content + ' healthy';
-            document.getElementById('replicationHealthPct').textContent = pct.toFixed(0) + '%';
-
-            const hbar = document.getElementById('replicationHealthBar');
-            hbar.style.width = pct + '%';
-            hbar.className = 'progress-bar h-3 rounded-full ' +
-                (pct >= 80 ? 'bg-green-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-red-500');
-
-            // Stats
-            document.getElementById('replTotal').textContent = health.total_content;
-            document.getElementById('replHealthy').textContent = health.healthy_content;
-            document.getElementById('replUnder').textContent = health.under_replicated_content;
-            document.getElementById('replCritical').textContent = health.critical_content;
-            document.getElementById('replReplicated').textContent = stats.total_replicated;
-            document.getElementById('replBytes').textContent = formatBytes(stats.total_bytes_replicated);
-            document.getElementById('replFailures').textContent = stats.total_failures;
-            document.getElementById('replLastScan').textContent =
-                stats.last_scan_timestamp ? formatTimestamp(stats.last_scan_timestamp) : '--';
-
-            // Scan status
-            document.getElementById('replicationScanStatus').textContent =
-                stats.scan_in_progress ? '(scanning...)' : '';
-        }
-
-        // ── Utilities ────────────────────────────────────────────
-
-        function formatBytes(bytes) {
-            if (bytes === 0 || bytes == null) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-        }
-
-        function truncateHash(hash, len) {
-            if (!hash) return '--';
-            if (hash.length <= len + 3) return hash;
-            return hash.substring(0, len) + '...';
-        }
-
-        function formatTimestamp(ts) {
-            if (!ts) return '--';
-            const d = new Date(ts * 1000);
-            const now = new Date();
-            const diffMs = now - d;
-            const diffSec = Math.floor(diffMs / 1000);
-
-            if (diffSec < 60) return diffSec + 's ago';
-            if (diffSec < 3600) return Math.floor(diffSec / 60) + 'm ago';
-            if (diffSec < 86400) return Math.floor(diffSec / 3600) + 'h ago';
-            return Math.floor(diffSec / 86400) + 'd ago';
-        }
-
-        // ── Config ───────────────────────────────────────────────
-
-        async function saveConfig() {
-            const maxStorage = parseFloat(document.getElementById('maxStorage').value);
-            const maxBandwidth = parseInt(document.getElementById('maxBandwidth').value);
-
-            try {
-                const response = await fetch('/api/config', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        max_storage_gb: maxStorage,
-                        max_bandwidth_mbps: maxBandwidth
-                    })
-                });
-
-                if (response.ok) {
-                    alert('Configuration saved successfully!');
-                } else {
-                    alert('Failed to save configuration');
+        if (currentTab === 'overview') {
+            // Also fetch peers + content count for overview
+            const [peersRes, contentRes] = await Promise.allSettled([
+                fetch('/api/network/peers').then(r => r.json()),
+                fetch('/api/storage/content').then(r => r.json()),
+            ]);
+            // Update content badge
+            if (contentRes.status === 'fulfilled') {
+                const badge = document.getElementById('contentBadge');
+                if (contentRes.value.length > 0) {
+                    badge.textContent = contentRes.value.length;
+                    badge.classList.remove('hidden');
                 }
-            } catch (error) {
-                console.error('Failed to save config:', error);
-                alert('Failed to save configuration');
             }
         }
+    } catch (e) {
+        console.error('Update failed:', e);
+    }
+}
 
-        async function loadConfig() {
-            try {
-                const response = await fetch('/api/config');
-                const data = await response.json();
+function updateStatus(data) {
+    document.getElementById('uptime').textContent = data.uptime_formatted;
+    document.getElementById('bandwidth').textContent = data.bandwidth_served;
+    document.getElementById('peers').textContent = data.connected_peers;
 
-                document.getElementById('maxStorage').value = (data.storage.max_storage_bytes / (1024 * 1024 * 1024)).toFixed(0);
-                document.getElementById('maxBandwidth').value = data.network.max_outbound_bandwidth
-                    ? Math.floor(data.network.max_outbound_bandwidth / (1024 * 1024))
-                    : 100;
-            } catch (error) {
-                console.error('Failed to load config:', error);
-            }
+    // Sidebar peer ID
+    const pidEl = document.getElementById('sidebarPeerId');
+    pidEl.textContent = truncateHash(data.peer_id, 16);
+    pidEl.dataset.full = data.peer_id;
+
+    // Storage
+    const usedPct = data.storage_capacity > 0
+        ? (data.storage_used / data.storage_capacity * 100)
+        : 0;
+    document.getElementById('storageText').textContent =
+        formatBytes(data.storage_used) + ' / ' + formatBytes(data.storage_capacity);
+    document.getElementById('storagePct').textContent = usedPct.toFixed(1) + '%';
+    const bar = document.getElementById('storageBar');
+    bar.style.width = Math.min(usedPct, 100) + '%';
+    bar.className = 'progress-fill h-1.5 rounded-full ' +
+        (usedPct > 90 ? 'bg-red-500' : usedPct > 70 ? 'bg-yellow-500' : 'bg-green-500');
+
+    // Status indicator
+    const dot = document.getElementById('statusDot');
+    const label = document.getElementById('statusLabel');
+    if (data.status === 'running') {
+        dot.className = 'w-2 h-2 rounded-full bg-green-500 pulse-dot';
+        label.textContent = 'Online';
+        label.className = 'text-xs text-green-400';
+    } else {
+        dot.className = 'w-2 h-2 rounded-full bg-yellow-500';
+        label.textContent = data.status;
+        label.className = 'text-xs text-yellow-400';
+    }
+}
+
+function updateHealth(data) {
+    const set = (id, ok) => {
+        const el = document.getElementById(id);
+        el.className = 'w-2 h-2 rounded-full ' + (ok ? 'bg-green-500' : 'bg-red-500');
+    };
+    set('healthStorage', data.checks.storage);
+    set('healthNetwork', data.checks.network);
+    set('healthApi', data.checks.api);
+}
+
+function updateMetrics(data) {
+    // Quick stats
+    document.getElementById('metricRequests').textContent = (data.requests.total || 0).toLocaleString();
+    document.getElementById('metricSuccessRate').textContent = (data.requests.success_rate * 100).toFixed(1) + '%';
+    document.getElementById('metricCacheRate').textContent = (data.requests.cache_hit_rate * 100).toFixed(1) + '%';
+
+    // Bandwidth chart
+    const now = new Date();
+    const timeLabel = now.getHours().toString().padStart(2, '0') + ':' +
+                      now.getMinutes().toString().padStart(2, '0') + ':' +
+                      now.getSeconds().toString().padStart(2, '0');
+
+    if (bandwidthChart.data.labels.length >= MAX_CHART_POINTS) {
+        bandwidthChart.data.labels.shift();
+        bandwidthChart.data.datasets[0].data.shift();
+    }
+
+    const mbps = ((data.bandwidth.avg_served_bps || 0) / (1024 * 1024)).toFixed(3);
+    bandwidthChart.data.labels.push(timeLabel);
+    bandwidthChart.data.datasets[0].data.push(parseFloat(mbps));
+    bandwidthChart.update('none');
+
+    // Activity chart
+    activityChart.data.datasets[0].data = [
+        data.requests.total || 0,
+        data.requests.cache_hits || 0,
+        data.network.connected_peers || 0,
+        data.requests.failed || 0
+    ];
+    activityChart.update('none');
+}
+
+function updateBandwidth(data) {
+    document.getElementById('bwInbound').textContent = formatBps(data.inbound_bps);
+    document.getElementById('bwOutbound').textContent = formatBps(data.outbound_bps);
+    document.getElementById('bwTotalIn').textContent = data.total_inbound;
+    document.getElementById('bwTotalOut').textContent = data.total_outbound;
+}
+
+// ═══════════════════════════════════════════════════════
+// Content Table
+// ═══════════════════════════════════════════════════════
+function renderContentTable(content) {
+    const container = document.getElementById('contentTableContainer');
+    const countLabel = document.getElementById('contentCountLabel');
+    countLabel.textContent = content.length + ' items';
+
+    if (!content || content.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-8">
+                <svg class="w-12 h-12 mx-auto mb-3 text-mesh-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+                <p class="text-sm text-mesh-muted">No content stored yet</p>
+                <p class="text-xs text-mesh-dim mt-1">Upload files or fetch from the network</p>
+            </div>`;
+        return;
+    }
+
+    let html = `<div class="overflow-x-auto"><table class="w-full text-sm">
+        <thead><tr class="text-mesh-muted text-[11px] uppercase tracking-wider text-left border-b border-mesh-border">
+            <th class="pb-3 pr-3 font-medium">Name</th>
+            <th class="pb-3 pr-3 font-medium">CID</th>
+            <th class="pb-3 pr-3 font-medium">Size</th>
+            <th class="pb-3 pr-3 font-medium">Type</th>
+            <th class="pb-3 pr-3 font-medium">Status</th>
+            <th class="pb-3 pr-3 font-medium">Stored</th>
+            <th class="pb-3 font-medium text-right">Actions</th>
+        </tr></thead><tbody>`;
+
+    for (const item of content) {
+        const pinBadge = item.pinned
+            ? '<span class="px-1.5 py-0.5 rounded text-[10px] bg-green-500/10 text-green-400 border border-green-500/20">Pinned</span>'
+            : '<span class="px-1.5 py-0.5 rounded text-[10px] bg-mesh-surface-hover text-mesh-dim border border-mesh-border">Unpinned</span>';
+        const pinAction = item.pinned ? 'unpin' : 'pin';
+        const pinLabel = item.pinned ? 'Unpin' : 'Pin';
+
+        html += `<tr class="table-row border-b border-mesh-border/50">
+            <td class="py-3 pr-3 max-w-[140px] truncate" title="${escHtml(item.name)}">${escHtml(item.name)}</td>
+            <td class="py-3 pr-3">
+                <span class="font-mono text-xs text-mesh-dim cursor-pointer hover:text-mesh-text" title="Click to copy" onclick="copyText('${escHtml(item.cid)}', 'CID copied')">${truncateHash(item.cid, 12)}</span>
+            </td>
+            <td class="py-3 pr-3 text-mesh-muted">${formatBytes(item.total_size)}</td>
+            <td class="py-3 pr-3 text-mesh-dim text-xs">${escHtml(item.mime_type || '--')}</td>
+            <td class="py-3 pr-3">${pinBadge}</td>
+            <td class="py-3 pr-3 text-mesh-dim text-xs">${formatTimestamp(item.stored_at)}</td>
+            <td class="py-3 text-right whitespace-nowrap">
+                <a href="/api/storage/download/${encodeURIComponent(item.cid)}" target="_blank"
+                   class="inline-block text-mesh-accent hover:text-blue-400 p-1" title="Download">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                </a>
+                <button onclick="togglePin('${escHtml(item.cid)}', '${pinAction}')" class="text-mesh-muted hover:text-mesh-text p-1" title="${pinLabel}">
+                    <svg class="w-3.5 h-3.5" fill="${item.pinned ? 'currentColor' : 'none'}" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/></svg>
+                </button>
+                <button onclick="deleteContent('${escHtml(item.cid)}', '${escHtml(item.name)}')" class="text-mesh-dim hover:text-red-400 p-1" title="Delete">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                </button>
+            </td>
+        </tr>`;
+    }
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════
+// Peers Table
+// ═══════════════════════════════════════════════════════
+function renderPeersTable(peers) {
+    const container = document.getElementById('peersTableContainer');
+    const countLabel = document.getElementById('peerCountLabel');
+    countLabel.textContent = peers.length + ' peers';
+
+    if (!peers || peers.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-8">
+                <svg class="w-12 h-12 mx-auto mb-3 text-mesh-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                <p class="text-sm text-mesh-muted">No peers connected</p>
+                <p class="text-xs text-mesh-dim mt-1">Waiting for peer discovery...</p>
+            </div>`;
+        return;
+    }
+
+    let html = `<div class="overflow-x-auto"><table class="w-full text-sm">
+        <thead><tr class="text-mesh-muted text-[11px] uppercase tracking-wider text-left border-b border-mesh-border">
+            <th class="pb-3 pr-3 font-medium">Peer ID</th>
+            <th class="pb-3 pr-3 font-medium">Address</th>
+            <th class="pb-3 font-medium">Status</th>
+        </tr></thead><tbody>`;
+
+    for (const peer of peers) {
+        const addr = peer.addresses && peer.addresses.length > 0 ? peer.addresses[0] : '--';
+        html += `<tr class="table-row border-b border-mesh-border/50">
+            <td class="py-3 pr-3">
+                <span class="font-mono text-xs text-mesh-dim cursor-pointer hover:text-mesh-text" title="Click to copy" onclick="copyText('${escHtml(peer.peer_id)}', 'Peer ID copied')">${truncateHash(peer.peer_id, 20)}</span>
+            </td>
+            <td class="py-3 pr-3 font-mono text-xs text-mesh-dim">${escHtml(addr)}</td>
+            <td class="py-3">
+                <div class="flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full ${peer.connected ? 'bg-green-500' : 'bg-mesh-dim'}"></span>
+                    <span class="text-xs ${peer.connected ? 'text-green-400' : 'text-mesh-dim'}">${peer.connected ? 'Connected' : 'Offline'}</span>
+                </div>
+            </td>
+        </tr>`;
+    }
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════
+// Replication Health
+// ═══════════════════════════════════════════════════════
+function renderReplicationHealth(data) {
+    const health = data.health;
+    const stats = data.stats;
+
+    const pct = health.total_content > 0
+        ? (health.healthy_content / health.total_content * 100)
+        : 100;
+    document.getElementById('replicationHealthLabel').textContent =
+        health.healthy_content + ' / ' + health.total_content + ' healthy';
+    document.getElementById('replicationHealthPct').textContent = pct.toFixed(0) + '%';
+
+    const hbar = document.getElementById('replicationHealthBar');
+    hbar.style.width = pct + '%';
+    hbar.className = 'progress-fill h-2 rounded-full ' +
+        (pct >= 80 ? 'bg-green-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-red-500');
+
+    document.getElementById('replTotal').textContent = health.total_content;
+    document.getElementById('replHealthy').textContent = health.healthy_content;
+    document.getElementById('replUnder').textContent = health.under_replicated_content;
+    document.getElementById('replCritical').textContent = health.critical_content;
+    document.getElementById('replReplicated').textContent = stats.total_replicated;
+    document.getElementById('replBytes').textContent = formatBytes(stats.total_bytes_replicated);
+    document.getElementById('replFailures').textContent = stats.total_failures;
+    document.getElementById('replLastScan').textContent =
+        stats.last_scan_timestamp ? formatTimestamp(stats.last_scan_timestamp) : '--';
+    document.getElementById('replicationScanStatus').textContent =
+        stats.scan_in_progress ? 'Scanning...' : '';
+}
+
+// ═══════════════════════════════════════════════════════
+// Content Actions
+// ═══════════════════════════════════════════════════════
+function handleDrop(event) {
+    event.preventDefault();
+    document.getElementById('uploadZone').classList.remove('drag-over');
+    if (event.dataTransfer.files.length > 0) {
+        handleFileSelect(event.dataTransfer.files);
+    }
+}
+
+async function handleFileSelect(files) {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    if (file.size > 100 * 1024 * 1024) {
+        showToast('File too large (max 100 MB)', 'error');
+        return;
+    }
+
+    const progress = document.getElementById('uploadProgress');
+    const bar = document.getElementById('uploadBar');
+    const status = document.getElementById('uploadStatus');
+    progress.classList.remove('hidden');
+    bar.style.width = '0%';
+    status.textContent = 'Uploading ' + file.name + '...';
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        // Simulate progress
+        bar.style.width = '30%';
+
+        const response = await fetch('/api/storage/upload', {
+            method: 'POST',
+            body: formData,
+        });
+
+        bar.style.width = '90%';
+
+        if (response.ok) {
+            const data = await response.json();
+            bar.style.width = '100%';
+            status.textContent = 'Uploaded!';
+            showToast('Uploaded: ' + data.name + ' (' + formatBytes(data.size) + ')', 'success');
+            setTimeout(() => {
+                progress.classList.add('hidden');
+                if (currentTab === 'content') updateAll();
+            }, 1500);
+        } else {
+            const text = await response.text();
+            throw new Error(text || 'Upload failed');
         }
+    } catch (e) {
+        status.textContent = 'Failed';
+        bar.className = 'progress-fill h-2 rounded-full bg-red-500';
+        bar.style.width = '100%';
+        showToast('Upload failed: ' + e.message, 'error');
+        setTimeout(() => {
+            progress.classList.add('hidden');
+            bar.className = 'progress-fill h-2 rounded-full bg-mesh-accent';
+        }, 3000);
+    }
 
-        // Initialize
-        loadConfig();
-        updateStatus();
+    // Reset file input
+    document.getElementById('fileInput').value = '';
+}
 
-        // Update every 5 seconds
-        setInterval(updateStatus, 5000);
-    </script>
+async function fetchFromNetwork() {
+    const input = document.getElementById('fetchCidInput');
+    const cid = input.value.trim();
+    if (!cid) {
+        showToast('Please enter a CID', 'error');
+        return;
+    }
+
+    showToast('Fetching ' + truncateHash(cid, 16) + ' from network...', 'info');
+
+    try {
+        const res = await fetch('/api/storage/fetch/' + encodeURIComponent(cid), { method: 'POST' });
+        if (res.ok) {
+            const data = await res.json();
+            showToast('Fetched: ' + data.name + ' (' + formatBytes(data.size) + ')', 'success');
+            input.value = '';
+            if (currentTab === 'content') updateAll();
+        } else {
+            const text = await res.text();
+            showToast('Fetch failed: ' + (text || res.statusText), 'error');
+        }
+    } catch (e) {
+        showToast('Fetch failed: ' + e.message, 'error');
+    }
+}
+
+async function togglePin(cid, action) {
+    try {
+        const res = await fetch('/api/storage/' + action + '/' + encodeURIComponent(cid), { method: 'POST' });
+        if (res.ok) {
+            showToast(action === 'pin' ? 'Content pinned' : 'Content unpinned', 'success');
+            updateAll();
+        } else {
+            showToast('Failed to ' + action, 'error');
+        }
+    } catch (e) {
+        showToast('Failed to ' + action + ': ' + e.message, 'error');
+    }
+}
+
+function deleteContent(cid, name) {
+    showConfirm('Delete Content', 'Are you sure you want to delete "' + name + '"? This cannot be undone.', async () => {
+        try {
+            const res = await fetch('/api/storage/content/' + encodeURIComponent(cid), { method: 'DELETE' });
+            if (res.ok || res.status === 204) {
+                showToast('Content deleted', 'success');
+                updateAll();
+            } else {
+                showToast('Delete failed', 'error');
+            }
+        } catch (e) {
+            showToast('Delete failed: ' + e.message, 'error');
+        }
+    });
+}
+
+async function runGC() {
+    showConfirm('Run Garbage Collection', 'This will remove unpinned content to free up storage space.', async () => {
+        try {
+            const res = await fetch('/api/storage/gc', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_free_gb: 1.0 }),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                showToast('GC complete: freed ' + formatBytes(data.freed_bytes) + ', removed ' + data.removed_content + ' items', 'success');
+                updateAll();
+            } else {
+                showToast('GC failed', 'error');
+            }
+        } catch (e) {
+            showToast('GC failed: ' + e.message, 'error');
+        }
+    });
+}
+
+// ═══════════════════════════════════════════════════════
+// Settings
+// ═══════════════════════════════════════════════════════
+async function loadConfig() {
+    try {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        document.getElementById('cfgNodeName').value = data.identity?.name || 'ShadowMesh Node';
+        document.getElementById('cfgMaxStorage').value = ((data.storage?.max_storage_bytes || 0) / (1024 * 1024 * 1024)).toFixed(0);
+        document.getElementById('cfgMaxBandwidth').value = data.network?.max_outbound_bandwidth
+            ? Math.floor(data.network.max_outbound_bandwidth / (1024 * 1024))
+            : 100;
+        document.getElementById('cfgMaxPeers').value = data.network?.max_peers || 50;
+    } catch (e) {
+        console.error('Failed to load config:', e);
+    }
+}
+
+async function saveConfig() {
+    const body = {
+        node_name: document.getElementById('cfgNodeName').value,
+        max_storage_gb: parseFloat(document.getElementById('cfgMaxStorage').value),
+        max_bandwidth_mbps: parseInt(document.getElementById('cfgMaxBandwidth').value),
+        max_peers: parseInt(document.getElementById('cfgMaxPeers').value),
+    };
+
+    try {
+        const res = await fetch('/api/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (res.ok) {
+            showToast('Configuration saved', 'success');
+        } else {
+            showToast('Failed to save configuration', 'error');
+        }
+    } catch (e) {
+        showToast('Failed to save: ' + e.message, 'error');
+    }
+}
+
+function confirmShutdown() {
+    showConfirm('Shutdown Node', 'This will gracefully shut down the node. You will lose connection to this dashboard.', async () => {
+        try {
+            await fetch('/api/node/shutdown', { method: 'POST' });
+            showToast('Node is shutting down...', 'info');
+            document.getElementById('statusDot').className = 'w-2 h-2 rounded-full bg-red-500';
+            document.getElementById('statusLabel').textContent = 'Shutting down';
+            document.getElementById('statusLabel').className = 'text-xs text-red-400';
+        } catch (e) {
+            showToast('Shutdown failed', 'error');
+        }
+    });
+}
+
+// ═══════════════════════════════════════════════════════
+// Utilities
+// ═══════════════════════════════════════════════════════
+function formatBytes(bytes) {
+    if (bytes === 0 || bytes == null) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatBps(bps) {
+    if (!bps) return '0 B/s';
+    return formatBytes(bps) + '/s';
+}
+
+function truncateHash(hash, len) {
+    if (!hash) return '--';
+    if (hash.length <= len + 3) return hash;
+    return hash.substring(0, len) + '...';
+}
+
+function formatTimestamp(ts) {
+    if (!ts) return '--';
+    const d = new Date(ts * 1000);
+    const now = new Date();
+    const diffSec = Math.floor((now - d) / 1000);
+    if (diffSec < 60) return diffSec + 's ago';
+    if (diffSec < 3600) return Math.floor(diffSec / 60) + 'm ago';
+    if (diffSec < 86400) return Math.floor(diffSec / 3600) + 'h ago';
+    return Math.floor(diffSec / 86400) + 'd ago';
+}
+
+function escHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// ═══════════════════════════════════════════════════════
+// Init
+// ═══════════════════════════════════════════════════════
+loadConfig();
+updateAll();
+setInterval(updateAll, 5000);
+</script>
 </body>
 </html>
