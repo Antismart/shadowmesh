@@ -190,7 +190,7 @@ impl StorageManager {
         }
 
         // Ensure fragment subdirectory exists and write fragment data
-        let fragment_path = self.fragment_path(hash);
+        let fragment_path = self.fragment_path(hash)?;
         if let Some(parent) = fragment_path.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -248,7 +248,7 @@ impl StorageManager {
         }
 
         // Read fragment data
-        let fragment_path = self.fragment_path(hash);
+        let fragment_path = self.fragment_path(hash)?;
         let data = fs::read(&fragment_path).await?;
 
         // Update access metadata
@@ -288,7 +288,7 @@ impl StorageManager {
             }
         }
 
-        Ok(self.fragment_path(hash))
+        self.fragment_path(hash)
     }
 
     /// Check if fragment exists
@@ -426,7 +426,7 @@ impl StorageManager {
 
     /// Delete a fragment
     async fn delete_fragment(&self, hash: &str) -> Result<(), StorageError> {
-        let fragment_path = self.fragment_path(hash);
+        let fragment_path = self.fragment_path(hash)?;
 
         let size = {
             let fragments = self.fragments.read().await;
@@ -549,16 +549,18 @@ impl StorageManager {
     ///
     /// Validates that the hash contains only safe alphanumeric characters
     /// to prevent path traversal attacks (e.g. "../../etc/passwd").
-    fn fragment_path(&self, hash: &str) -> PathBuf {
-        assert!(
-            !hash.is_empty()
-                && hash.len() <= 512
-                && hash.chars().all(|c| c.is_ascii_alphanumeric()),
-            "Invalid fragment hash"
-        );
+    fn fragment_path(&self, hash: &str) -> Result<PathBuf, StorageError> {
+        if hash.is_empty()
+            || hash.len() > 512
+            || !hash.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err(StorageError::InvalidHash(
+                hash[..hash.len().min(32)].to_string(),
+            ));
+        }
         // Use first 2 chars as subdirectory for better filesystem performance
         let subdir = &hash[..2.min(hash.len())];
-        self.data_dir.join("fragments").join(subdir).join(hash)
+        Ok(self.data_dir.join("fragments").join(subdir).join(hash))
     }
 
 }
@@ -580,6 +582,8 @@ pub enum StorageError {
     NotFound(String),
     /// Content is pinned and cannot be deleted
     Pinned(String),
+    /// Invalid hash format
+    InvalidHash(String),
     /// IO error
     Io(std::io::Error),
 }
@@ -599,6 +603,7 @@ impl std::fmt::Display for StorageError {
             }
             Self::NotFound(id) => write!(f, "Not found: {}", id),
             Self::Pinned(id) => write!(f, "Content is pinned: {}", id),
+            Self::InvalidHash(h) => write!(f, "Invalid fragment hash: '{}'", h),
             Self::Io(e) => write!(f, "IO error: {}", e),
         }
     }
