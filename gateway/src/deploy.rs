@@ -183,9 +183,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                 .is_some();
 
             if !has_index {
-                println!(
-                    "⚠️  No index.html found in deployment (site may not serve correctly at root)"
-                );
+                tracing::warn!("No index.html found in deployment (site may not serve correctly at root)");
             }
         }
 
@@ -214,7 +212,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                     })
                     .collect();
 
-                println!("✅ Deployed {} files, root CID: {}", files.len(), cid);
+                tracing::info!(file_count = files.len(), cid = %cid, "Deployment complete");
 
                 // Record deployment in state
                 let deployment_name = filename
@@ -297,19 +295,6 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
         Json(DeployError::new(
             "No file field found in multipart data",
             "MISSING_FILE",
-        )),
-    )
-        .into_response()
-}
-
-/// Deploy from a tarball (.tar.gz)
-pub async fn deploy_tarball(State(_state): State<AppState>, _multipart: Multipart) -> Response {
-    // For now, suggest using ZIP
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(DeployError::new(
-            "Tarball deployment coming soon. Please use ZIP format for now.",
-            "NOT_IMPLEMENTED",
         )),
     )
         .into_response()
