@@ -829,10 +829,10 @@ impl ZkRelayClient {
             context.extend_from_slice(&circuit_id);
             context.extend_from_slice(&i.to_le_bytes());
 
-            let hop = circuit
-                .hops
-                .last_mut()
-                .expect("hop was just added via add_hop");
+            let hop = match circuit.hops.last_mut() {
+                Some(h) => h,
+                None => return Err(RelayError::CircuitBuildFailed("hop missing after add".into())),
+            };
             let mock_relay_public: X25519PublicKey = rand::random();
             hop.relay_public_key = Some(mock_relay_public);
             hop.symmetric_key = Some(
