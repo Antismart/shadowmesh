@@ -83,6 +83,7 @@ impl DeployError {
 ///   -F "file=@site.zip"
 /// ```
 pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart) -> Response {
+    let deploy_cfg = state.config.read().await.clone();
     // Check IPFS connection
     let Some(storage) = &state.storage else {
         return (
@@ -107,7 +108,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
 
         // Read the ZIP data with streaming size enforcement.
         // This prevents buffering an unbounded upload into RAM.
-        let max_deploy_size = state.config.deploy.max_size_bytes();
+        let max_deploy_size = deploy_cfg.deploy.max_size_bytes();
         let mut data = Vec::new();
         loop {
             match field.chunk().await {
@@ -118,7 +119,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                             Json(DeployError::new(
                                 format!(
                                     "Deployment too large. Maximum size is {} MB",
-                                    state.config.deploy.max_size_mb
+                                    deploy_cfg.deploy.max_size_mb
                                 ),
                                 "FILE_TOO_LARGE",
                             )),
@@ -205,7 +206,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
 
         match result {
             Ok(Ok(upload_result)) => {
-                let port = state.config.server.port;
+                let port = deploy_cfg.server.port;
                 let cid = upload_result.root_cid.clone();
 
                 // Strip the temp directory prefix from file paths
@@ -235,7 +236,7 @@ pub async fn deploy_zip(State(state): State<AppState>, mut multipart: Multipart)
                 );
 
                 // Auto-assign .shadow domain
-                deployment.domain = crate::auto_assign_domain(&state, &deployment_name, &cid);
+                deployment.domain = crate::auto_assign_domain(&state, &deployment_name, &cid).await;
 
                 // Save to Redis if available
                 if let Some(ref redis) = state.redis {
@@ -460,7 +461,7 @@ pub struct DeployInfo {
 
 pub async fn deploy_info(State(state): State<AppState>) -> Json<DeployInfo> {
     Json(DeployInfo {
-        max_size_mb: state.config.deploy.max_size_mb,
+        max_size_mb: state.config.read().await.deploy.max_size_mb,
         supported_formats: vec!["zip"],
         example_command: "cd my-site && zip -r ../site.zip . && curl -X POST http://localhost:8080/api/deploy -F 'file=@../site.zip'",
     })
