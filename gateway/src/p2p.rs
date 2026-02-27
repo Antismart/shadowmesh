@@ -7,7 +7,7 @@
 
 use futures::StreamExt;
 use libp2p::{
-    identify, kad, relay, rendezvous,
+    autonat, identify, kad, relay, rendezvous, upnp,
     request_response::{self, OutboundRequestId, ResponseChannel},
     swarm::SwarmEvent,
     PeerId,
@@ -493,6 +493,36 @@ async fn handle_behaviour_event(
             peer,
         }) => {
             tracing::debug!(%peer, "Rendezvous: peer registration expired");
+        }
+
+        // ── AutoNAT ──────────────────────────────────────────
+        ShadowBehaviourEvent::Autonat(autonat::Event::InboundProbe(event)) => {
+            tracing::debug!(?event, "AutoNAT: inbound probe");
+        }
+        ShadowBehaviourEvent::Autonat(autonat::Event::OutboundProbe(event)) => {
+            tracing::debug!(?event, "AutoNAT: outbound probe");
+        }
+        ShadowBehaviourEvent::Autonat(autonat::Event::StatusChanged { old, new }) => {
+            tracing::info!(?old, ?new, "AutoNAT: NAT status changed");
+        }
+
+        // ── DCUtR ────────────────────────────────────────────
+        ShadowBehaviourEvent::Dcutr(event) => {
+            tracing::info!(?event, "DCUtR: direct connection upgrade event");
+        }
+
+        // ── UPnP ─────────────────────────────────────────────
+        ShadowBehaviourEvent::Upnp(upnp::Event::NewExternalAddr(addr)) => {
+            tracing::info!(%addr, "UPnP: new external address mapped");
+        }
+        ShadowBehaviourEvent::Upnp(upnp::Event::GatewayNotFound) => {
+            tracing::debug!("UPnP: no gateway found on this network");
+        }
+        ShadowBehaviourEvent::Upnp(upnp::Event::NonRoutableGateway) => {
+            tracing::debug!("UPnP: gateway is not routable");
+        }
+        ShadowBehaviourEvent::Upnp(upnp::Event::ExpiredExternalAddr(addr)) => {
+            tracing::info!(%addr, "UPnP: external address mapping expired");
         }
     }
 }
