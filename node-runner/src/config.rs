@@ -179,6 +179,10 @@ pub struct NetworkConfig {
     /// Replication factor for stored content
     #[serde(default = "default_replication_factor")]
     pub replication_factor: usize,
+
+    /// DHT record TTL in seconds (default: 86400 = 24 hours)
+    #[serde(default = "default_dht_ttl")]
+    pub dht_ttl_secs: u64,
 }
 
 fn default_listen_addresses() -> Vec<String> {
@@ -196,6 +200,10 @@ fn default_replication_factor() -> usize {
     3
 }
 
+fn default_dht_ttl() -> u64 {
+    86400 // 24 hours
+}
+
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
@@ -207,6 +215,7 @@ impl Default for NetworkConfig {
             enable_mdns: true,
             enable_dht: true,
             replication_factor: default_replication_factor(),
+            dht_ttl_secs: default_dht_ttl(),
         }
     }
 }
