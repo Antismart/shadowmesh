@@ -59,7 +59,9 @@ mime_guess = "2"
 # P2P mesh network + naming layer key management
 libp2p = { workspace = true, features = [
     "ed25519", "tcp", "noise", "yamux", "kad", "gossipsub",
-    "mdns", "request-response", "identify", "relay", "rendezvous", "macros", "serde", "tokio",
+    "mdns", "request-response", "identify", "relay", "rendezvous",
+    "autonat", "dcutr", "upnp",
+    "macros", "serde", "tokio",
 ] }
 
 # Content verification
