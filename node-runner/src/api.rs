@@ -309,7 +309,7 @@ async fn update_config(
 
     // Validate
     if let Err(errors) = config.validate() {
-        eprintln!("Config validation failed: {:?}", errors);
+        tracing::warn!(?errors, "Config validation failed");
         return Err(StatusCode::BAD_REQUEST);
     }
 
