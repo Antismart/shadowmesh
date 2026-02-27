@@ -187,7 +187,9 @@ where
 {
     use futures::AsyncWriteExt;
 
-    let len = data.len() as u32;
+    let len: u32 = data.len().try_into().map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "message exceeds u32::MAX bytes")
+    })?;
     io.write_all(&len.to_be_bytes()).await?;
     io.write_all(data).await?;
     io.flush().await?;
