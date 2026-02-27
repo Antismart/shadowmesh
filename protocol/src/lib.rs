@@ -115,6 +115,6 @@ pub use naming::{
 
 // Re-export bootstrap types
 pub use bootstrap::{
-    all_stun_servers, is_valid_bootstrap_multiaddr, BOOTSTRAP_GOSSIP_TOPIC,
-    FALLBACK_STUN_SERVERS, OFFICIAL_BOOTSTRAP_NODES, SHADOWMESH_STUN_SERVERS,
+    all_stun_servers, get_bootstrap_nodes, is_valid_bootstrap_multiaddr,
+    BOOTSTRAP_GOSSIP_TOPIC, FALLBACK_STUN_SERVERS, PUBLIC_STUN_SERVERS,
 };
