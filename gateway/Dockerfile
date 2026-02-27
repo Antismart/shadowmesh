@@ -2,7 +2,8 @@
 # Multi-stage build: Node (dashboard) → Rust (gateway) → minimal runtime
 
 # Stage 1: Build React dashboard
-FROM node:20-slim AS dashboard-builder
+# Pinned 2025-12-17 – update periodically from https://hub.docker.com/_/node
+FROM node:20.18.1-slim AS dashboard-builder
 
 WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/package-lock.json* ./
@@ -11,7 +12,8 @@ COPY dashboard/ ./
 RUN npm run build
 
 # Stage 2: Build Rust gateway (embeds dashboard/dist via rust-embed)
-FROM rust:1.84-bookworm AS builder
+# Pinned 2025-12-17 – update periodically from https://hub.docker.com/_/rust
+FROM rust:1.84.0-bookworm AS builder
 
 WORKDIR /app
 
@@ -30,7 +32,8 @@ COPY --from=dashboard-builder /app/dashboard/dist ./dashboard/dist
 RUN cargo build --release -p gateway
 
 # Stage 3: Minimal runtime
-FROM debian:bookworm-slim
+# Pinned 2025-12-17 – update periodically from https://hub.docker.com/_/debian
+FROM debian:bookworm-20250113-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
