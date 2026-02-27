@@ -70,8 +70,14 @@ impl ContentCache {
 
     /// Store content with custom TTL
     pub fn set_with_ttl(&self, cid: String, data: Vec<u8>, content_type: String, ttl: Duration) {
-        if let Ok(mut entries) = self.entries.write() {
-            // Evict expired entries if at capacity
+        let mut entries = match self.entries.write() {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Cache write lock poisoned, recovering: {}", e);
+                e.into_inner()
+            }
+        };
+        // Evict expired entries if at capacity
             if entries.len() >= self.max_entries {
                 self.evict_expired(&mut entries);
             }
@@ -98,7 +104,6 @@ impl ContentCache {
                     ttl,
                 },
             );
-        }
     }
 
     /// Remove content from cache
