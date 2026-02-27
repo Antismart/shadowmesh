@@ -158,6 +158,14 @@ pub struct NetworkConfig {
     #[serde(default)]
     pub bootstrap_nodes: Vec<String>,
 
+    /// DNS seed domains for bootstrap peer discovery (TXT records containing multiaddrs)
+    #[serde(default)]
+    pub dns_seeds: Vec<String>,
+
+    /// Rendezvous peer multiaddrs for namespace-based discovery
+    #[serde(default)]
+    pub rendezvous_peers: Vec<String>,
+
     /// Maximum inbound bandwidth (bytes/sec, None = unlimited)
     pub max_inbound_bandwidth: Option<u64>,
 
@@ -209,6 +217,8 @@ impl Default for NetworkConfig {
         Self {
             listen_addresses: default_listen_addresses(),
             bootstrap_nodes: Vec::new(),
+            dns_seeds: Vec::new(),
+            rendezvous_peers: Vec::new(),
             max_inbound_bandwidth: None,
             max_outbound_bandwidth: None,
             max_peers: default_max_peers(),
