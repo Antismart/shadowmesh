@@ -7,7 +7,7 @@
 
 use futures::StreamExt;
 use libp2p::{
-    kad,
+    identify, kad, relay, rendezvous,
     request_response::{self, OutboundRequestId, ResponseChannel},
     swarm::SwarmEvent,
     PeerId,
@@ -16,7 +16,7 @@ use protocol::{
     content_protocol::{ContentRequest, ContentResponse},
     DHTManager, NamingManager, ShadowNode, NAMING_GOSSIP_TOPIC,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 
@@ -82,6 +82,7 @@ pub async fn run_event_loop(
     naming: Arc<std::sync::RwLock<NamingManager>>,
     mut command_rx: mpsc::Receiver<P2pCommand>,
     mut shutdown_rx: broadcast::Receiver<()>,
+    rendezvous_peers: HashSet<PeerId>,
 ) {
     tracing::info!("Gateway P2P event loop started");
 
@@ -108,6 +109,7 @@ pub async fn run_event_loop(
                     &mut pending_requests,
                     &mut pending_dht_queries,
                     &mut pending_name_queries,
+                    &rendezvous_peers,
                 ).await;
             }
             Some(cmd) = command_rx.recv() => {
@@ -150,6 +152,7 @@ async fn handle_swarm_event(
         String,
         oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
     >,
+    rendezvous_peers: &HashSet<PeerId>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -166,6 +169,23 @@ async fn handle_swarm_event(
                     address: addr,
                 },
             );
+
+            // If this peer is a configured rendezvous point, register and discover
+            if rendezvous_peers.contains(&peer_id) {
+                tracing::info!(%peer_id, "Connected to rendezvous point — registering and discovering");
+                let namespace = rendezvous::Namespace::from_static(protocol::RENDEZVOUS_NAMESPACE);
+                if let Err(e) = node.swarm_mut()
+                    .behaviour_mut()
+                    .rendezvous_client
+                    .register(namespace.clone(), peer_id, None)
+                {
+                    tracing::warn!(%peer_id, ?e, "Rendezvous: failed to register");
+                }
+                node.swarm_mut()
+                    .behaviour_mut()
+                    .rendezvous_client
+                    .discover(Some(namespace), None, None, peer_id);
+            }
         }
 
         SwarmEvent::ConnectionClosed {
@@ -366,6 +386,113 @@ async fn handle_behaviour_event(
             ..
         }) => {
             tracing::trace!(%peer, "Content response sent");
+        }
+
+        // ── Identify ────────────────────────────────────────
+        ShadowBehaviourEvent::Identify(identify::Event::Received {
+            peer_id, info, ..
+        }) => {
+            tracing::info!(
+                %peer_id,
+                agent = %info.agent_version,
+                observed_addr = %info.observed_addr,
+                listen_addrs = info.listen_addrs.len(),
+                "Identify: received peer info"
+            );
+            for addr in &info.listen_addrs {
+                node.swarm_mut()
+                    .behaviour_mut()
+                    .kademlia
+                    .add_address(&peer_id, addr.clone());
+            }
+            node.swarm_mut().add_external_address(info.observed_addr);
+        }
+        ShadowBehaviourEvent::Identify(identify::Event::Sent { peer_id, .. }) => {
+            tracing::trace!(%peer_id, "Identify: sent our info");
+        }
+        ShadowBehaviourEvent::Identify(identify::Event::Error { peer_id, error, .. }) => {
+            tracing::debug!(%peer_id, %error, "Identify: protocol error");
+        }
+        ShadowBehaviourEvent::Identify(_) => {}
+
+        // ── Relay Server ────────────────────────────────────
+        ShadowBehaviourEvent::RelayServer(event) => {
+            tracing::debug!(?event, "Relay server event");
+        }
+
+        // ── Relay Client ────────────────────────────────────
+        ShadowBehaviourEvent::RelayClient(relay::client::Event::ReservationReqAccepted {
+            relay_peer_id,
+            renewal,
+            ..
+        }) => {
+            tracing::info!(%relay_peer_id, renewal, "Relay: reservation accepted");
+        }
+        ShadowBehaviourEvent::RelayClient(relay::client::Event::OutboundCircuitEstablished {
+            relay_peer_id,
+            ..
+        }) => {
+            tracing::info!(%relay_peer_id, "Relay: outbound circuit established");
+        }
+        ShadowBehaviourEvent::RelayClient(relay::client::Event::InboundCircuitEstablished {
+            src_peer_id,
+            ..
+        }) => {
+            tracing::info!(%src_peer_id, "Relay: inbound circuit established");
+        }
+
+        // ── Rendezvous Client ───────────────────────────────
+        ShadowBehaviourEvent::RendezvousClient(rendezvous::client::Event::Discovered {
+            rendezvous_node,
+            registrations,
+            ..
+        }) => {
+            tracing::info!(
+                %rendezvous_node,
+                count = registrations.len(),
+                "Rendezvous: discovered peers"
+            );
+            for registration in registrations {
+                let peer_id = registration.record.peer_id();
+                for addr in registration.record.addresses() {
+                    tracing::debug!(%peer_id, %addr, "Rendezvous: adding discovered peer");
+                    node.swarm_mut()
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, addr.clone());
+                }
+                if let Err(e) = node.swarm_mut().dial(
+                    libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id).build(),
+                ) {
+                    tracing::debug!(%peer_id, %e, "Rendezvous: failed to dial discovered peer");
+                }
+            }
+        }
+        ShadowBehaviourEvent::RendezvousClient(rendezvous::client::Event::Registered {
+            rendezvous_node,
+            ttl,
+            namespace,
+        }) => {
+            tracing::info!(%rendezvous_node, ttl, namespace = %namespace, "Rendezvous: registered");
+        }
+        ShadowBehaviourEvent::RendezvousClient(rendezvous::client::Event::RegisterFailed {
+            rendezvous_node,
+            namespace,
+            error,
+        }) => {
+            tracing::warn!(%rendezvous_node, namespace = %namespace, ?error, "Rendezvous: registration failed");
+        }
+        ShadowBehaviourEvent::RendezvousClient(rendezvous::client::Event::DiscoverFailed {
+            rendezvous_node,
+            error,
+            ..
+        }) => {
+            tracing::debug!(%rendezvous_node, ?error, "Rendezvous: discovery failed");
+        }
+        ShadowBehaviourEvent::RendezvousClient(rendezvous::client::Event::Expired {
+            peer,
+        }) => {
+            tracing::debug!(%peer, "Rendezvous: peer registration expired");
         }
     }
 }
