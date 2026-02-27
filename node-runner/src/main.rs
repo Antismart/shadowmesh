@@ -76,11 +76,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize metrics collector
     let metrics = Arc::new(MetricsCollector::new());
 
-    // Start background metrics recording
-    metrics.clone().start_background_recording();
-
     // Create shutdown signal
     let (shutdown_tx, _shutdown_rx) = broadcast::channel::<()>(1);
+
+    // Start background metrics recording (stops on shutdown)
+    metrics.clone().start_background_recording(shutdown_tx.subscribe());
 
     // Initialize the ShadowMesh protocol node and P2P event loop
     let (peer_id, p2p_state) = match shadowmesh_protocol::ShadowNode::new().await {
@@ -147,6 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let loop_state = p2p_state.clone();
                 let loop_metrics = metrics.clone();
                 let loop_storage = storage.clone();
+                let loop_dht_ttl = config.network.dht_ttl_secs;
                 tokio::spawn(async move {
                     p2p::run_event_loop(
                         node,
@@ -155,6 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         loop_storage,
                         command_rx,
                         shutdown_rx,
+                        loop_dht_ttl,
                     )
                     .await;
                 });

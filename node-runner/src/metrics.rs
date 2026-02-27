@@ -301,14 +301,24 @@ impl MetricsCollector {
         }
     }
 
-    /// Start background metrics recording
-    pub fn start_background_recording(self: Arc<Self>) {
+    /// Start background metrics recording. Stops when `shutdown` is triggered.
+    pub fn start_background_recording(
+        self: Arc<Self>,
+        mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    ) {
         let metrics = self.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
-                interval.tick().await;
-                metrics.record_history_point().await;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        metrics.record_history_point().await;
+                    }
+                    _ = shutdown.recv() => {
+                        tracing::debug!("Metrics background recording stopped");
+                        break;
+                    }
+                }
             }
         });
     }
