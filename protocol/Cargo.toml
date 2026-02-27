@@ -23,6 +23,8 @@ libp2p = { workspace = true, features = [
     "request-response",
     # Rendezvous for namespace-based peer discovery
     "rendezvous",
+    # NAT traversal: autonat (reachability probing), dcutr (hole punching), upnp (port forwarding)
+    "autonat", "dcutr", "upnp",
 ] }
 async-trait = "0.1"
 # WebRTC transport (alpha - separate crate)
