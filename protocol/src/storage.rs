@@ -38,14 +38,13 @@ struct VersionResponse {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)] // Fields deserialized by serde but only `hash` is read directly
 struct AddResponse {
     #[serde(rename = "Name")]
-    #[allow(dead_code)]
     name: String,
     #[serde(rename = "Hash")]
     hash: String,
     #[serde(rename = "Size")]
-    #[allow(dead_code)]
     size: String,
 }
 
