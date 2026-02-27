@@ -565,6 +565,9 @@ async fn fetch_fragment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shadowmesh_protocol::replication::ReplicationHealth;
+
+    // ── select_replication_targets tests ─────────────────────────
 
     #[test]
     fn test_select_targets_filters_local() {
@@ -611,10 +614,427 @@ mod tests {
     }
 
     #[test]
+    fn test_select_targets_gossip_takes_priority_over_peer_catalog() {
+        // Gossip CIDs come first in the chain, so when we hit the limit
+        // they should appear before peer-catalog CIDs.
+        let local = vec![];
+        let gossip: Vec<String> = (0..5).map(|i| format!("gossip_{}", i)).collect();
+        let peer: Vec<String> = (0..5).map(|i| format!("peer_{}", i)).collect();
+
+        let targets = select_replication_targets(&local, &gossip, &peer, 3);
+
+        assert_eq!(targets.len(), 3);
+        assert_eq!(targets[0], "gossip_0");
+        assert_eq!(targets[1], "gossip_1");
+        assert_eq!(targets[2], "gossip_2");
+    }
+
+    #[test]
+    fn test_select_targets_all_local_returns_empty() {
+        let local = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let gossip = vec!["a".to_string(), "b".to_string()];
+        let peer = vec!["c".to_string()];
+
+        let targets = select_replication_targets(&local, &gossip, &peer, 10);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn test_select_targets_limit_one() {
+        // With a limit of 1, exactly one target should be returned even when
+        // many candidates are available.
+        let local = vec![];
+        let gossip = vec!["cid_a".to_string(), "cid_b".to_string(), "cid_c".to_string()];
+        let peer = vec!["cid_d".to_string()];
+
+        let targets = select_replication_targets(&local, &gossip, &peer, 1);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0], "cid_a");
+    }
+
+    // ── PeerId roundtrip ─────────────────────────────────────────
+
+    #[test]
     fn test_self_peer_id_stability() {
         let peer_id = libp2p::PeerId::random();
         let as_string = peer_id.to_string();
         let parsed: libp2p::PeerId = as_string.parse().expect("PeerId roundtrip failed");
         assert_eq!(peer_id, parsed);
+    }
+
+    // ── ReplicationError Display tests ───────────────────────────
+
+    #[test]
+    fn test_replication_error_display_no_providers() {
+        let err = ReplicationError::NoProviders;
+        assert_eq!(err.to_string(), "No providers found");
+    }
+
+    #[test]
+    fn test_replication_error_display_fetch_failed() {
+        let err = ReplicationError::FetchFailed("connection timeout".to_string());
+        assert_eq!(err.to_string(), "Fetch failed: connection timeout");
+    }
+
+    #[test]
+    fn test_replication_error_display_storage_error() {
+        let err = ReplicationError::StorageError("disk full".to_string());
+        assert_eq!(err.to_string(), "Storage error: disk full");
+    }
+
+    #[test]
+    fn test_replication_error_display_p2p_channel_closed() {
+        let err = ReplicationError::P2pChannelClosed;
+        assert_eq!(err.to_string(), "P2P channel closed");
+    }
+
+    #[test]
+    fn test_replication_error_implements_std_error() {
+        let err = ReplicationError::NoProviders;
+        // Verify the Error trait is implemented by using it as a trait object.
+        let _dyn_err: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn test_replication_error_debug_format() {
+        let err = ReplicationError::FetchFailed("oops".to_string());
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("FetchFailed"));
+        assert!(debug_str.contains("oops"));
+    }
+
+    // ── ReplicationStats tests ───────────────────────────────────
+
+    #[test]
+    fn test_replication_stats_default() {
+        let stats = ReplicationStats::default();
+        assert_eq!(stats.total_replicated, 0);
+        assert_eq!(stats.total_bytes_replicated, 0);
+        assert_eq!(stats.total_failures, 0);
+        assert_eq!(stats.last_cycle_replicated, 0);
+        assert!(stats.last_scan_timestamp.is_none());
+        assert!(!stats.scan_in_progress);
+    }
+
+    #[test]
+    fn test_replication_stats_clone() {
+        let mut stats = ReplicationStats::default();
+        stats.total_replicated = 42;
+        stats.total_bytes_replicated = 1024 * 1024;
+        stats.total_failures = 3;
+        stats.last_cycle_replicated = 5;
+        stats.last_scan_timestamp = Some(1700000000);
+        stats.scan_in_progress = true;
+
+        let cloned = stats.clone();
+        assert_eq!(cloned.total_replicated, 42);
+        assert_eq!(cloned.total_bytes_replicated, 1024 * 1024);
+        assert_eq!(cloned.total_failures, 3);
+        assert_eq!(cloned.last_cycle_replicated, 5);
+        assert_eq!(cloned.last_scan_timestamp, Some(1700000000));
+        assert!(cloned.scan_in_progress);
+    }
+
+    #[test]
+    fn test_replication_stats_serialization_roundtrip() {
+        let mut stats = ReplicationStats::default();
+        stats.total_replicated = 10;
+        stats.total_bytes_replicated = 2048;
+        stats.total_failures = 1;
+        stats.last_scan_timestamp = Some(1700000000);
+
+        let json = serde_json::to_string(&stats).unwrap();
+        let deserialized: ReplicationStats = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.total_replicated, 10);
+        assert_eq!(deserialized.total_bytes_replicated, 2048);
+        assert_eq!(deserialized.total_failures, 1);
+        assert_eq!(deserialized.last_scan_timestamp, Some(1700000000));
+        assert!(!deserialized.scan_in_progress);
+    }
+
+    // ── ReplicationHealthReport tests ────────────────────────────
+
+    #[test]
+    fn test_replication_health_report_creation_and_field_access() {
+        let health = ReplicationHealth {
+            total_content: 100,
+            healthy_content: 80,
+            under_replicated_content: 15,
+            critical_content: 5,
+            replication_factor: 3,
+            pinned_content: 10,
+        };
+        let stats = ReplicationStats {
+            total_replicated: 50,
+            total_bytes_replicated: 5000,
+            total_failures: 2,
+            last_cycle_replicated: 3,
+            last_scan_timestamp: Some(1700000000),
+            scan_in_progress: false,
+        };
+
+        let report = ReplicationHealthReport {
+            health: health.clone(),
+            stats: stats.clone(),
+        };
+
+        assert_eq!(report.health.total_content, 100);
+        assert_eq!(report.health.healthy_content, 80);
+        assert_eq!(report.health.under_replicated_content, 15);
+        assert_eq!(report.health.critical_content, 5);
+        assert_eq!(report.health.replication_factor, 3);
+        assert_eq!(report.health.pinned_content, 10);
+        assert_eq!(report.stats.total_replicated, 50);
+        assert_eq!(report.stats.total_bytes_replicated, 5000);
+        assert_eq!(report.stats.total_failures, 2);
+        assert_eq!(report.stats.last_cycle_replicated, 3);
+        assert_eq!(report.stats.last_scan_timestamp, Some(1700000000));
+        assert!(!report.stats.scan_in_progress);
+    }
+
+    #[test]
+    fn test_replication_health_report_clone() {
+        let report = ReplicationHealthReport {
+            health: ReplicationHealth {
+                total_content: 5,
+                healthy_content: 5,
+                under_replicated_content: 0,
+                critical_content: 0,
+                replication_factor: 3,
+                pinned_content: 2,
+            },
+            stats: ReplicationStats::default(),
+        };
+
+        let cloned = report.clone();
+        assert_eq!(cloned.health.total_content, report.health.total_content);
+        assert_eq!(cloned.health.healthy_content, report.health.healthy_content);
+        assert_eq!(
+            cloned.stats.total_replicated,
+            report.stats.total_replicated
+        );
+    }
+
+    #[test]
+    fn test_replication_health_report_serialization_roundtrip() {
+        let report = ReplicationHealthReport {
+            health: ReplicationHealth {
+                total_content: 42,
+                healthy_content: 40,
+                under_replicated_content: 1,
+                critical_content: 1,
+                replication_factor: 3,
+                pinned_content: 5,
+            },
+            stats: ReplicationStats {
+                total_replicated: 100,
+                total_bytes_replicated: 999999,
+                total_failures: 7,
+                last_cycle_replicated: 0,
+                last_scan_timestamp: None,
+                scan_in_progress: true,
+            },
+        };
+
+        let json = serde_json::to_string(&report).unwrap();
+        let deserialized: ReplicationHealthReport = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.health.total_content, 42);
+        assert_eq!(deserialized.health.healthy_content, 40);
+        assert_eq!(deserialized.health.critical_content, 1);
+        assert_eq!(deserialized.health.replication_factor, 3);
+        assert_eq!(deserialized.stats.total_replicated, 100);
+        assert_eq!(deserialized.stats.total_bytes_replicated, 999999);
+        assert_eq!(deserialized.stats.total_failures, 7);
+        assert!(deserialized.stats.scan_in_progress);
+    }
+
+    #[test]
+    fn test_replication_health_report_debug_format() {
+        let report = ReplicationHealthReport {
+            health: ReplicationHealth {
+                total_content: 1,
+                healthy_content: 1,
+                under_replicated_content: 0,
+                critical_content: 0,
+                replication_factor: 3,
+                pinned_content: 0,
+            },
+            stats: ReplicationStats::default(),
+        };
+        let debug_str = format!("{:?}", report);
+        assert!(debug_str.contains("ReplicationHealthReport"));
+    }
+
+    // ── ReplicationState tests ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_replication_state_new() {
+        let state = ReplicationState::new(3);
+
+        // Manager should have the correct replication factor
+        let mgr = state.manager.read().await;
+        assert_eq!(mgr.replication_factor(), 3);
+
+        // Stats should be default
+        let stats = state.stats.read().await;
+        assert_eq!(stats.total_replicated, 0);
+        assert_eq!(stats.total_failures, 0);
+        assert!(!stats.scan_in_progress);
+    }
+
+    #[tokio::test]
+    async fn test_replication_state_new_with_different_factors() {
+        for factor in [1, 2, 5, 10] {
+            let state = ReplicationState::new(factor);
+            let mgr = state.manager.read().await;
+            assert_eq!(mgr.replication_factor(), factor);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_replication_state_health_report_empty() {
+        let state = ReplicationState::new(3);
+        let report = state.health_report().await;
+
+        // No content registered -> all zeros
+        assert_eq!(report.health.total_content, 0);
+        assert_eq!(report.health.healthy_content, 0);
+        assert_eq!(report.health.under_replicated_content, 0);
+        assert_eq!(report.health.critical_content, 0);
+        assert_eq!(report.health.replication_factor, 3);
+        assert_eq!(report.health.pinned_content, 0);
+
+        // Health percentage should be 100% when there is no content
+        assert_eq!(report.health.health_percentage(), 100.0);
+
+        // Stats should reflect defaults
+        assert_eq!(report.stats.total_replicated, 0);
+        assert!(!report.stats.scan_in_progress);
+    }
+
+    #[tokio::test]
+    async fn test_replication_state_health_report_with_content() {
+        let state = ReplicationState::new(2);
+
+        // Register some content via the manager
+        {
+            let mut mgr = state.manager.write().await;
+            let manifest = shadowmesh_protocol::ContentManifest {
+                content_hash: "hash_abc".to_string(),
+                fragments: vec!["frag1".to_string(), "frag2".to_string()],
+                metadata: shadowmesh_protocol::ContentMetadata {
+                    name: "test.bin".to_string(),
+                    size: 1024,
+                    mime_type: "application/octet-stream".to_string(),
+                },
+            };
+            mgr.register_content("cid_abc".to_string(), &manifest);
+        }
+
+        let report = state.health_report().await;
+        assert_eq!(report.health.total_content, 1);
+        assert_eq!(report.health.healthy_content, 0); // No holders yet
+        assert_eq!(report.health.under_replicated_content, 1);
+        assert_eq!(report.health.critical_content, 1); // 0 replicas = critical
+    }
+
+    #[tokio::test]
+    async fn test_replication_state_health_report_reflects_stats_mutations() {
+        let state = ReplicationState::new(3);
+
+        // Mutate the stats
+        {
+            let mut stats = state.stats.write().await;
+            stats.total_replicated = 100;
+            stats.total_bytes_replicated = 1_000_000;
+            stats.total_failures = 5;
+            stats.last_cycle_replicated = 10;
+            stats.last_scan_timestamp = Some(1700000000);
+            stats.scan_in_progress = true;
+        }
+
+        let report = state.health_report().await;
+        assert_eq!(report.stats.total_replicated, 100);
+        assert_eq!(report.stats.total_bytes_replicated, 1_000_000);
+        assert_eq!(report.stats.total_failures, 5);
+        assert_eq!(report.stats.last_cycle_replicated, 10);
+        assert_eq!(report.stats.last_scan_timestamp, Some(1700000000));
+        assert!(report.stats.scan_in_progress);
+    }
+
+    #[tokio::test]
+    async fn test_replication_state_health_report_healthy_after_adding_holders() {
+        let state = ReplicationState::new(1); // Factor of 1 for easy test
+
+        let manifest = shadowmesh_protocol::ContentManifest {
+            content_hash: "hash_xyz".to_string(),
+            fragments: vec!["frag_a".to_string()],
+            metadata: shadowmesh_protocol::ContentMetadata {
+                name: "file.dat".to_string(),
+                size: 512,
+                mime_type: "application/octet-stream".to_string(),
+            },
+        };
+
+        let peer = libp2p::PeerId::random();
+        {
+            let mut mgr = state.manager.write().await;
+            mgr.register_content("cid_xyz".to_string(), &manifest);
+            mgr.add_fragment_holder("cid_xyz", "frag_a", peer);
+        }
+
+        let report = state.health_report().await;
+        assert_eq!(report.health.total_content, 1);
+        assert_eq!(report.health.healthy_content, 1);
+        assert_eq!(report.health.under_replicated_content, 0);
+        assert_eq!(report.health.critical_content, 0);
+        assert_eq!(report.health.health_percentage(), 100.0);
+    }
+
+    // ── finish_scan tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_finish_scan_updates_stats() {
+        let state = ReplicationState::new(3);
+
+        // Mark scan as in-progress
+        {
+            let mut stats = state.stats.write().await;
+            stats.scan_in_progress = true;
+        }
+
+        finish_scan(&state).await;
+
+        let stats = state.stats.read().await;
+        assert!(!stats.scan_in_progress);
+        assert!(stats.last_scan_timestamp.is_some());
+        // Timestamp should be recent (within the last 5 seconds)
+        let ts = stats.last_scan_timestamp.unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(now - ts < 5, "Timestamp should be within 5 seconds of now");
+    }
+
+    #[tokio::test]
+    async fn test_finish_scan_idempotent() {
+        let state = ReplicationState::new(3);
+
+        finish_scan(&state).await;
+        let ts1 = state.stats.read().await.last_scan_timestamp;
+
+        // Small delay to ensure different timestamp
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        finish_scan(&state).await;
+        let ts2 = state.stats.read().await.last_scan_timestamp;
+
+        assert!(ts1.is_some());
+        assert!(ts2.is_some());
+        // Both calls should succeed; timestamps may be equal or ts2 >= ts1
+        assert!(ts2.unwrap() >= ts1.unwrap());
     }
 }
