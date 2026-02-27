@@ -61,6 +61,16 @@ enum PendingReply {
     },
 }
 
+impl PendingReply {
+    /// Returns true if the receiver has been dropped (caller no longer waiting).
+    fn is_closed(&self) -> bool {
+        match self {
+            PendingReply::Fragment { reply, .. } => reply.is_closed(),
+            PendingReply::Manifest { reply } => reply.is_closed(),
+        }
+    }
+}
+
 /// Run the P2P swarm event loop.
 ///
 /// Takes ownership of the `ShadowNode` and processes swarm events until
@@ -82,6 +92,9 @@ pub async fn run_event_loop(
         String,
         oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
     > = HashMap::new();
+
+    let mut cleanup_interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    cleanup_interval.tick().await; // consume the immediate first tick
 
     loop {
         tokio::select! {
@@ -105,6 +118,16 @@ pub async fn run_event_loop(
                     &mut pending_dht_queries,
                     &mut pending_name_queries,
                 );
+            }
+            _ = cleanup_interval.tick() => {
+                let before = pending_requests.len() + pending_dht_queries.len() + pending_name_queries.len();
+                pending_requests.retain(|_, p| !p.is_closed());
+                pending_dht_queries.retain(|_, tx| !tx.is_closed());
+                pending_name_queries.retain(|_, tx| !tx.is_closed());
+                let after = pending_requests.len() + pending_dht_queries.len() + pending_name_queries.len();
+                if before > after {
+                    tracing::debug!(removed = before - after, "Cleaned up stale pending queries");
+                }
             }
             _ = shutdown_rx.recv() => {
                 tracing::info!("Gateway P2P event loop shutting down");
@@ -390,7 +413,24 @@ fn handle_content_request(
             }
         }
 
-        ContentRequest::ListContent { .. } => ContentResponse::ContentList { items: vec![] },
+        ContentRequest::ListContent { limit } => {
+            let all_entries = cache.entries();
+            let iter = all_entries.iter();
+            let items: Vec<protocol::content_protocol::ContentSummary> = if limit > 0 {
+                iter.take(limit as usize)
+            } else {
+                iter.take(all_entries.len())
+            }
+            .map(|(cid, size, mime)| protocol::content_protocol::ContentSummary {
+                cid: cid.clone(),
+                total_size: *size as u64,
+                fragment_count: 1, // gateway stores whole files as single fragments
+                mime_type: mime.clone(),
+            })
+            .collect();
+            tracing::debug!(%peer, count = items.len(), "Serving content list");
+            ContentResponse::ContentList { items }
+        }
 
         ContentRequest::Ping => ContentResponse::Pong,
     };
