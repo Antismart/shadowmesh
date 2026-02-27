@@ -266,6 +266,12 @@ pub struct P2pConfig {
     /// Bootstrap peer multiaddrs
     #[serde(default)]
     pub bootstrap_peers: Vec<String>,
+    /// DNS seed domains for bootstrap peer discovery (TXT records containing multiaddrs)
+    #[serde(default)]
+    pub dns_seeds: Vec<String>,
+    /// Rendezvous peer multiaddrs for namespace-based discovery
+    #[serde(default)]
+    pub rendezvous_peers: Vec<String>,
     /// Enable mDNS for LAN peer discovery
     pub enable_mdns: bool,
     /// Content resolution timeout in seconds
@@ -338,6 +344,8 @@ impl Default for P2pConfig {
             enabled: false,
             tcp_port: 4001,
             bootstrap_peers: Vec::new(),
+            dns_seeds: Vec::new(),
+            rendezvous_peers: Vec::new(),
             enable_mdns: true,
             resolve_timeout_seconds: 15,
             announce_content: true,
