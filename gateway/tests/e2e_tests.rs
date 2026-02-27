@@ -70,7 +70,7 @@ fn gateway_app(node_runner_url: &str) -> Router {
     let state = AppState {
         storage: None,
         cache: Arc::new(cache::ContentCache::with_config(100, Duration::from_secs(300))),
-        config: Arc::new(cfg),
+        config: Arc::new(tokio::sync::RwLock::new(cfg)),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
         deployments: Arc::new(std::sync::RwLock::new(Vec::new())),
@@ -173,7 +173,7 @@ async fn test_e2e_cache_hit() {
     let state = AppState {
         storage: None,
         cache: shared_cache.clone(),
-        config: Arc::new(cfg.clone()),
+        config: Arc::new(tokio::sync::RwLock::new(cfg.clone())),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
         deployments: Arc::new(std::sync::RwLock::new(Vec::new())),
@@ -336,7 +336,7 @@ async fn test_e2e_failover_to_second_node() {
     let state = AppState {
         storage: None,
         cache: Arc::new(cache::ContentCache::with_config(100, Duration::from_secs(300))),
-        config: Arc::new(cfg),
+        config: Arc::new(tokio::sync::RwLock::new(cfg)),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
         deployments: Arc::new(std::sync::RwLock::new(Vec::new())),
