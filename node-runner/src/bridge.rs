@@ -625,6 +625,25 @@ async fn handle_content_request(
     let total_fragments = chunks.len() as u32;
     let mut total_bytes_sent = 0u64;
 
+    // If the browser requested a specific fragment, validate the index
+    if let Some(idx) = request.fragment_index {
+        if idx >= total_fragments {
+            let resp = ContentResponse {
+                response_type: "content_error".to_string(),
+                cid: cid.clone(),
+                fragment_index: Some(idx),
+                total_fragments: Some(total_fragments),
+                data: None,
+                error: Some(format!(
+                    "fragment_index {} out of range (total: {})",
+                    idx, total_fragments
+                )),
+            };
+            send_response(dc, &resp).await;
+            return;
+        }
+    }
+
     for (i, chunk) in chunks.iter().enumerate() {
         let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
         total_bytes_sent += chunk.len() as u64;
