@@ -1418,8 +1418,10 @@ fn run_npm_with_timeout(
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!(
-                        "Build timed out after {} seconds — killed",
-                        timeout_secs
+                        "npm {} timed out after {}s in {} — killed",
+                        args.first().unwrap_or(&"<unknown>"),
+                        timeout_secs,
+                        dir.display()
                     ));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(250));
