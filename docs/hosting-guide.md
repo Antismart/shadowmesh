@@ -63,7 +63,7 @@ max_storage_bytes = 10737418240  # 10 GB
 
 [network]
 listen_addresses = ["/ip4/0.0.0.0/tcp/4001"]
-bootstrap_nodes = []             # First node — nothing to bootstrap from
+bootstrap_nodes = []             # First node -- nothing to bootstrap from
 max_peers = 100                  # Higher limit since everyone connects here first
 enable_mdns = false              # No local network on a VPS
 enable_dht = true
@@ -74,6 +74,8 @@ enabled = true
 host = "0.0.0.0"                # Accessible remotely (secure with firewall if needed)
 port = 3030
 ```
+
+Bootstrap addresses must include the `/p2p/<peer-id>` suffix. When the node starts, it adds each bootstrap peer to the Kademlia routing table and dials it. If a multiaddr is malformed (missing `/p2p/` or unparseable), the node logs a warning and skips it.
 
 ### Start It
 
@@ -235,9 +237,15 @@ bootstrap_peers = [
 export RUST_LOG=info
 export SHADOWMESH_NAMING_KEY=$(openssl rand -hex 32)
 
+# Bootstrap peers (alternative to config file)
+export SHADOWMESH_BOOTSTRAP_NODES="/ip4/<BOOTSTRAP_IP>/tcp/4001/p2p/<PEER_ID>"
+
 # For production (lock down the API)
 export SHADOWMESH_API_KEYS="your-secret-key"
 export SHADOWMESH_ADMIN_KEY="your-admin-key"
+
+# CORS origins (comma-separated, overrides config file)
+export SHADOWMESH_SECURITY_ALLOWED_ORIGINS="https://yourdomain.com,https://app.yourdomain.com"
 
 # Optional extras
 export REDIS_URL="redis://127.0.0.1:6379"      # Persistent state across restarts
@@ -280,7 +288,41 @@ Now `https://mesh.yourdomain.com/<cid>` serves content from the decentralized ne
 docker-compose up -d
 ```
 
-This starts the gateway + an IPFS node (as an optional storage backend). The gateway works fine without IPFS — it falls back to demo mode with local-only content.
+This starts the gateway + an IPFS node (as an optional storage backend). The gateway works fine without IPFS -- it falls back to demo mode with local-only content.
+
+**Tip:** Pin your Docker images to a specific tag or digest in production instead of using `latest`.
+
+### Configuration Hot-Reload
+
+The gateway watches its config file for changes and reloads automatically -- no restart required. This applies to rate limits, cache TTL, CORS origins, and other runtime settings.
+
+You can also trigger a reload manually:
+
+```bash
+# Via signal (Unix only)
+kill -HUP <gateway-pid>
+
+# Via admin API
+curl -X POST http://localhost:8081/api/admin/reload
+```
+
+The gateway logs what changed on each reload:
+
+```
+INFO  Rate limit updated old=100 new=200
+INFO  Configuration reloaded successfully
+```
+
+### Content Resolution Fallback Chain
+
+When a browser requests content from the gateway, it tries multiple sources in order:
+
+1. **Local cache** -- in-memory LRU cache of recently served content
+2. **P2P network** -- DHT provider lookup, then fetch manifest and fragments from peers
+3. **Node-runners via HTTP** -- queries configured `node_runners` URLs with health-aware load balancing
+4. **IPFS** -- falls back to the IPFS API if all other sources fail
+
+The response includes an `X-Source` header (`CACHE`, `P2P`, `NODE`, `NODE-STREAM`, or `IPFS`) so you can see which layer served the content.
 
 ---
 
@@ -314,6 +356,8 @@ bootstrap_nodes = [
 ## Monitoring the Network
 
 ### From any node
+
+Use the CLI binary (`alias smesh="./target/release/shadowmesh-cli"`):
 
 ```bash
 smesh status          # Uptime, peers, storage
