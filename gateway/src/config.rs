@@ -46,6 +46,21 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub workers: usize,
+    /// Public-facing base URL for this gateway (e.g., "https://gateway.example.com").
+    /// Used in upload/deploy response URLs. Falls back to http://localhost:<port> when unset.
+    #[serde(default)]
+    pub public_url: Option<String>,
+}
+
+impl ServerConfig {
+    /// Return the base URL for gateway responses.
+    /// Uses `public_url` when configured, otherwise falls back to localhost.
+    pub fn base_url(&self) -> String {
+        match &self.public_url {
+            Some(url) => url.trim_end_matches('/').to_string(),
+            None => format!("http://localhost:{}", self.port),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -467,6 +482,7 @@ impl Config {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
                 workers: 4,
+                public_url: None,
             },
             cache: CacheConfig {
                 max_size_mb: 500,
