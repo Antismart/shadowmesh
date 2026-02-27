@@ -743,3 +743,266 @@ fn announce_to_dht(
         Err(e) => tracing::warn!(%content_hash, ?e, "Failed to announce content to DHT"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── P2pState tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_p2p_state_new_is_empty() {
+        let (tx, _rx) = mpsc::channel(1);
+        let state = P2pState::new(tx);
+
+        assert!(state.peers.read().await.is_empty());
+        assert!(state.listen_addrs.read().await.is_empty());
+        assert!(state.content_announcements.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_p2p_state_peer_tracking() {
+        let (tx, _rx) = mpsc::channel(1);
+        let state = P2pState::new(tx);
+
+        let peer_id = PeerId::random();
+        state.peers.write().await.insert(
+            peer_id,
+            ConnectedPeer {
+                peer_id: peer_id.to_string(),
+                address: "/ip4/127.0.0.1/tcp/4001".to_string(),
+            },
+        );
+
+        let peers = state.peers.read().await;
+        assert_eq!(peers.len(), 1);
+        assert!(peers.contains_key(&peer_id));
+        assert_eq!(peers[&peer_id].address, "/ip4/127.0.0.1/tcp/4001");
+    }
+
+    #[tokio::test]
+    async fn test_p2p_state_peer_disconnect() {
+        let (tx, _rx) = mpsc::channel(1);
+        let state = P2pState::new(tx);
+
+        let peer1 = PeerId::random();
+        let peer2 = PeerId::random();
+        {
+            let mut peers = state.peers.write().await;
+            peers.insert(peer1, ConnectedPeer {
+                peer_id: peer1.to_string(),
+                address: "/ip4/10.0.0.1/tcp/4001".to_string(),
+            });
+            peers.insert(peer2, ConnectedPeer {
+                peer_id: peer2.to_string(),
+                address: "/ip4/10.0.0.2/tcp/4001".to_string(),
+            });
+        }
+
+        state.peers.write().await.remove(&peer1);
+        let peers = state.peers.read().await;
+        assert_eq!(peers.len(), 1);
+        assert!(!peers.contains_key(&peer1));
+        assert!(peers.contains_key(&peer2));
+    }
+
+    #[tokio::test]
+    async fn test_p2p_state_listen_addrs() {
+        let (tx, _rx) = mpsc::channel(1);
+        let state = P2pState::new(tx);
+
+        state.listen_addrs.write().await.push("/ip4/0.0.0.0/tcp/4001".to_string());
+        state.listen_addrs.write().await.push("/ip4/10.0.0.1/tcp/4001".to_string());
+
+        let addrs = state.listen_addrs.read().await;
+        assert_eq!(addrs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_p2p_state_content_announcements() {
+        let (tx, _rx) = mpsc::channel(1);
+        let state = P2pState::new(tx);
+
+        let announcement = shadowmesh_protocol::ContentAnnouncement {
+            cid: "abc123".to_string(),
+            peer_id: PeerId::random().to_string(),
+            total_size: 1024,
+            fragment_count: 1,
+            mime_type: "text/plain".to_string(),
+            timestamp: 12345,
+        };
+        state.content_announcements.write().await.push(announcement);
+
+        let anns = state.content_announcements.read().await;
+        assert_eq!(anns.len(), 1);
+        assert_eq!(anns[0].cid, "abc123");
+        assert_eq!(anns[0].total_size, 1024);
+    }
+
+    #[tokio::test]
+    async fn test_p2p_state_command_channel() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let _state = P2pState::new(tx.clone());
+
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        tx.send(P2pCommand::FindProviders {
+            content_hash: "test_cid".to_string(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+
+        let cmd = rx.recv().await.unwrap();
+        match cmd {
+            P2pCommand::FindProviders { content_hash, .. } => {
+                assert_eq!(content_hash, "test_cid");
+            }
+            _ => panic!("Expected FindProviders command"),
+        }
+    }
+
+    // ── BLAKE3 hash verification tests ──────────────────────────
+
+    #[test]
+    fn test_blake3_fragment_verification_valid() {
+        let data = b"hello world fragment data";
+        let expected_hash = blake3::hash(data).to_hex().to_string();
+        let computed = blake3::hash(data).to_hex().to_string();
+        assert_eq!(computed, expected_hash);
+    }
+
+    #[test]
+    fn test_blake3_fragment_verification_mismatch() {
+        let data = b"hello world";
+        let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+        let computed = blake3::hash(data).to_hex().to_string();
+        assert_ne!(computed, wrong_hash);
+    }
+
+    #[test]
+    fn test_blake3_empty_data() {
+        let data = b"";
+        let hash = blake3::hash(data).to_hex().to_string();
+        assert_eq!(hash.len(), 64); // BLAKE3 always produces 256-bit output
+    }
+
+    #[test]
+    fn test_blake3_large_fragment() {
+        let data = vec![0xABu8; 256 * 1024]; // 256KB fragment
+        let hash = blake3::hash(&data).to_hex().to_string();
+        // Same data always produces same hash
+        let hash2 = blake3::hash(&data).to_hex().to_string();
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn test_blake3_different_data_different_hash() {
+        let data1 = b"fragment A";
+        let data2 = b"fragment B";
+        let hash1 = blake3::hash(data1).to_hex().to_string();
+        let hash2 = blake3::hash(data2).to_hex().to_string();
+        assert_ne!(hash1, hash2);
+    }
+
+    // ── resolve_pending tests ───────────────────────────────────
+
+    #[test]
+    fn test_resolve_pending_fragment_error() {
+        let (tx, rx) = oneshot::channel();
+        let pending = PendingReply::Fragment {
+            fragment_hash: "abc".to_string(),
+            reply: tx,
+        };
+        resolve_pending(pending, Err(FetchError::ConnectionFailed("timeout".to_string())));
+
+        let result = rx.blocking_recv().unwrap();
+        assert!(matches!(result, Err(FetchError::ConnectionFailed(_))));
+    }
+
+    #[test]
+    fn test_resolve_pending_manifest_not_found() {
+        let (tx, rx) = oneshot::channel();
+        let pending = PendingReply::Manifest { reply: tx };
+        resolve_pending(pending, Err(FetchError::NotFound));
+
+        let result = rx.blocking_recv().unwrap();
+        assert!(matches!(result, Err(FetchError::NotFound)));
+    }
+
+    #[test]
+    fn test_resolve_pending_content_list_channel_closed() {
+        let (tx, rx) = oneshot::channel();
+        let pending = PendingReply::ContentList { reply: tx };
+        resolve_pending(pending, Err(FetchError::ChannelClosed));
+
+        let result = rx.blocking_recv().unwrap();
+        assert!(matches!(result, Err(FetchError::ChannelClosed)));
+    }
+
+    #[test]
+    fn test_resolve_pending_ok_does_nothing() {
+        let (tx, rx) = oneshot::channel();
+        let pending = PendingReply::Fragment {
+            fragment_hash: "abc".to_string(),
+            reply: tx,
+        };
+        // Ok(()) should not send anything
+        resolve_pending(pending, Ok(()));
+
+        // Channel should still be open (nothing sent), receiver should get RecvError
+        assert!(rx.blocking_recv().is_err());
+    }
+
+    // ── FetchError tests ────────────────────────────────────────
+
+    #[test]
+    fn test_fetch_error_display() {
+        assert_eq!(FetchError::NotFound.to_string(), "Content not found on peer");
+        assert_eq!(
+            FetchError::ConnectionFailed("timeout".to_string()).to_string(),
+            "Connection failed: timeout"
+        );
+        assert_eq!(
+            FetchError::PeerError("disk full".to_string()).to_string(),
+            "Peer error: disk full"
+        );
+        assert_eq!(FetchError::ChannelClosed.to_string(), "P2P event loop is shut down");
+    }
+
+    // ── ContentAnnouncement serialization tests ─────────────────
+
+    #[test]
+    fn test_content_announcement_round_trip() {
+        let announcement = shadowmesh_protocol::ContentAnnouncement {
+            cid: "abc123".to_string(),
+            peer_id: PeerId::random().to_string(),
+            total_size: 2048,
+            fragment_count: 4,
+            mime_type: "image/png".to_string(),
+            timestamp: 1000000,
+        };
+
+        let json = serde_json::to_vec(&announcement).unwrap();
+        let decoded: shadowmesh_protocol::ContentAnnouncement =
+            serde_json::from_slice(&json).unwrap();
+
+        assert_eq!(decoded.cid, announcement.cid);
+        assert_eq!(decoded.peer_id, announcement.peer_id);
+        assert_eq!(decoded.total_size, announcement.total_size);
+        assert_eq!(decoded.fragment_count, announcement.fragment_count);
+        assert_eq!(decoded.mime_type, announcement.mime_type);
+    }
+
+    // ── ConnectedPeer tests ─────────────────────────────────────
+
+    #[test]
+    fn test_connected_peer_clone() {
+        let peer = ConnectedPeer {
+            peer_id: "12D3KooWTest".to_string(),
+            address: "/ip4/1.2.3.4/tcp/4001".to_string(),
+        };
+        let cloned = peer.clone();
+        assert_eq!(cloned.peer_id, peer.peer_id);
+        assert_eq!(cloned.address, peer.address);
+    }
+}
