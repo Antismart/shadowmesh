@@ -23,6 +23,7 @@ infer = { workspace = true }
 webrtc = "0.12"
 tokio-tungstenite = "0.24"
 base64 = "0.22"
+subtle = "2.6"
 
 [dev-dependencies]
 hyper = { workspace = true }

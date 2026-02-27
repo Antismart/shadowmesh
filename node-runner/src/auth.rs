@@ -15,6 +15,7 @@ use axum::{
 };
 use serde_json::json;
 use std::sync::OnceLock;
+use subtle::ConstantTimeEq;
 
 /// Cached API key loaded from the environment once at first use.
 static API_KEY: OnceLock<Option<String>> = OnceLock::new();
@@ -39,7 +40,9 @@ pub async fn require_api_key(req: Request, next: Next) -> Response {
     match auth_header {
         Some(value) if value.starts_with("Bearer ") => {
             let token = &value[7..];
-            if token == expected {
+            let is_valid = token.len() == expected.len()
+                && token.as_bytes().ct_eq(expected.as_bytes()).into();
+            if is_valid {
                 return next.run(req).await;
             }
             (
