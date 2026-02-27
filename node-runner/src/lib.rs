@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
 pub mod api;
+pub mod auth;
 pub mod bridge;
 pub mod config;
 pub mod dashboard;

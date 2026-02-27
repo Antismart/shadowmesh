@@ -24,35 +24,36 @@ use crate::AppState;
 
 /// API routes
 pub fn api_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        // Status and health
+    // Read-only routes — always open (gateway, monitoring, dashboards)
+    let public = Router::new()
         .route("/status", get(get_status))
         .route("/health", get(health_check))
         .route("/ready", get(ready_check))
         .route("/metrics", get(get_metrics))
         .route("/metrics/history", get(get_metrics_history))
         .route("/metrics/prometheus", get(get_prometheus_metrics))
-        // Configuration
         .route("/config", get(get_config))
-        .route("/config", put(update_config))
-        // Storage
         .route("/storage", get(get_storage_stats))
         .route("/storage/content", get(list_content))
         .route("/storage/content/:cid", get(get_content))
+        .route("/storage/download/:cid", get(download_content))
+        .route("/network/peers", get(get_peers))
+        .route("/network/bandwidth", get(get_bandwidth))
+        .route("/replication/health", get(get_replication_health));
+
+    // Destructive routes — require NODE_API_KEY when set
+    let protected = Router::new()
+        .route("/config", put(update_config))
         .route("/storage/content/:cid", delete(delete_content))
         .route("/storage/pin/:cid", post(pin_content))
         .route("/storage/unpin/:cid", post(unpin_content))
         .route("/storage/upload", post(upload_content))
-        .route("/storage/download/:cid", get(download_content))
         .route("/storage/fetch/:cid", post(fetch_remote_content))
         .route("/storage/gc", post(run_garbage_collection))
-        // Network
-        .route("/network/peers", get(get_peers))
-        .route("/network/bandwidth", get(get_bandwidth))
-        // Replication
-        .route("/replication/health", get(get_replication_health))
-        // Node control
         .route("/node/shutdown", post(shutdown_node))
+        .layer(axum::middleware::from_fn(crate::auth::require_api_key));
+
+    public.merge(protected)
 }
 
 /// Node status response
