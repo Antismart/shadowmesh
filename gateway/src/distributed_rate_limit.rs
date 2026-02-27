@@ -79,9 +79,9 @@ impl DistributedRateLimiter {
         match redis.incr_with_ttl(&key, window_secs).await {
             Ok(count) => {
                 if count > limit as i64 {
-                    // Calculate retry time (remaining window time)
-                    let retry_after = window_secs.saturating_sub(1);
-                    Err((retry_after.max(1), identifier.to_string()))
+                    // The key TTL was set on the first increment, so the
+                    // worst-case wait is the full window duration.
+                    Err((window_secs.max(1), identifier.to_string()))
                 } else {
                     Ok(())
                 }
