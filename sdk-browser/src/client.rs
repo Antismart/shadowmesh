@@ -72,11 +72,10 @@ impl ClientConfig {
             signaling_url: signaling_url.to_string(),
             gateway_url: None,
             stun_servers: vec![
-                // ShadowMesh-operated STUN (IP-only, no DNS dependency)
-                "stun:45.33.32.156:3478".to_string(),
-                "stun:178.62.8.237:3478".to_string(),
-                // Fallback (DNS-based)
+                // Reliable public STUN servers (DNS-based)
                 "stun:stun.l.google.com:19302".to_string(),
+                "stun:stun1.l.google.com:19302".to_string(),
+                "stun:stun2.l.google.com:19302".to_string(),
             ],
             max_peers: 5,
             timeout_ms: 30000,
