@@ -34,7 +34,11 @@ impl RedisClient {
         // Redact credentials before logging
         let display_url = if let Some(at_pos) = url.find('@') {
             if let Some(scheme_end) = url.find("://") {
-                format!("{}://***@{}", &url[..scheme_end], &url[at_pos + 1..])
+                if scheme_end + 3 <= at_pos {
+                    format!("{}://***@{}", &url[..scheme_end], &url[at_pos + 1..])
+                } else {
+                    "redis://***@<redacted>".to_string()
+                }
             } else {
                 "redis://***@<redacted>".to_string()
             }
