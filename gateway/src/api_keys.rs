@@ -511,7 +511,14 @@ fn extract_admin_auth(
     let auth_header = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|v| {
+            // Case-insensitive "Bearer" per RFC 7235
+            if v.len() > 7 && v[..7].eq_ignore_ascii_case("bearer ") {
+                Some(v[7..].trim_start())
+            } else {
+                None
+            }
+        })
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
