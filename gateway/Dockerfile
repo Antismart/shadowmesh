@@ -13,7 +13,7 @@ RUN npm run build
 
 # Stage 2: Build Rust gateway (embeds dashboard/dist via rust-embed)
 # Pinned 2025-12-17 – update periodically from https://hub.docker.com/_/rust
-FROM rust:1.84.0-bookworm AS builder
+FROM rust:1.93.1-bookworm AS builder
 
 WORKDIR /app
 
