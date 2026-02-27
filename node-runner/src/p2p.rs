@@ -90,6 +90,7 @@ pub async fn run_event_loop(
     storage: Arc<StorageManager>,
     mut command_rx: mpsc::Receiver<P2pCommand>,
     mut shutdown_rx: broadcast::Receiver<()>,
+    dht_ttl_secs: u64,
 ) {
     tracing::info!("P2P event loop started");
 
@@ -122,6 +123,7 @@ pub async fn run_event_loop(
                     &mut node,
                     &mut pending_requests,
                     &mut pending_dht_queries,
+                    dht_ttl_secs,
                 );
             }
             _ = cleanup_interval.tick() => {
@@ -297,6 +299,10 @@ async fn handle_behaviour_event(
                             "Received content announcement via GossipSub"
                         );
                         let mut anns = _p2p_state.content_announcements.write().await;
+                        // Cap at 10,000 entries to prevent unbounded growth
+                        if anns.len() >= 10_000 {
+                            anns.drain(..1_000); // Drop oldest 1,000
+                        }
                         anns.push(announcement);
                     }
                     Err(e) => {
@@ -590,6 +596,7 @@ fn handle_command(
     node: &mut ShadowNode,
     pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
     pending_dht_queries: &mut HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>>,
+    dht_ttl_secs: u64,
 ) {
     match cmd {
         P2pCommand::FetchFragment {
@@ -636,7 +643,7 @@ fn handle_command(
             total_size,
             mime_type,
         } => {
-            announce_to_dht(node, &content_hash, &fragment_hashes, total_size, &mime_type);
+            announce_to_dht(node, &content_hash, &fragment_hashes, total_size, &mime_type, dht_ttl_secs);
         }
 
         P2pCommand::FindProviders {
@@ -710,6 +717,7 @@ fn announce_to_dht(
     fragment_hashes: &[String],
     total_size: u64,
     mime_type: &str,
+    dht_ttl_secs: u64,
 ) {
     use shadowmesh_protocol::{ContentDHTMetadata, ContentRecord, ProviderInfo};
 
@@ -737,7 +745,7 @@ fn announce_to_dht(
             encrypted: false,
         },
         created_at: now,
-        ttl_seconds: 86400, // 24 hours
+        ttl_seconds: dht_ttl_secs,
     };
 
     let key = DHTManager::cid_to_key(content_hash);
