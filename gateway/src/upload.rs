@@ -166,18 +166,11 @@ pub async fn upload_multipart(State(state): State<AppState>, mut multipart: Mult
 
         // Store in IPFS
         let storage = Arc::clone(storage);
-        let data_clone = data.clone();
+        let size = data.len();
 
-        let result = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current()
-                .block_on(async { storage.store_content(data_clone).await })
-        })
-        .await;
-
-        match result {
-            Ok(Ok(cid)) => {
-                let port = state.config.read().await.server.port;
-                let size = data.len();
+        match storage.store_content(data).await {
+            Ok(cid) => {
+                let base_url = state.config.read().await.server.base_url();
                 audit::log_file_upload(
                     &state.audit_logger,
                     "api",
@@ -190,7 +183,7 @@ pub async fn upload_multipart(State(state): State<AppState>, mut multipart: Mult
                 .await;
                 return Json(UploadResponse {
                     success: true,
-                    gateway_url: format!("http://localhost:{}/{}", port, cid),
+                    gateway_url: format!("{}/{}", base_url, cid),
                     shadow_url: format!("shadow://{}", cid),
                     cid,
                     size,
@@ -199,22 +192,12 @@ pub async fn upload_multipart(State(state): State<AppState>, mut multipart: Mult
                 })
                 .into_response();
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(UploadError::new(
                         format!("Failed to store content: {}", e),
                         "STORAGE_ERROR",
-                    )),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(UploadError::new(
-                        format!("Internal error: {}", e),
-                        "INTERNAL_ERROR",
                     )),
                 )
                     .into_response();
@@ -310,41 +293,27 @@ pub async fn upload_json(
 
     // Store in IPFS
     let storage = Arc::clone(storage);
-    let data_clone = data.clone();
+    let size = data.len();
 
-    let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current()
-            .block_on(async { storage.store_content(data_clone).await })
-    })
-    .await;
-
-    match result {
-        Ok(Ok(cid)) => {
-            let port = state.config.read().await.server.port;
+    match storage.store_content(data).await {
+        Ok(cid) => {
+            let base_url = state.config.read().await.server.base_url();
             Json(UploadResponse {
                 success: true,
-                gateway_url: format!("http://localhost:{}/{}", port, cid),
+                gateway_url: format!("{}/{}", base_url, cid),
                 shadow_url: format!("shadow://{}", cid),
                 cid,
-                size: data.len(),
+                size,
                 content_type,
                 filename: request.filename,
             })
             .into_response()
         }
-        Ok(Err(e)) => (
+        Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(UploadError::new(
                 format!("Failed to store content: {}", e),
                 "STORAGE_ERROR",
-            )),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(UploadError::new(
-                format!("Internal error: {}", e),
-                "INTERNAL_ERROR",
             )),
         )
             .into_response(),
@@ -403,41 +372,27 @@ pub async fn upload_raw(
 
     // Store in IPFS
     let storage = Arc::clone(storage);
-    let data_clone = data.clone();
+    let size = data.len();
 
-    let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current()
-            .block_on(async { storage.store_content(data_clone).await })
-    })
-    .await;
-
-    match result {
-        Ok(Ok(cid)) => {
-            let port = state.config.read().await.server.port;
+    match storage.store_content(data).await {
+        Ok(cid) => {
+            let base_url = state.config.read().await.server.base_url();
             Json(UploadResponse {
                 success: true,
-                gateway_url: format!("http://localhost:{}/{}", port, cid),
+                gateway_url: format!("{}/{}", base_url, cid),
                 shadow_url: format!("shadow://{}", cid),
                 cid,
-                size: data.len(),
+                size,
                 content_type,
                 filename: None,
             })
             .into_response()
         }
-        Ok(Err(e)) => (
+        Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(UploadError::new(
                 format!("Failed to store content: {}", e),
                 "STORAGE_ERROR",
-            )),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(UploadError::new(
-                format!("Internal error: {}", e),
-                "INTERNAL_ERROR",
             )),
         )
             .into_response(),
@@ -547,17 +502,12 @@ pub async fn upload_batch(
         let data_len = data.len();
         let filename = file.filename.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(async { storage.store_content(data).await })
-        })
-        .await;
-
-        match result {
-            Ok(Ok(cid)) => {
-                let port = state.config.read().await.server.port;
+        match storage.store_content(data).await {
+            Ok(cid) => {
+                let base_url = state.config.read().await.server.base_url();
                 uploaded.push(UploadResponse {
                     success: true,
-                    gateway_url: format!("http://localhost:{}/{}", port, cid),
+                    gateway_url: format!("{}/{}", base_url, cid),
                     shadow_url: format!("shadow://{}", cid),
                     cid,
                     size: data_len,
@@ -565,18 +515,11 @@ pub async fn upload_batch(
                     filename,
                 });
             }
-            Ok(Err(e)) => {
-                failed.push(BatchUploadError {
-                    index,
-                    filename: file.filename,
-                    error: format!("Storage error: {}", e),
-                });
-            }
             Err(e) => {
                 failed.push(BatchUploadError {
                     index,
                     filename: file.filename,
-                    error: format!("Internal error: {}", e),
+                    error: format!("Storage error: {}", e),
                 });
             }
         }
