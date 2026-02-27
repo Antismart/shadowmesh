@@ -11,6 +11,7 @@ struct CacheEntry {
     data: Vec<u8>,
     content_type: String,
     created_at: Instant,
+    last_accessed: Instant,
     ttl: Duration,
 }
 
@@ -47,14 +48,18 @@ impl ContentCache {
     }
 
     /// Get content from cache
+    ///
+    /// Acquires a write lock so that `last_accessed` can be bumped,
+    /// which is required for correct LRU eviction.
     pub fn get(&self, cid: &str) -> Option<(Vec<u8>, String)> {
-        let entries = self.entries.read().ok()?;
-        let entry = entries.get(cid)?;
+        let mut entries = self.entries.write().ok()?;
+        let entry = entries.get_mut(cid)?;
 
         if entry.is_expired() {
             return None;
         }
 
+        entry.last_accessed = Instant::now();
         Some((entry.data.clone(), entry.content_type.clone()))
     }
 
@@ -71,23 +76,25 @@ impl ContentCache {
                 self.evict_expired(&mut entries);
             }
 
-            // Still at capacity? Remove oldest entry
+            // Still at capacity? Evict the least-recently-used entry
             if entries.len() >= self.max_entries {
-                if let Some(oldest_key) = entries
+                if let Some(lru_key) = entries
                     .iter()
-                    .min_by_key(|(_, v)| v.created_at)
+                    .min_by_key(|(_, v)| v.last_accessed)
                     .map(|(k, _)| k.clone())
                 {
-                    entries.remove(&oldest_key);
+                    entries.remove(&lru_key);
                 }
             }
 
+            let now = Instant::now();
             entries.insert(
                 cid,
                 CacheEntry {
                     data,
                     content_type,
-                    created_at: Instant::now(),
+                    created_at: now,
+                    last_accessed: now,
                     ttl,
                 },
             );
@@ -106,6 +113,21 @@ impl ContentCache {
         if let Ok(mut entries) = self.entries.write() {
             self.evict_expired(&mut entries);
         }
+    }
+
+    /// Return a snapshot of all non-expired entries as `(cid, data_len, content_type)` tuples.
+    ///
+    /// Useful for responding to `ListContent` requests from peers.
+    pub fn entries(&self) -> Vec<(String, usize, String)> {
+        let entries = match self.entries.read() {
+            Ok(e) => e,
+            Err(_) => return Vec::new(),
+        };
+        entries
+            .iter()
+            .filter(|(_, v)| !v.is_expired())
+            .map(|(cid, v)| (cid.clone(), v.data.len(), v.content_type.clone()))
+            .collect()
     }
 
     /// Get cache statistics
