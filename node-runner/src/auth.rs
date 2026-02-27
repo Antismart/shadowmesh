@@ -38,8 +38,8 @@ pub async fn require_api_key(req: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok());
 
     match auth_header {
-        Some(value) if value.starts_with("Bearer ") => {
-            let token = &value[7..];
+        Some(value) if value.len() > 7 && value[..7].eq_ignore_ascii_case("bearer ") => {
+            let token = value[7..].trim_start();
             let is_valid = token.len() == expected.len()
                 && token.as_bytes().ct_eq(expected.as_bytes()).into();
             if is_valid {
