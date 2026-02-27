@@ -30,8 +30,13 @@ listen_addresses = [
     "/ip4/0.0.0.0/tcp/4001",
     "/ip6/::/tcp/4001"
 ]
-# Bootstrap nodes (add official or known peers here)
+# Bootstrap nodes (empty = rely on compiled-in defaults + mDNS)
+# Example: bootstrap_nodes = ["/ip4/1.2.3.4/tcp/4001/p2p/12D3KooW..."]
 bootstrap_nodes = []
+# DNS seed domains for bootstrap discovery (TXT records containing multiaddrs)
+dns_seeds = []
+# Rendezvous peer multiaddrs for namespace-based discovery
+# rendezvous_peers = ["/ip4/1.2.3.4/tcp/4001/p2p/12D3KooW..."]
 # Maximum inbound bandwidth in bytes/sec (optional, remove for unlimited)
 # max_inbound_bandwidth = 104857600  # 100 MB/s
 # Maximum outbound bandwidth in bytes/sec (optional, remove for unlimited)
