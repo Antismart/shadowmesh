@@ -12,10 +12,13 @@ use libp2p::{
     gossipsub::{
         Behaviour as Gossipsub, Config as GossipsubConfig, IdentTopic, MessageAuthenticity,
     },
+    identify,
     identity::{self, Keypair},
+    rendezvous,
     kad::{store::MemoryStore, Behaviour as Kademlia},
     mdns,
     noise,
+    relay,
     request_response::{self, ProtocolSupport},
     swarm::NetworkBehaviour,
     tcp, yamux, Multiaddr, PeerId, Swarm, Transport,
@@ -33,7 +36,7 @@ pub struct ShadowNode {
     naming: NamingManager,
 }
 
-/// Network behaviour combining Kademlia DHT, GossipSub, mDNS, and content serving
+/// Network behaviour combining all ShadowMesh protocols
 #[derive(NetworkBehaviour)]
 pub struct ShadowBehaviour {
     /// Kademlia DHT for content discovery
@@ -44,6 +47,14 @@ pub struct ShadowBehaviour {
     pub mdns: mdns::tokio::Behaviour,
     /// Request-response for P2P content fragment serving
     pub content_req_resp: request_response::Behaviour<ContentCodec>,
+    /// Identify protocol for peer address and protocol exchange
+    pub identify: identify::Behaviour,
+    /// Relay server — allows this node to relay traffic for NAT-ed peers
+    pub relay_server: relay::Behaviour,
+    /// Relay client — enables using relays for NAT traversal
+    pub relay_client: relay::client::Behaviour,
+    /// Rendezvous client for namespace-based peer discovery
+    pub rendezvous_client: rendezvous::client::Behaviour,
 }
 
 /// Error types for ShadowNode operations
@@ -89,8 +100,11 @@ impl ShadowNode {
         let keypair = identity::Keypair::generate_ed25519();
         let peer_id = PeerId::from(keypair.public());
 
-        // Build transport based on configuration
-        let transport = Self::build_transport(&keypair, &config)?;
+        // Create relay client (returns both transport and behaviour)
+        let (relay_transport, relay_client) = relay::client::new(peer_id);
+
+        // Build transport with relay client integrated
+        let transport = Self::build_transport(&keypair, &config, relay_transport)?;
 
         // Set up Kademlia DHT
         let store = MemoryStore::new(peer_id);
@@ -122,12 +136,29 @@ impl ShadowNode {
                 request_response::Config::default(),
             );
 
+        // Set up Identify for peer address and protocol exchange
+        let identify_config = identify::Config::new(
+            "/shadowmesh/1.0.0".into(),
+            keypair.public(),
+        );
+        let identify_behaviour = identify::Behaviour::new(identify_config);
+
+        // Set up Relay server (allows this node to relay traffic for others)
+        let relay_server = relay::Behaviour::new(peer_id, relay::Config::default());
+
+        // Set up Rendezvous client for namespace-based peer discovery
+        let rendezvous_client = rendezvous::client::Behaviour::new(keypair.clone());
+
         // Create behaviour and swarm
         let behaviour = ShadowBehaviour {
             kademlia,
             gossipsub,
             mdns: mdns_behaviour,
             content_req_resp,
+            identify: identify_behaviour,
+            relay_server,
+            relay_client,
+            rendezvous_client,
         };
 
         let swarm = Swarm::new(
@@ -147,10 +178,14 @@ impl ShadowNode {
         })
     }
 
-    /// Build the transport stack based on configuration
+    /// Build the transport stack based on configuration.
+    ///
+    /// Composes TCP (+ optional WebRTC) with the relay client transport
+    /// so the node can dial and accept connections through relay peers.
     fn build_transport(
         keypair: &Keypair,
         config: &TransportConfig,
+        relay_transport: relay::client::Transport,
     ) -> Result<libp2p::core::transport::Boxed<(PeerId, StreamMuxerBox)>, Box<dyn Error>> {
         // Build TCP transport with Noise + Yamux
         let tcp_transport = tcp::tokio::Transport::new(tcp::Config::default())
@@ -158,12 +193,36 @@ impl ShadowNode {
             .authenticate(noise::Config::new(keypair)?)
             .multiplex(yamux::Config::default());
 
-        if config.enable_webrtc && config.enable_tcp {
-            // Dual transport: TCP + WebRTC
-            let webrtc_transport = Self::build_webrtc_transport(keypair)?;
+        // Build relay client transport with Noise + Yamux
+        let relay_upgraded = relay_transport
+            .upgrade(upgrade::Version::V1)
+            .authenticate(noise::Config::new(keypair)?)
+            .multiplex(yamux::Config::default());
 
-            // Combine transports using OrTransport
-            let combined = OrTransport::new(tcp_transport, webrtc_transport);
+        if config.enable_webrtc && config.enable_tcp {
+            // TCP + Relay + WebRTC
+            let webrtc_transport = Self::build_webrtc_transport(keypair)?;
+            let tcp_and_relay = OrTransport::new(tcp_transport, relay_upgraded);
+            let combined = OrTransport::new(tcp_and_relay, webrtc_transport);
+            Ok(combined
+                .map(|out, _| match out {
+                    futures::future::Either::Left(futures::future::Either::Left((
+                        peer_id,
+                        muxer,
+                    ))) => (peer_id, StreamMuxerBox::new(muxer)),
+                    futures::future::Either::Left(futures::future::Either::Right((
+                        peer_id,
+                        muxer,
+                    ))) => (peer_id, StreamMuxerBox::new(muxer)),
+                    futures::future::Either::Right((peer_id, muxer)) => {
+                        (peer_id, StreamMuxerBox::new(muxer))
+                    }
+                })
+                .boxed())
+        } else if config.enable_webrtc {
+            // Relay + WebRTC
+            let webrtc_transport = Self::build_webrtc_transport(keypair)?;
+            let combined = OrTransport::new(relay_upgraded, webrtc_transport);
             Ok(combined
                 .map(|out, _| match out {
                     futures::future::Either::Left((peer_id, muxer)) => {
@@ -174,16 +233,18 @@ impl ShadowNode {
                     }
                 })
                 .boxed())
-        } else if config.enable_webrtc {
-            // WebRTC only
-            let webrtc_transport = Self::build_webrtc_transport(keypair)?;
-            Ok(webrtc_transport
-                .map(|(peer_id, muxer), _| (peer_id, StreamMuxerBox::new(muxer)))
-                .boxed())
         } else {
-            // TCP only (default)
-            Ok(tcp_transport
-                .map(|(peer_id, muxer), _| (peer_id, StreamMuxerBox::new(muxer)))
+            // TCP + Relay (default)
+            let combined = OrTransport::new(tcp_transport, relay_upgraded);
+            Ok(combined
+                .map(|out, _| match out {
+                    futures::future::Either::Left((peer_id, muxer)) => {
+                        (peer_id, StreamMuxerBox::new(muxer))
+                    }
+                    futures::future::Either::Right((peer_id, muxer)) => {
+                        (peer_id, StreamMuxerBox::new(muxer))
+                    }
+                })
                 .boxed())
         }
     }
