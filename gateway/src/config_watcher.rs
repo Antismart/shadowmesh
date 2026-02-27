@@ -3,8 +3,6 @@
 //! Provides automatic configuration reloading when config files change,
 //! and SIGHUP signal handling for manual reload triggers.
 
-#![allow(dead_code)]
-
 use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
 use std::sync::Arc;
@@ -257,11 +255,10 @@ pub enum ConfigWatchError {
 
 /// Admin endpoint to trigger config reload
 pub mod handler {
-    use axum::{http::StatusCode, response::IntoResponse, Json};
+    use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
     use serde::Serialize;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
 
+    use crate::AppState;
     use crate::config::Config;
 
     #[derive(Serialize)]
@@ -270,20 +267,15 @@ pub mod handler {
         message: String,
     }
 
-    #[derive(Serialize)]
-    struct ErrorResponse {
-        error: String,
-        code: &'static str,
-    }
-
     /// POST /api/admin/reload - Trigger configuration reload
-    ///
-    /// Requires admin authentication
-    pub async fn reload_config_handler(config: Arc<RwLock<Config>>) -> impl IntoResponse {
+    pub async fn reload_config_handler(
+        State(state): State<AppState>,
+    ) -> impl IntoResponse {
         match Config::load() {
             Ok(new_config) => {
-                let mut current = config.write().await;
+                let mut current = state.config.write().await;
                 *current = new_config;
+                tracing::info!("Configuration reloaded via admin endpoint");
 
                 (
                     StatusCode::OK,
