@@ -115,12 +115,23 @@ impl From<&ApiKey> for ApiKeyInfo {
 }
 
 /// In-memory API key store (fallback when Redis unavailable)
-#[derive(Default)]
 pub struct ApiKeyStore {
-    /// Map from key_hash to ApiKey
-    keys_by_hash: HashMap<String, ApiKey>,
+    /// Map from key_hash to (ApiKey, cached_at)
+    keys_by_hash: HashMap<String, (ApiKey, std::time::Instant)>,
     /// Map from key ID to key_hash
     id_to_hash: HashMap<String, String>,
+    /// Maximum age for cached entries before they must be re-validated (30 seconds)
+    cache_ttl: std::time::Duration,
+}
+
+impl Default for ApiKeyStore {
+    fn default() -> Self {
+        Self {
+            keys_by_hash: HashMap::new(),
+            id_to_hash: HashMap::new(),
+            cache_ttl: std::time::Duration::from_secs(30),
+        }
+    }
 }
 
 impl ApiKeyStore {
@@ -130,40 +141,48 @@ impl ApiKeyStore {
 
     pub fn add(&mut self, key: ApiKey) {
         self.id_to_hash.insert(key.id.clone(), key.key_hash.clone());
-        self.keys_by_hash.insert(key.key_hash.clone(), key);
+        self.keys_by_hash.insert(key.key_hash.clone(), (key, std::time::Instant::now()));
     }
 
+    /// Get a cached key by hash, returning None if expired from cache TTL.
     pub fn get_by_hash(&self, hash: &str) -> Option<&ApiKey> {
-        self.keys_by_hash.get(hash)
+        self.keys_by_hash.get(hash).and_then(|(key, cached_at)| {
+            if cached_at.elapsed() < self.cache_ttl {
+                Some(key)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn get_by_id(&self, id: &str) -> Option<&ApiKey> {
         self.id_to_hash
             .get(id)
             .and_then(|hash| self.keys_by_hash.get(hash))
+            .map(|(key, _)| key)
     }
 
     pub fn get_by_id_mut(&mut self, id: &str) -> Option<&mut ApiKey> {
         let hash = self.id_to_hash.get(id)?.clone();
-        self.keys_by_hash.get_mut(&hash)
+        self.keys_by_hash.get_mut(&hash).map(|(key, _)| key)
     }
 
     pub fn remove(&mut self, id: &str) -> Option<ApiKey> {
         if let Some(hash) = self.id_to_hash.remove(id) {
-            self.keys_by_hash.remove(&hash)
+            self.keys_by_hash.remove(&hash).map(|(key, _)| key)
         } else {
             None
         }
     }
 
     pub fn list(&self) -> Vec<&ApiKey> {
-        self.keys_by_hash.values().collect()
+        self.keys_by_hash.values().map(|(key, _)| key).collect()
     }
 
     pub fn update_hash(&mut self, id: &str, old_hash: &str, new_hash: String) {
-        if let Some(key) = self.keys_by_hash.remove(old_hash) {
+        if let Some((key, _)) = self.keys_by_hash.remove(old_hash) {
             self.id_to_hash.insert(id.to_string(), new_hash.clone());
-            self.keys_by_hash.insert(new_hash, key);
+            self.keys_by_hash.insert(new_hash, (key, std::time::Instant::now()));
         }
     }
 }
@@ -192,6 +211,8 @@ pub struct ApiKeyManager {
     redis: Option<Arc<RedisClient>>,
     local_store: Arc<RwLock<ApiKeyStore>>,
     admin_key_hash: Option<String>,
+    /// Tracks key creation timestamps for rate limiting (max 10 per minute)
+    create_timestamps: std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>,
 }
 
 impl ApiKeyManager {
@@ -202,6 +223,7 @@ impl ApiKeyManager {
             redis,
             local_store: Arc::new(RwLock::new(ApiKeyStore::new())),
             admin_key_hash,
+            create_timestamps: std::sync::Mutex::new(std::collections::VecDeque::new()),
         }
     }
 
@@ -216,13 +238,26 @@ impl ApiKeyManager {
         }
     }
 
-    /// Create a new API key
+    /// Create a new API key (rate limited to 10 per minute)
     pub async fn create_key(
         &self,
         name: String,
         expires_in_days: Option<u32>,
         scopes: Vec<String>,
     ) -> Result<(ApiKey, String), ApiKeyError> {
+        // Rate limit: max 10 key creations per 60 seconds
+        {
+            let mut timestamps = self.create_timestamps.lock().unwrap_or_else(|p| p.into_inner());
+            let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(60);
+            while timestamps.front().is_some_and(|t| *t < cutoff) {
+                timestamps.pop_front();
+            }
+            if timestamps.len() >= 10 {
+                return Err(ApiKeyError::RateLimited);
+            }
+            timestamps.push_back(std::time::Instant::now());
+        }
+
         let (key, raw_key) = ApiKey::new(name, expires_in_days, scopes);
 
         if let Some(redis) = &self.redis {
@@ -424,6 +459,8 @@ pub enum ApiKeyError {
     NotFound,
     #[error("Unauthorized")]
     Unauthorized,
+    #[error("Rate limit exceeded: too many key creations, try again later")]
+    RateLimited,
 }
 
 // ============================================
@@ -521,6 +558,14 @@ pub async fn create_api_key(
                 name: key.name,
                 expires_at: key.expires_at,
                 warning: "Save this key securely - it cannot be retrieved later",
+            }),
+        )
+            .into_response(),
+        Err(ApiKeyError::RateLimited) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "Too many key creations, try again later".to_string(),
+                code: "RATE_LIMITED".to_string(),
             }),
         )
             .into_response(),
