@@ -12,6 +12,12 @@ pub const CONTENT_PROTOCOL: StreamProtocol = StreamProtocol::new("/shadowmesh/co
 /// Maximum wire message size (512 KB — covers 256 KB fragments + base64/JSON overhead).
 const MAX_MESSAGE_SIZE: usize = 512 * 1024;
 
+/// Maximum number of fragment hashes in a manifest.
+const MAX_FRAGMENT_COUNT: usize = 10_000;
+
+/// Maximum number of items in a content list response.
+const MAX_CONTENT_LIST_ITEMS: usize = 10_000;
+
 // ─── Request types ───────────────────────────────────────────────
 
 /// A request sent to a peer.
@@ -124,8 +130,10 @@ impl libp2p::request_response::Codec for ContentCodec {
         T: futures::AsyncRead + Unpin + Send,
     {
         let buf = read_length_prefixed(io).await?;
-        serde_json::from_slice(&buf)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        let resp: Self::Response = serde_json::from_slice(&buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        validate_response(&resp)?;
+        Ok(resp)
     }
 
     async fn write_request<T>(
@@ -155,6 +163,30 @@ impl libp2p::request_response::Codec for ContentCodec {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         write_length_prefixed(io, &bytes).await
     }
+}
+
+/// Validate item counts in a deserialized response to prevent abuse.
+fn validate_response(resp: &ContentResponse) -> std::io::Result<()> {
+    match resp {
+        ContentResponse::Manifest { fragment_hashes, .. } => {
+            if fragment_hashes.len() > MAX_FRAGMENT_COUNT {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("manifest has {} fragments (max {})", fragment_hashes.len(), MAX_FRAGMENT_COUNT),
+                ));
+            }
+        }
+        ContentResponse::ContentList { items } => {
+            if items.len() > MAX_CONTENT_LIST_ITEMS {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("content list has {} items (max {})", items.len(), MAX_CONTENT_LIST_ITEMS),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Read a 4-byte big-endian length prefix, then read that many bytes.
