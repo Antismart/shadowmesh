@@ -95,7 +95,9 @@ async fn fetch_from_peer(
     let manifest = reply_rx.await.map_err(|_| FetchError::ChannelClosed)??;
 
     // Fetch all fragments sequentially and concatenate
-    let mut assembled = Vec::with_capacity(manifest.total_size as usize);
+    // Cap pre-allocation to prevent OOM from untrusted manifests
+    const MAX_PREALLOC: usize = 256 * 1024 * 1024; // 256 MB
+    let mut assembled = Vec::with_capacity((manifest.total_size as usize).min(MAX_PREALLOC));
 
     for frag_hash in &manifest.fragment_hashes {
         let (reply_tx, reply_rx) = oneshot::channel();
