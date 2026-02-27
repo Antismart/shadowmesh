@@ -964,12 +964,9 @@ pub async fn github_callback(
         }
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-    let token_response = match client
+    let token_response = match state.http_client
         .post("https://github.com/login/oauth/access_token")
+        .timeout(std::time::Duration::from_secs(30))
         .header("Accept", "application/json")
         .form(&[
             ("client_id", client_id.as_str()),
@@ -1001,7 +998,7 @@ pub async fn github_callback(
         }
     };
 
-    let user_response = match client
+    let user_response = match state.http_client
         .get("https://api.github.com/user")
         .header("User-Agent", "shadowmesh-gateway")
         .bearer_auth(&token_body.access_token)
@@ -1059,8 +1056,7 @@ pub async fn github_repos(State(state): State<AppState>) -> impl IntoResponse {
         }
     };
 
-    let client = reqwest::Client::new();
-    let response = match client
+    let response = match state.http_client
         .get("https://api.github.com/user/repos?per_page=100&sort=updated")
         .header("User-Agent", "shadowmesh-gateway")
         .bearer_auth(&auth.token)
@@ -1247,11 +1243,9 @@ async fn deploy_github_project(
         repo_info.owner, repo_info.repo, branch
     );
 
-    let client = reqwest::Client::builder()
+    let mut response = state.http_client.get(&zip_url)
         .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-    let mut response = client.get(&zip_url).send().await.map_err(|e| {
+        .send().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
             format!("Failed to download: {}", e),
