@@ -386,9 +386,16 @@ impl ShadowMeshClient {
                         ));
 
                         // Cache so we can serve it to other peers via P2P
-                        self.content_cache
-                            .borrow_mut()
-                            .insert(cid.to_string(), data.clone());
+                        {
+                            let mut cache = self.content_cache.borrow_mut();
+                            // Evict oldest entry if at capacity (256 entries max)
+                            if cache.len() >= 256 {
+                                if let Some(key) = cache.keys().next().cloned() {
+                                    cache.remove(&key);
+                                }
+                            }
+                            cache.insert(cid.to_string(), data.clone());
+                        }
 
                         let array = js_sys::Uint8Array::new_with_length(data.len() as u32);
                         array.copy_from(&data);
@@ -548,9 +555,13 @@ impl ShadowMeshClient {
 
         // Cache successful result
         if let Ok(ref data) = result {
-            self.content_cache
-                .borrow_mut()
-                .insert(cid.to_string(), data.clone());
+            let mut cache = self.content_cache.borrow_mut();
+            if cache.len() >= 256 {
+                if let Some(key) = cache.keys().next().cloned() {
+                    cache.remove(&key);
+                }
+            }
+            cache.insert(cid.to_string(), data.clone());
         }
 
         result
@@ -808,7 +819,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn verify_cid(data: &[u8], expected_cid: &str) -> bool {
     let hash = blake3::hash(data);
     let computed_cid = format!("baf{}", hex_encode(&hash.as_bytes()[..32]));
-    computed_cid.starts_with(&expected_cid[..expected_cid.len().min(10)])
+    computed_cid == expected_cid
 }
 
 /// Handle an incoming content response from a peer.
