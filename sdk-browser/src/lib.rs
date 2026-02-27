@@ -2,8 +2,7 @@
 //!
 //! WebRTC-enabled browser client for the ShadowMesh decentralized CDN.
 
-// Allow dead code - this is a library where many items are exported for JS use
-#![allow(dead_code)]
+// WASM library: some items are only reachable via JS exports
 #![allow(unused_imports)]
 //!
 //! # Example

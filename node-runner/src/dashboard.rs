@@ -1,11 +1,10 @@
 // Dashboard utilities and helpers
 // Additional dashboard-related functionality can be added here
 
-#![allow(dead_code)]
-
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct BandwidthDataPoint {
     pub timestamp: u64,
     pub bytes_per_second: u64,
