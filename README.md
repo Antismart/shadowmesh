@@ -65,20 +65,20 @@ ShadowMesh is a decentralized content delivery network that combines IPFS-style 
 git clone https://github.com/Antismart/shadowmesh.git
 cd shadowmesh
 
-# Build all components
+# Build all Rust components (gateway, node-runner, CLI)
 cargo build --release
 
-# Install SDK dependencies
+# (Optional) Build the TypeScript SDK
 cd sdk && npm install && npm run build && cd ..
 ```
 
 ### Running a Node
 
 ```bash
-# Start the gateway (HTTP API on port 3000)
+# Start the gateway (HTTP API on port 8081 by default)
 cargo run -p gateway
 
-# Start a node runner (P2P node with dashboard)
+# Start a node runner (P2P node with dashboard on port 3030)
 cargo run -p node-runner
 ```
 
@@ -131,18 +131,26 @@ See [WebRTC Setup Guide](docs/webrtc-setup.md) for detailed configuration.
 
 ### CLI Usage
 
+The CLI is a Rust binary. Build it with `cargo build --release -p shadowmesh-cli`, then use the binary at `target/release/shadowmesh-cli` (or set up an alias):
+
 ```bash
-# Deploy content
-npx shadowmesh deploy ./myfile.txt
+# Build the CLI
+cargo build --release -p shadowmesh-cli
 
-# Get content status
-npx shadowmesh status <cid>
+# Alias for convenience (add to .bashrc / .zshrc)
+alias smesh="./target/release/shadowmesh-cli"
 
-# Retrieve content
-npx shadowmesh get <cid> --output ./output.txt
+# Upload content
+smesh upload ./myfile.txt
 
-# View node statistics
-npx shadowmesh stats
+# Check node status
+smesh status
+
+# Download content
+smesh download <cid> -o ./output.txt
+
+# List connected peers
+smesh peers
 ```
 
 ## 📦 Components
@@ -150,8 +158,9 @@ npx shadowmesh stats
 | Component | Description | Port |
 |-----------|-------------|------|
 | `protocol` | Core P2P protocol library | - |
-| `gateway` | HTTP API server with signaling | 3000 |
-| `node-runner` | Full P2P node with dashboard | 8080 |
+| `gateway` | HTTP API server with signaling | 8081 |
+| `node-runner` | Full P2P node with dashboard | 3030 |
+| `cli` | Node management CLI (`shadowmesh-cli`) | - |
 | `sdk` | TypeScript client library | - |
 | `sdk-browser` | WASM browser SDK with WebRTC | - |
 | `benchmarks` | Performance benchmarks | - |
@@ -160,47 +169,114 @@ npx shadowmesh stats
 
 ### Gateway Configuration
 
-Create `gateway.toml`:
+Edit `gateway/config.toml`:
 
 ```toml
 [server]
 host = "0.0.0.0"
-port = 3000
+port = 8081
+workers = 4
 
 [cache]
-max_size_mb = 512
+max_size_mb = 500
 ttl_seconds = 3600
 
 [rate_limit]
 enabled = true
 requests_per_second = 100
+burst_size = 200
 
-[cors]
+[security]
+cors_enabled = true
+allowed_origins = ["https://yourdomain.com"]  # no wildcards in production
+max_request_size_mb = 10
+
+[p2p]
 enabled = true
-origins = ["*"]
+tcp_port = 4001
+bootstrap_peers = []
+enable_mdns = true
 ```
 
 ### Node Runner Configuration
 
-Create `node-config.toml`:
+Create `node-config.toml` (or copy `node-runner/node-config.example.toml`):
 
 ```toml
-[node]
-data_dir = "./data"
-max_storage_gb = 10
+[identity]
+name = "my-node"
+
+[storage]
+data_dir = ".shadowmesh/data"
+max_storage_bytes = 10737418240  # 10 GB
 
 [network]
-listen_addr = "/ip4/0.0.0.0/tcp/4001"
-bootstrap_peers = []
-
-[replication]
-factor = 3
-check_interval_secs = 300
+listen_addresses = ["/ip4/0.0.0.0/tcp/4001"]
+bootstrap_nodes = []
+max_peers = 50
+enable_mdns = true
+enable_dht = true
+replication_factor = 3
 
 [dashboard]
 enabled = true
-port = 8080
+host = "127.0.0.1"
+port = 3030
 ```
+
+## Bootstrap Configuration
+
+Nodes need at least one reachable peer to join the network. There are three ways to configure bootstrap peers:
+
+### Config file (recommended)
+
+For the **node-runner**, add bootstrap addresses to `node-config.toml` under `[network]`:
+
+```toml
+[network]
+bootstrap_nodes = [
+    "/ip4/203.0.113.10/tcp/4001/p2p/12D3KooWGPAjDTsHkY39arQUSFKTdSRaKQFDhqiND5nZR2iLdtr7"
+]
+```
+
+For the **gateway**, add them to `gateway/config.toml` under `[p2p]`:
+
+```toml
+[p2p]
+enabled = true
+bootstrap_peers = [
+    "/ip4/203.0.113.10/tcp/4001/p2p/12D3KooWGPAjDTsHkY39arQUSFKTdSRaKQFDhqiND5nZR2iLdtr7"
+]
+```
+
+Note: the field name is `bootstrap_nodes` for node-runner and `bootstrap_peers` for gateway.
+
+### Environment variable
+
+Set `SHADOWMESH_BOOTSTRAP_NODES` with a comma-separated list of multiaddrs:
+
+```bash
+export SHADOWMESH_BOOTSTRAP_NODES="/ip4/203.0.113.10/tcp/4001/p2p/12D3KooW...,/ip4/198.51.100.5/tcp/4001/p2p/12D3KooW..."
+```
+
+This works for both node-runner and gateway and overrides the config file values.
+
+### LAN discovery (automatic)
+
+When `enable_mdns = true` (the default), nodes on the same local network discover each other automatically via mDNS. No bootstrap configuration is needed for LAN-only setups.
+
+## Production Deployment Checklist
+
+Before running ShadowMesh in production, verify these items:
+
+- **Set API keys for authentication.** Set the `SHADOWMESH_API_KEYS` environment variable to restrict who can upload and manage content. Without this, your node's API is open to anyone who can reach it.
+- **Configure bootstrap peers.** Add at least one stable bootstrap address to your config so nodes can rejoin the network after restarts. See the [Hosting Guide](docs/hosting-guide.md) for details.
+- **Set proper CORS origins.** Replace wildcard (`*`) origins with specific domains in the gateway's `[security]` section. Override at runtime with `SHADOWMESH_SECURITY_ALLOWED_ORIGINS`.
+- **Enable telemetry and monitoring.** Set `[telemetry] enabled = true` in the gateway config and point `otlp_endpoint` at your collector. Scrape Prometheus metrics from `/metrics/prometheus`.
+- **Pin Docker image tags.** Use a specific image digest or version tag in your `docker-compose.yml` and Dockerfiles instead of `latest`.
+- **Configure hot-reload (gateway).** The gateway watches its config file for changes and reloads automatically. You can also send `SIGHUP` or call `POST /api/admin/reload`. No restart required for rate-limit, cache, or CORS changes.
+
+See the full [Hosting Guide](docs/hosting-guide.md) and [Node Runner Guide](docs/node-runner-guide.md) for detailed setup instructions.
 
 ## 📚 Documentation
 
