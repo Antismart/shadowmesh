@@ -2,7 +2,7 @@
 
 use crate::error::{codes, SdkError};
 use crate::signaling::{PeerInfo, SignalingClient, SignalingMessage};
-use crate::utils::generate_session_id;
+use crate::utils::{console_log, generate_session_id};
 use crate::webrtc::WebRtcConnection;
 use base64::Engine;
 use futures::{FutureExt, StreamExt};
@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 /// Fragment size in bytes (256 KB)
 const FRAGMENT_SIZE: usize = 256 * 1024;
@@ -302,50 +303,123 @@ impl ShadowMeshClient {
         Ok(())
     }
 
-    /// Fetch content by CID using P2P or HTTP fallback
+    /// Fetch content by CID using P2P or HTTP fallback.
+    ///
+    /// The fetch strategy is:
+    /// 1. Check the local in-memory cache.
+    /// 2. If connected to the P2P network, attempt a WebRTC fetch from peers.
+    /// 3. If P2P fails (timeout, no peers, connection error, etc.) **and**
+    ///    HTTP fallback is enabled (`use_fallback` + `gateway_url` configured),
+    ///    fall back to fetching the content from the HTTP gateway.
+    /// 4. Content fetched via HTTP is BLAKE3-verified and cached locally so it
+    ///    can be served to other peers over P2P.
     #[wasm_bindgen]
     pub async fn fetch(&self, cid: &str) -> Result<js_sys::Uint8Array, JsValue> {
         tracing::info!("Fetching content: {}", cid);
+        console_log(&format!("[ShadowMesh] fetch requested for CID: {}", cid));
 
-        if !*self.connected.borrow() {
-            return Err(JsValue::from_str("Not connected to network"));
+        // ── 1. Local cache ──────────────────────────────────────────────
+        if let Some(data) = self.content_cache.borrow().get(cid) {
+            console_log(&format!(
+                "[ShadowMesh] cache hit for CID {} ({} bytes)",
+                cid,
+                data.len()
+            ));
+            let array = js_sys::Uint8Array::new_with_length(data.len() as u32);
+            array.copy_from(data);
+            return Ok(array);
         }
 
-        // Try P2P fetch first
-        match self.fetch_p2p(cid).await {
-            Ok(data) => {
-                tracing::info!("Content fetched via P2P: {} bytes", data.len());
-                let array = js_sys::Uint8Array::new_with_length(data.len() as u32);
-                array.copy_from(&data);
-                return Ok(array);
+        // ── 2. P2P fetch (only when connected) ─────────────────────────
+        let mut p2p_error: Option<SdkError> = None;
+
+        if *self.connected.borrow() {
+            console_log("[ShadowMesh] attempting P2P fetch...");
+            match self.fetch_p2p(cid).await {
+                Ok(data) => {
+                    tracing::info!("Content fetched via P2P: {} bytes", data.len());
+                    console_log(&format!(
+                        "[ShadowMesh] P2P fetch succeeded: {} bytes",
+                        data.len()
+                    ));
+                    let array = js_sys::Uint8Array::new_with_length(data.len() as u32);
+                    array.copy_from(&data);
+                    return Ok(array);
+                }
+                Err(e) => {
+                    tracing::warn!("P2P fetch failed: {}", e);
+                    console_log(&format!("[ShadowMesh] P2P fetch failed: {}", e));
+                    p2p_error = Some(e);
+                }
             }
-            Err(e) => {
-                tracing::warn!("P2P fetch failed: {:?}, trying fallback", e);
-            }
+        } else {
+            console_log("[ShadowMesh] not connected to P2P network, skipping P2P fetch");
         }
 
-        // Try HTTP fallback if enabled
+        // ── 3. HTTP gateway fallback ────────────────────────────────────
         if self.config.use_fallback {
             if let Some(ref gateway_url) = self.config.gateway_url {
-                match self.fetch_http(gateway_url, cid).await {
+                console_log(&format!(
+                    "[ShadowMesh] falling back to HTTP gateway: {}",
+                    gateway_url
+                ));
+
+                match self.fetch_http_with_timeout(gateway_url, cid).await {
                     Ok(data) => {
-                        tracing::info!("Content fetched via HTTP: {} bytes", data.len());
-                        // Cache for P2P serving to other peers
+                        // Verify content integrity with BLAKE3
+                        if !verify_cid(&data, cid) {
+                            let msg = format!(
+                                "HTTP fallback: BLAKE3 hash mismatch for CID {}",
+                                cid
+                            );
+                            tracing::error!("{}", msg);
+                            console_log(&format!("[ShadowMesh] {}", msg));
+                            return Err(JsValue::from_str(&msg));
+                        }
+
+                        tracing::info!(
+                            "Content fetched via HTTP fallback: {} bytes",
+                            data.len()
+                        );
+                        console_log(&format!(
+                            "[ShadowMesh] HTTP fallback succeeded: {} bytes (integrity verified)",
+                            data.len()
+                        ));
+
+                        // Cache so we can serve it to other peers via P2P
                         self.content_cache
                             .borrow_mut()
                             .insert(cid.to_string(), data.clone());
+
                         let array = js_sys::Uint8Array::new_with_length(data.len() as u32);
                         array.copy_from(&data);
                         return Ok(array);
                     }
                     Err(e) => {
-                        tracing::error!("HTTP fallback failed: {:?}", e);
+                        tracing::error!("HTTP fallback failed: {}", e);
+                        console_log(&format!("[ShadowMesh] HTTP fallback failed: {}", e));
                     }
                 }
+            } else {
+                console_log(
+                    "[ShadowMesh] HTTP fallback enabled but no gateway_url configured",
+                );
             }
+        } else {
+            console_log("[ShadowMesh] HTTP fallback is disabled");
         }
 
-        Err(JsValue::from_str("Failed to fetch content from any source"))
+        // ── 4. All sources exhausted ────────────────────────────────────
+        let detail = match p2p_error {
+            Some(e) => format!("P2P error: {}", e),
+            None => "no P2P connection available".to_string(),
+        };
+        let msg = format!(
+            "Failed to fetch content from any source ({})",
+            detail
+        );
+        console_log(&format!("[ShadowMesh] {}", msg));
+        Err(JsValue::from_str(&msg))
     }
 
     /// Fetch content via HTTP gateway
@@ -483,40 +557,68 @@ impl ShadowMeshClient {
         result
     }
 
-    /// Fetch content via HTTP gateway
+    /// Fetch content via HTTP gateway (raw, no timeout).
     async fn fetch_http(&self, gateway_url: &str, cid: &str) -> Result<Vec<u8>, SdkError> {
         let url = format!("{}/ipfs/{}", gateway_url.trim_end_matches('/'), cid);
 
         // Use web_sys fetch API
         let window = web_sys::window()
-            .ok_or_else(|| SdkError::new(codes::WEBRTC_ERROR, "No window object"))?;
+            .ok_or_else(|| SdkError::new(codes::CONNECTION_FAILED, "No window object"))?;
 
         let promise = window.fetch_with_str(&url);
         let response = wasm_bindgen_futures::JsFuture::from(promise)
             .await
-            .map_err(|e| SdkError::new(codes::CONNECTION_FAILED, &format!("{:?}", e)))?;
+            .map_err(|e| SdkError::new(codes::CONNECTION_FAILED, &format!("HTTP fetch error: {:?}", e)))?;
 
         let response: web_sys::Response = response
             .dyn_into()
-            .map_err(|_| SdkError::new(codes::CONNECTION_FAILED, "Invalid response"))?;
+            .map_err(|_| SdkError::new(codes::CONNECTION_FAILED, "Invalid HTTP response object"))?;
 
         if !response.ok() {
             return Err(SdkError::new(
                 codes::CONTENT_NOT_FOUND,
-                &format!("HTTP {}", response.status()),
+                &format!("HTTP {} from gateway", response.status()),
             ));
         }
 
         let array_buffer = wasm_bindgen_futures::JsFuture::from(
             response
                 .array_buffer()
-                .map_err(|_| SdkError::new(codes::CONNECTION_FAILED, "Failed to get body"))?,
+                .map_err(|_| SdkError::new(codes::CONNECTION_FAILED, "Failed to read response body"))?,
         )
         .await
-        .map_err(|e| SdkError::new(codes::CONNECTION_FAILED, &format!("{:?}", e)))?;
+        .map_err(|e| SdkError::new(codes::CONNECTION_FAILED, &format!("Body read error: {:?}", e)))?;
 
         let uint8_array = js_sys::Uint8Array::new(&array_buffer);
         Ok(uint8_array.to_vec())
+    }
+
+    /// Fetch content via HTTP gateway with a timeout.
+    ///
+    /// Uses the same `timeout_ms` setting from the client config.
+    /// The timeout protects against unresponsive gateways so the caller
+    /// gets a clear error rather than hanging indefinitely.
+    async fn fetch_http_with_timeout(
+        &self,
+        gateway_url: &str,
+        cid: &str,
+    ) -> Result<Vec<u8>, SdkError> {
+        let timeout = gloo_timers::future::TimeoutFuture::new(self.config.timeout_ms);
+
+        let result = futures::select! {
+            res = self.fetch_http(gateway_url, cid).fuse() => res,
+            _ = timeout.fuse() => {
+                Err(SdkError::new(
+                    codes::TIMEOUT,
+                    &format!(
+                        "HTTP gateway fetch timed out after {}ms",
+                        self.config.timeout_ms
+                    ),
+                ))
+            }
+        };
+
+        result
     }
 
     /// Verify content hash using BLAKE3
