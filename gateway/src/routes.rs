@@ -76,12 +76,3 @@ pub struct ContentStatus {
     pub last_seen: Option<u64>,
 }
 
-// Helper function to create a gateway URL
-pub fn gateway_url(cid: &str) -> String {
-    format!("http://localhost:8080/{}", cid)
-}
-
-// Helper function to create a native ShadowMesh URL
-pub fn native_url(cid: &str) -> String {
-    format!("shadow://{}", cid)
-}
