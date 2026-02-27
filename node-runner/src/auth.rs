@@ -58,8 +58,6 @@ pub async fn require_api_key(req: Request, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_api_key_not_set_returns_none() {
         // When env var isn't set, get_api_key returns None (first call wins via OnceLock)
