@@ -11,16 +11,16 @@ use axum::{
 };
 use crate::metrics;
 use serde::Serialize;
-use std::collections::HashSet;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 use crate::audit;
 
 /// Authentication configuration
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
-    /// Set of valid API keys
-    valid_keys: HashSet<String>,
+    /// Valid API keys (stored as Vec for constant-time iteration)
+    valid_keys: Vec<String>,
     /// Whether authentication is enabled
     enabled: bool,
     /// Routes that don't require authentication (exact match or prefix with *)
@@ -31,7 +31,7 @@ impl AuthConfig {
     /// Create a new AuthConfig
     pub fn new(keys: Vec<String>, enabled: bool) -> Self {
         Self {
-            valid_keys: keys.into_iter().collect(),
+            valid_keys: keys,
             enabled,
             public_routes: vec![
                 // Health and monitoring
@@ -66,7 +66,7 @@ impl AuthConfig {
     /// Create disabled auth config (all routes public)
     pub fn disabled() -> Self {
         Self {
-            valid_keys: HashSet::new(),
+            valid_keys: Vec::new(),
             enabled: false,
             public_routes: Vec::new(),
         }
@@ -92,9 +92,27 @@ impl AuthConfig {
         Self::new(keys, enabled)
     }
 
-    /// Check if a key is valid
+    /// Check if a key is valid (constant-time to prevent timing side-channel attacks).
+    ///
+    /// Iterates over ALL valid keys and uses `subtle::ConstantTimeEq` for each
+    /// comparison, then bitwise-ORs the results.  This ensures that the execution
+    /// time does not reveal *which* key matched (or how close a guess was).
+    ///
+    /// Note: length comparison is done first per-key which may leak key lengths,
+    /// but this is an acceptable trade-off.
     pub fn is_valid_key(&self, key: &str) -> bool {
-        self.valid_keys.contains(key)
+        let input = key.as_bytes();
+        let mut result = 0u8;
+
+        for valid_key in &self.valid_keys {
+            let valid = valid_key.as_bytes();
+            if input.len() == valid.len() {
+                // Constant-time byte comparison — does NOT short-circuit.
+                result |= input.ct_eq(valid).unwrap_u8();
+            }
+        }
+
+        result == 1
     }
 
     /// Check if a route is public (doesn't require auth)
