@@ -3,7 +3,7 @@
 
 # Stage 1: Build React dashboard
 # Pinned 2025-12-17 – update periodically from https://hub.docker.com/_/node
-FROM node:20.18.1-slim AS dashboard-builder
+FROM node:25.7.0-slim AS dashboard-builder
 
 WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/package-lock.json* ./
