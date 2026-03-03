@@ -191,6 +191,11 @@ pub struct NetworkConfig {
     /// DHT record TTL in seconds (default: 86400 = 24 hours)
     #[serde(default = "default_dht_ttl")]
     pub dht_ttl_secs: u64,
+
+    /// Run as a dedicated relay/bootstrap node (VPS mode).
+    /// Increases relay capacity and prints the full multiaddr on startup.
+    #[serde(default)]
+    pub relay_mode: bool,
 }
 
 fn default_listen_addresses() -> Vec<String> {
@@ -226,6 +231,7 @@ impl Default for NetworkConfig {
             enable_dht: true,
             replication_factor: default_replication_factor(),
             dht_ttl_secs: default_dht_ttl(),
+            relay_mode: false,
         }
     }
 }
@@ -550,6 +556,9 @@ impl NodeConfig {
         println!("   Max Peers: {}", self.network.max_peers);
         println!("   Replication: {}x", self.network.replication_factor);
         println!("   Dashboard: http://{}", self.dashboard.bind_address());
+        if self.network.relay_mode {
+            println!("   Mode: RELAY BOOTSTRAP");
+        }
         if let Some(region) = &self.identity.region {
             println!("   Region: {}", region);
         }
