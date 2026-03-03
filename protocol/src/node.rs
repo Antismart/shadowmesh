@@ -94,11 +94,14 @@ impl std::error::Error for NodeError {}
 impl ShadowNode {
     /// Create a new ShadowNode with default TCP-only configuration
     pub async fn new() -> Result<Self, Box<dyn Error>> {
-        Self::with_config(TransportConfig::default()).await
+        Self::with_config(TransportConfig::default(), false).await
     }
 
-    /// Create a new ShadowNode with custom transport configuration
-    pub async fn with_config(config: TransportConfig) -> Result<Self, Box<dyn Error>> {
+    /// Create a new ShadowNode with custom transport configuration.
+    ///
+    /// When `relay_mode` is `true` the relay server is configured with generous
+    /// limits suitable for a dedicated relay/bootstrap node (VPS).
+    pub async fn with_config(config: TransportConfig, relay_mode: bool) -> Result<Self, Box<dyn Error>> {
         // Validate configuration
         if let Err(errors) = config.validate() {
             return Err(Box::new(NodeError::Config(errors)));
@@ -152,7 +155,19 @@ impl ShadowNode {
         let identify_behaviour = identify::Behaviour::new(identify_config);
 
         // Set up Relay server (allows this node to relay traffic for others)
-        let relay_server = relay::Behaviour::new(peer_id, relay::Config::default());
+        let relay_config = if relay_mode {
+            // Generous limits for a dedicated relay/bootstrap node
+            let mut cfg = relay::Config::default();
+            cfg.max_reservations = 512;
+            cfg.max_reservations_per_peer = 8;
+            cfg.max_circuits = 256;
+            cfg.max_circuits_per_peer = 8;
+            cfg.max_circuit_bytes = 1 << 20; // 1 MiB per circuit
+            cfg
+        } else {
+            relay::Config::default()
+        };
+        let relay_server = relay::Behaviour::new(peer_id, relay_config);
 
         // Set up Rendezvous client for namespace-based peer discovery
         let rendezvous_client = rendezvous::client::Behaviour::new(keypair.clone());
@@ -373,14 +388,14 @@ mod tests {
     #[tokio::test]
     async fn test_create_node_tcp_only() {
         let config = TransportConfig::tcp_only(4001);
-        let node = ShadowNode::with_config(config).await;
+        let node = ShadowNode::with_config(config, false).await;
         assert!(node.is_ok());
     }
 
     #[tokio::test]
     async fn test_create_node_dual_transport() {
         let config = TransportConfig::dual(4001, 4002);
-        let node = ShadowNode::with_config(config).await;
+        let node = ShadowNode::with_config(config, false).await;
         assert!(node.is_ok());
     }
 
@@ -391,7 +406,13 @@ mod tests {
             enable_webrtc: false,
             ..Default::default()
         };
-        let node = ShadowNode::with_config(config).await;
+        let node = ShadowNode::with_config(config, false).await;
         assert!(node.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_node_relay_mode() {
+        let node = ShadowNode::with_config(TransportConfig::default(), true).await;
+        assert!(node.is_ok());
     }
 }
