@@ -83,11 +83,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     metrics.clone().start_background_recording(shutdown_tx.subscribe());
 
     // Initialize the ShadowMesh protocol node and P2P event loop
-    let (peer_id, p2p_state) = match shadowmesh_protocol::ShadowNode::new().await {
+    let relay_mode = config.network.relay_mode;
+    let (peer_id, p2p_state) = match shadowmesh_protocol::ShadowNode::with_config(
+        shadowmesh_protocol::TransportConfig::default(),
+        relay_mode,
+    ).await {
         Ok(mut node) => {
             let peer_id = node.peer_id().to_string();
             println!("✅ P2P node initialized");
             println!("   🆔 Peer ID: {}", &peer_id[..20]);
+            if relay_mode {
+                println!("   🔗 Relay mode: ACTIVE (generous relay limits)");
+            }
 
             // Start listening on configured addresses
             if let Err(e) = node.start().await {
@@ -104,6 +111,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let mut bootstrap_failures = 0usize;
                 let bootstrap_total = all_bootstrap.len();
+                let mut bootstrap_peers: std::collections::HashMap<libp2p::PeerId, libp2p::Multiaddr> =
+                    std::collections::HashMap::new();
                 for addr_str in &all_bootstrap {
                     match addr_str.parse::<libp2p::Multiaddr>() {
                         Ok(addr) => {
@@ -111,6 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) =
                                 addr.iter().last()
                             {
+                                bootstrap_peers.insert(peer_id, addr.clone());
                                 node.swarm_mut()
                                     .behaviour_mut()
                                     .kademlia
@@ -181,6 +191,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
 
+                // Print relay multiaddr for operators to share
+                if relay_mode {
+                    println!();
+                    println!("🔗 RELAY BOOTSTRAP MODE");
+                    println!("   Share these addresses with other nodes:");
+                    for addr in node.listen_addrs() {
+                        println!(
+                            "   {}/p2p/{}",
+                            addr, node.peer_id()
+                        );
+                    }
+                    println!();
+                }
+
                 // Create command channel for API → event loop communication
                 let (command_tx, command_rx) =
                     tokio::sync::mpsc::channel::<p2p_commands::P2pCommand>(256);
@@ -203,6 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         shutdown_rx,
                         loop_dht_ttl,
                         rendezvous_peer_ids,
+                        bootstrap_peers,
                     )
                     .await;
                 });
