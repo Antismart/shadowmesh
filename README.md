@@ -72,7 +72,33 @@ cargo build --release
 cd sdk && npm install && npm run build && cd ..
 ```
 
-### Running a Node
+### Join the Network
+
+Create a `node-config.toml` in the project root to connect to the live network:
+
+```toml
+[identity]
+name = "Your-Node-Name"
+
+[network]
+listen_addresses = ["/ip4/0.0.0.0/tcp/4001"]
+bootstrap_nodes = [
+  "/ip4/154.159.252.18/tcp/4001/p2p/12D3KooWBkrRBouo9g7eftTkUbRqEiwuvjoDGHecTb9ouJkMiGTd"
+]
+
+[dashboard]
+port = 3030
+```
+
+Then run:
+
+```bash
+SHADOWMESH_CONFIG=node-config.toml cargo run -p node-runner
+```
+
+Your node will connect to the bootstrap relay, discover other peers, and start a dashboard at `http://127.0.0.1:3030`. Verify with `curl http://127.0.0.1:3030/api/status`.
+
+### Running a Node (standalone)
 
 ```bash
 # Start the gateway (HTTP API on port 8081 by default)
@@ -223,6 +249,12 @@ enabled = true
 host = "127.0.0.1"
 port = 3030
 ```
+
+## Bootstrap Nodes
+
+| Name | Address |
+|------|---------|
+| Primary Relay | `/ip4/154.159.252.18/tcp/4001/p2p/12D3KooWBkrRBouo9g7eftTkUbRqEiwuvjoDGHecTb9ouJkMiGTd` |
 
 ## Bootstrap Configuration
 
