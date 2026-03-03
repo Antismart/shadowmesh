@@ -9,6 +9,23 @@ use tower_http::cors::{Any, CorsLayer};
 use node_runner::*;
 use node_runner::{api, bridge, config::NodeConfig, metrics, metrics::MetricsCollector, p2p, p2p_commands, replication, storage::StorageManager};
 
+/// Load a persistent identity keypair from disk, or generate and save a new one.
+async fn load_or_generate_keypair(
+    path: &std::path::Path,
+) -> Result<libp2p::identity::Keypair, Box<dyn std::error::Error>> {
+    if path.exists() {
+        let bytes = tokio::fs::read(path).await?;
+        Ok(libp2p::identity::Keypair::from_protobuf_encoding(&bytes)?)
+    } else {
+        let keypair = libp2p::identity::Keypair::generate_ed25519();
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(path, keypair.to_protobuf_encoding()?).await?;
+        Ok(keypair)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize structured logging
@@ -82,11 +99,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start background metrics recording (stops on shutdown)
     metrics.clone().start_background_recording(shutdown_tx.subscribe());
 
+    // Load or generate persistent identity keypair
+    let keypair = match load_or_generate_keypair(&config.identity.key_file).await {
+        Ok(kp) => {
+            println!("✅ Identity loaded from {}", config.identity.key_file.display());
+            kp
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to load/generate identity: {}", e);
+            return Err(e);
+        }
+    };
+
     // Initialize the ShadowMesh protocol node and P2P event loop
     let relay_mode = config.network.relay_mode;
     let (peer_id, p2p_state) = match shadowmesh_protocol::ShadowNode::with_config(
         shadowmesh_protocol::TransportConfig::default(),
         relay_mode,
+        Some(keypair),
     ).await {
         Ok(mut node) => {
             let peer_id = node.peer_id().to_string();
@@ -97,7 +127,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Start listening on configured addresses
-            if let Err(e) = node.start().await {
+            let listen_addrs: Vec<libp2p::Multiaddr> = config
+                .network
+                .listen_addresses
+                .iter()
+                .filter_map(|a| a.parse().ok())
+                .collect();
+            if let Err(e) = node.start_with_addrs(listen_addrs).await {
                 eprintln!("❌ Failed to bind P2P addresses: {}", e);
                 (peer_id, None)
             } else {
