@@ -92,6 +92,7 @@ pub async fn run_event_loop(
     mut shutdown_rx: broadcast::Receiver<()>,
     dht_ttl_secs: u64,
     rendezvous_peers: HashSet<PeerId>,
+    bootstrap_peers: HashMap<PeerId, libp2p::Multiaddr>,
 ) {
     tracing::info!("P2P event loop started");
 
@@ -117,6 +118,7 @@ pub async fn run_event_loop(
                     &mut pending_requests,
                     &mut pending_dht_queries,
                     &rendezvous_peers,
+                    &bootstrap_peers,
                 ).await;
             }
             Some(cmd) = command_rx.recv() => {
@@ -155,6 +157,7 @@ async fn handle_swarm_event(
     pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
     pending_dht_queries: &mut HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>>,
     rendezvous_peers: &HashSet<PeerId>,
+    bootstrap_peers: &HashMap<PeerId, libp2p::Multiaddr>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -226,6 +229,7 @@ async fn handle_swarm_event(
                 storage,
                 pending_requests,
                 pending_dht_queries,
+                bootstrap_peers,
             )
             .await;
         }
@@ -250,6 +254,7 @@ async fn handle_behaviour_event(
     storage: &StorageManager,
     pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
     pending_dht_queries: &mut HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>>,
+    bootstrap_peers: &HashMap<PeerId, libp2p::Multiaddr>,
 ) {
     use shadowmesh_protocol::node::ShadowBehaviourEvent;
 
@@ -501,6 +506,26 @@ async fn handle_behaviour_event(
         }
         ShadowBehaviourEvent::Autonat(autonat::Event::StatusChanged { old, new }) => {
             tracing::info!(?old, ?new, "AutoNAT: NAT status changed");
+
+            // When we detect we're behind NAT, request relay reservations
+            // from bootstrap peers so other nodes can reach us via the relay
+            if matches!(new, autonat::NatStatus::Private) {
+                for (bp, addr) in bootstrap_peers {
+                    // Build relay circuit address: <relay_addr>/p2p/<relay_id>/p2p-circuit
+                    let relay_addr = addr
+                        .clone()
+                        .with(libp2p::multiaddr::Protocol::P2p(*bp))
+                        .with(libp2p::multiaddr::Protocol::P2pCircuit);
+                    tracing::info!(
+                        relay_peer = %bp,
+                        %relay_addr,
+                        "Requesting relay reservation (NAT detected)"
+                    );
+                    if let Err(e) = node.swarm_mut().listen_on(relay_addr) {
+                        tracing::warn!(relay_peer = %bp, %e, "Failed to request relay reservation");
+                    }
+                }
+            }
         }
 
         // ── DCUtR ────────────────────────────────────────────
