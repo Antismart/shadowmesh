@@ -49,6 +49,10 @@ enable_mdns = true
 enable_dht = true
 # Replication factor for stored content (1-10)
 replication_factor = 3
+# Run as a dedicated relay/bootstrap node (for VPS / publicly-reachable machines)
+# When enabled, the node uses generous relay limits and prints its full multiaddr
+# on startup so other nodes can use it as a bootstrap peer.
+# relay_mode = true
 
 # Dashboard Configuration
 [dashboard]
