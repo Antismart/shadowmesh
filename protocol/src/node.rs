@@ -203,11 +203,13 @@ impl ShadowNode {
             upnp: upnp_behaviour,
         };
 
+        let swarm_config = libp2p::swarm::Config::with_tokio_executor()
+            .with_idle_connection_timeout(std::time::Duration::from_secs(600));
         let swarm = Swarm::new(
             transport,
             behaviour,
             peer_id,
-            libp2p::swarm::Config::with_tokio_executor(),
+            swarm_config,
         );
 
         Ok(ShadowNode {
