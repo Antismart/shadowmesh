@@ -92,10 +92,32 @@ impl IpfsHttpClient {
     }
 
     async fn add_file(&self, name: String, data: Vec<u8>) -> Result<AddResponse, reqwest::Error> {
-        let url = format!("{}/api/v0/add?wrap-with-directory=true", self.base_url);
+        let url = format!("{}/api/v0/add", self.base_url);
         let part = multipart::Part::bytes(data).file_name(name);
         let form = multipart::Form::new().part("file", part);
         self.client.post(&url).multipart(form).send().await?.json().await
+    }
+
+    async fn add_directory(
+        &self,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<Vec<AddResponse>, Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/api/v0/add?wrap-with-directory=true&pin=true", self.base_url);
+        let mut form = multipart::Form::new();
+        for (name, data) in files {
+            let part = multipart::Part::bytes(data).file_name(name);
+            form = form.part("file", part);
+        }
+        let resp = self.client.post(&url).multipart(form).send().await?;
+        let text = resp.text().await?;
+        let mut results = Vec::new();
+        for line in text.lines() {
+            if !line.trim().is_empty() {
+                let parsed: AddResponse = serde_json::from_str(line)?;
+                results.push(parsed);
+            }
+        }
+        Ok(results)
     }
 }
 
@@ -265,11 +287,9 @@ impl StorageLayer {
         }
 
         let timeout = self.config.timeout * 5; // Allow more time for directories
-        let mut files = Vec::new();
-        let mut total_size = 0u64;
-        let mut root_cid = String::new();
 
-        // Walk directory and upload each file
+        // Collect all files for a single batch upload
+        let mut file_entries = Vec::new();
         for entry in WalkDir::new(path_ref).into_iter().filter_map(|e| e.ok()) {
             if entry.file_type().is_file() {
                 let file_path = entry.path();
@@ -286,39 +306,44 @@ impl StorageLayer {
                     ))) as Box<dyn std::error::Error + Send + Sync>
                 })?;
 
-                let file_size = data.len() as u64;
-
-                let result = tokio::time::timeout(
-                    timeout,
-                    self.ipfs_client.add_file(relative_path.clone(), data),
-                )
-                .await;
-
-                match result {
-                    Ok(Ok(response)) => {
-                        files.push(UploadedFile {
-                            name: relative_path,
-                            hash: response.hash.clone(),
-                            size: file_size,
-                        });
-                        total_size += file_size;
-                        root_cid = response.hash;
-                    }
-                    Ok(Err(e)) => {
-                        return Err(Box::new(std::io::Error::other(format!(
-                            "Failed to add file: {}",
-                            e
-                        ))) as Box<dyn std::error::Error + Send + Sync>);
-                    }
-                    Err(_) => {
-                        return Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            "File upload timed out",
-                        )) as Box<dyn std::error::Error + Send + Sync>);
-                    }
-                }
+                file_entries.push((relative_path, data));
             }
         }
+
+        // Upload all files in a single request with wrap-with-directory
+        let results = tokio::time::timeout(
+            timeout,
+            self.ipfs_client.add_directory(file_entries),
+        )
+        .await
+        .map_err(|_| {
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Directory upload timed out",
+            )) as Box<dyn std::error::Error + Send + Sync>
+        })??;
+
+        // The last entry with empty name is the root directory CID
+        let root_cid = results
+            .iter()
+            .rev()
+            .find(|r| r.name.is_empty())
+            .map(|r| r.hash.clone())
+            .unwrap_or_else(|| {
+                results.last().map(|r| r.hash.clone()).unwrap_or_default()
+            });
+
+        let files: Vec<UploadedFile> = results
+            .iter()
+            .filter(|r| !r.name.is_empty())
+            .map(|r| UploadedFile {
+                name: r.name.clone(),
+                hash: r.hash.clone(),
+                size: r.size.parse().unwrap_or(0),
+            })
+            .collect();
+
+        let total_size = files.iter().map(|f| f.size).sum();
 
         Ok(DirectoryUploadResult {
             root_cid,
