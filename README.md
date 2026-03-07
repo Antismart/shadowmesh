@@ -83,7 +83,7 @@ name = "Your-Node-Name"
 [network]
 listen_addresses = ["/ip4/0.0.0.0/tcp/4001"]
 bootstrap_nodes = [
-  "/ip4/154.159.252.18/tcp/4001/p2p/12D3KooWBkrRBouo9g7eftTkUbRqEiwuvjoDGHecTb9ouJkMiGTd"
+  "/ip4/62.171.189.140/tcp/4001/p2p/12D3KooWCXDk6QR1zpAopogBPSFR977Az5gbrmcHjnFgY12UpBTb"
 ]
 
 [dashboard]
@@ -254,7 +254,7 @@ port = 3030
 
 | Name | Address |
 |------|---------|
-| Primary Relay | `/ip4/154.159.252.18/tcp/4001/p2p/12D3KooWBkrRBouo9g7eftTkUbRqEiwuvjoDGHecTb9ouJkMiGTd` |
+| Primary Relay | `/ip4/62.171.189.140/tcp/4001/p2p/12D3KooWCXDk6QR1zpAopogBPSFR977Az5gbrmcHjnFgY12UpBTb` |
 
 ## Bootstrap Configuration
 

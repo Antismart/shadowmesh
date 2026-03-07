@@ -1,0 +1,16 @@
+[identity]
+name = "Friend-Node"
+
+[network]
+listen_addresses = ["/ip4/0.0.0.0/tcp/4001"]
+bootstrap_nodes = [
+  "/ip4/62.171.189.140/tcp/4001/p2p/12D3KooWCXDk6QR1zpAopogBPSFR977Az5gbrmcHjnFgY12UpBTb"
+]
+
+[replication]
+enabled = true
+scan_interval_secs = 30
+
+[dashboard]
+host = "0.0.0.0"
+port = 3030
