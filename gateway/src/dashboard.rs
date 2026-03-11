@@ -1568,23 +1568,80 @@ fn run_npm_with_timeout(
     }
 }
 
-fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
-    let package_json = root.join("package.json");
-    if package_json.exists() {
-        let build_script = std::fs::read_to_string(&package_json)
-            .ok()
-            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
-            .and_then(|value| value.get("scripts").cloned())
-            .and_then(|scripts| scripts.get("build").cloned());
+/// Detect framework and return a human-readable name for build logs.
+fn detect_framework(root: &Path) -> &'static str {
+    if root.join("next.config.js").exists()
+        || root.join("next.config.ts").exists()
+        || root.join("next.config.mjs").exists()
+    {
+        return "Next.js";
+    }
+    if root.join("nuxt.config.ts").exists() || root.join("nuxt.config.js").exists() {
+        return "Nuxt";
+    }
+    if root.join("astro.config.mjs").exists() || root.join("astro.config.ts").exists() {
+        return "Astro";
+    }
+    if root.join("svelte.config.js").exists() || root.join("svelte.config.ts").exists() {
+        return "SvelteKit";
+    }
+    if root.join("vite.config.ts").exists()
+        || root.join("vite.config.js").exists()
+        || root.join("vite.config.mjs").exists()
+    {
+        return "Vite";
+    }
+    if root.join("gatsby-config.js").exists() || root.join("gatsby-config.ts").exists() {
+        return "Gatsby";
+    }
+    if root.join("angular.json").exists() {
+        return "Angular";
+    }
+    if root.join("package.json").exists() {
+        return "Node.js";
+    }
+    if root.join("index.html").exists() {
+        return "Static HTML";
+    }
+    "Unknown"
+}
 
-        if build_script.is_some() {
+/// Known output directories to check after build, in priority order.
+const OUTPUT_DIRS: &[&str] = &[
+    "dist",      // Vite, Vue CLI, Svelte, Astro
+    "build",     // Create React App, Angular
+    "out",       // Next.js static export
+    ".output/public", // Nuxt 3 static
+    "public",    // Hugo, Gatsby (if no build)
+    "_site",     // Jekyll, Eleventy
+    "storybook-static", // Storybook
+];
+
+fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
+    let framework = detect_framework(root);
+    let package_json = root.join("package.json");
+
+    if package_json.exists() {
+        let pkg_contents = std::fs::read_to_string(&package_json).ok();
+        let pkg_json = pkg_contents
+            .as_ref()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok());
+
+        let has_build_script = pkg_json
+            .as_ref()
+            .and_then(|v| v.get("scripts"))
+            .and_then(|s| s.get("build"))
+            .is_some();
+
+        if has_build_script {
             // Collect only safe env vars to prevent leaking secrets to npm scripts
             let safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
                 .iter()
                 .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
                 .collect();
 
-            let mut logs = String::new();
+            let mut logs = format!("Detected framework: {}\n\n", framework);
+
             logs.push_str("$ npm install\n");
             let output =
                 run_npm_with_timeout(&["install"], root, &safe_env, BUILD_TIMEOUT_SECS)?;
@@ -1603,34 +1660,51 @@ fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
                 return Err(format!("npm run build failed\n{}", trim_logs(&logs)));
             }
 
-            let dist_dir = root.join("dist");
-            if dist_dir.exists() {
-                return Ok(BuildOutcome {
-                    deploy_root: dist_dir,
-                    build_status: "Built".to_string(),
-                    build_logs: trim_logs(&logs),
-                });
-            }
-            let build_dir = root.join("build");
-            if build_dir.exists() {
-                return Ok(BuildOutcome {
-                    deploy_root: build_dir,
-                    build_status: "Built".to_string(),
-                    build_logs: trim_logs(&logs),
-                });
+            // Check all known output directories
+            for dir_name in OUTPUT_DIRS {
+                let dir = root.join(dir_name);
+                if dir.exists() && dir.is_dir() {
+                    logs.push_str(&format!("\nOutput directory: {}/\n", dir_name));
+                    return Ok(BuildOutcome {
+                        deploy_root: dir,
+                        build_status: format!("Built ({})", framework),
+                        build_logs: trim_logs(&logs),
+                    });
+                }
             }
 
             return Err(format!(
-                "Build finished but no dist/ or build/ folder found.\n{}",
+                "Build finished but no output folder found.\nLooked for: {}\n{}",
+                OUTPUT_DIRS.join(", "),
                 trim_logs(&logs)
             ));
         }
     }
 
+    // No package.json or no build script — check for static site generators
+    // that don't use npm (Hugo, Jekyll, etc.)
+    if root.join("index.html").exists() {
+        return Ok(BuildOutcome {
+            deploy_root: root.to_path_buf(),
+            build_status: format!("Static ({})", framework),
+            build_logs: format!("Detected framework: {}\nNo build needed — deploying as-is.", framework),
+        });
+    }
+
+    // Check if there's a public/ folder with static content
+    let public_dir = root.join("public");
+    if public_dir.exists() && public_dir.join("index.html").exists() {
+        return Ok(BuildOutcome {
+            deploy_root: public_dir,
+            build_status: format!("Static ({})", framework),
+            build_logs: format!("Detected framework: {}\nDeploying public/ directory.", framework),
+        });
+    }
+
     Ok(BuildOutcome {
         deploy_root: root.to_path_buf(),
         build_status: "Skipped".to_string(),
-        build_logs: "No build script detected. Deployed repository as-is.".to_string(),
+        build_logs: format!("Detected framework: {}\nNo build script detected. Deployed repository as-is.", framework),
     })
 }
 
