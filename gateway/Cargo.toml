@@ -49,8 +49,10 @@ tracing-opentelemetry = "0.22"
 # Config hot-reload
 notify = "6.1"
 
-# API key hashing
+# API key hashing & webhook signature verification
 sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 
 # Embedded SPA dashboard
 rust-embed = "8"

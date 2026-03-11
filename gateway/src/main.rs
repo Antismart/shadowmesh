@@ -483,6 +483,8 @@ async fn main() {
         .route("/api/github/callback", get(dashboard::github_callback))
         .route("/api/github/status", get(dashboard::github_status))
         .route("/api/github/repos", get(dashboard::github_repos))
+        // GitHub webhook for auto-redeploy on push
+        .route("/api/webhook/github", post(dashboard::github_webhook))
         // Upload endpoints (single files)
         .route("/api/upload", post(upload::upload_multipart))
         .route("/api/upload/json", post(upload::upload_json))

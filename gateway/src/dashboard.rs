@@ -767,6 +767,143 @@ pub async fn redeploy_github(
     }
 }
 
+/// GitHub webhook handler for auto-redeploy on push
+///
+/// Set `GITHUB_WEBHOOK_SECRET` env var to validate webhook signatures.
+/// Configure on GitHub: Settings → Webhooks → Add webhook
+///   URL: https://your-gateway/api/webhook/github
+///   Content type: application/json
+///   Secret: same as GITHUB_WEBHOOK_SECRET
+pub async fn github_webhook(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    // Validate signature if secret is configured
+    if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") {
+        let signature = headers
+            .get("x-hub-signature-256")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if !verify_webhook_signature(&secret, &body, signature) {
+            tracing::warn!("GitHub webhook signature validation failed");
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"success": false, "error": "Invalid signature"})),
+            )
+                .into_response();
+        }
+    }
+
+    // Only handle push events
+    let event = headers
+        .get("x-github-event")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if event != "push" {
+        return (
+            StatusCode::OK,
+            Json(json!({"success": true, "message": format!("Ignored event: {}", event)})),
+        )
+            .into_response();
+    }
+
+    // Parse push payload
+    let payload: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "error": format!("Invalid JSON: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let repo_url = payload["repository"]["html_url"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let git_ref = payload["ref"].as_str().unwrap_or("refs/heads/main");
+    let branch = git_ref.strip_prefix("refs/heads/").unwrap_or(git_ref);
+
+    if repo_url.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"success": false, "error": "No repository URL in payload"})),
+        )
+            .into_response();
+    }
+
+    tracing::info!(repo = %repo_url, branch = %branch, "GitHub webhook: auto-redeploy triggered");
+
+    // Find matching deployment
+    let old_cid = {
+        let deployments = read_lock(&state.deployments);
+        deployments
+            .iter()
+            .find(|d| {
+                d.source == "github"
+                    && d.repo_url.as_deref() == Some(&repo_url)
+                    && d.branch.as_deref() == Some(branch)
+            })
+            .map(|d| d.cid.clone())
+    };
+
+    // Redeploy
+    match deploy_github_project(&state, &repo_url, branch).await {
+        Ok(payload) => {
+            // Remove old deployment if exists
+            if let Some(ref old_cid) = old_cid {
+                {
+                    let mut deployments = write_lock(&state.deployments);
+                    deployments.retain(|d| d.cid != *old_cid);
+                }
+                if let Some(ref redis) = state.redis {
+                    if let Err(e) = Deployment::delete_from_redis(old_cid, redis).await {
+                        tracing::warn!("Failed to delete old deployment from Redis: {}", e);
+                    }
+                }
+            }
+
+            tracing::info!(repo = %repo_url, "GitHub webhook: auto-redeploy succeeded");
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Err((_status, message)) => {
+            tracing::error!(repo = %repo_url, error = %message, "GitHub webhook: auto-redeploy failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"success": false, "error": message})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Verify GitHub webhook HMAC-SHA256 signature
+fn verify_webhook_signature(secret: &str, body: &[u8], signature: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let expected = match signature.strip_prefix("sha256=") {
+        Some(hex) => hex,
+        None => return false,
+    };
+
+    let mut mac = match Hmac::<Sha256>::new_from_slice(secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(body);
+    let result = mac.finalize();
+    let computed = hex::encode(result.into_bytes());
+
+    // Constant-time comparison
+    subtle::ConstantTimeEq::ct_eq(computed.as_bytes(), expected.as_bytes()).into()
+}
+
 pub async fn get_deployments(State(state): State<AppState>) -> impl IntoResponse {
     let deployments = read_lock(&state.deployments);
     Json(deployments.clone())
