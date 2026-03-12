@@ -1,5 +1,5 @@
 import { apiFetch, apiPost, apiDelete, apiUpload } from './client';
-import type { Deployment, DeployResponse, DeployLogsResponse } from './types';
+import type { Deployment, DeployResponse, DeployLogsResponse, AsyncDeployResponse } from './types';
 
 export const deployments = {
   list: () => apiFetch<Deployment[]>('/api/deployments'),
@@ -12,6 +12,13 @@ export const deployments = {
 
   deployGithub: (url: string, branch: string, rootDirectory?: string) =>
     apiPost<DeployResponse>('/api/deploy/github', {
+      url,
+      branch,
+      ...(rootDirectory ? { root_directory: rootDirectory } : {}),
+    }),
+
+  deployGithubAsync: (url: string, branch: string, rootDirectory?: string) =>
+    apiPost<AsyncDeployResponse>('/api/deploy/github', {
       url,
       branch,
       ...(rootDirectory ? { root_directory: rootDirectory } : {}),
