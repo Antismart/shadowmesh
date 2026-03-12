@@ -20,6 +20,72 @@ use std::process::Command;
 use std::sync::Arc;
 use uuid::Uuid;
 
+// ── Build session for SSE log streaming ─────────────────────────────
+
+/// Tracks an in-progress build for SSE streaming.
+pub struct BuildSession {
+    pub logs: std::sync::Mutex<Vec<String>>,
+    pub status: std::sync::Mutex<BuildSessionStatus>,
+    pub result: std::sync::Mutex<Option<serde_json::Value>>,
+    pub notify: tokio::sync::broadcast::Sender<BuildEvent>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub enum BuildSessionStatus {
+    Building,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub struct BuildEvent {
+    pub event_type: String,
+    pub data: String,
+}
+
+impl BuildSession {
+    pub fn new() -> (Self, tokio::sync::broadcast::Receiver<BuildEvent>) {
+        let (tx, rx) = tokio::sync::broadcast::channel(512);
+        (
+            Self {
+                logs: std::sync::Mutex::new(Vec::new()),
+                status: std::sync::Mutex::new(BuildSessionStatus::Building),
+                result: std::sync::Mutex::new(None),
+                notify: tx,
+            },
+            rx,
+        )
+    }
+
+    pub fn push_log(&self, line: &str) {
+        if let Ok(mut logs) = self.logs.lock() {
+            logs.push(line.to_string());
+        }
+        let _ = self.notify.send(BuildEvent {
+            event_type: "log".to_string(),
+            data: line.to_string(),
+        });
+    }
+
+    pub fn complete(&self, result: serde_json::Value) {
+        *self.status.lock().unwrap() = BuildSessionStatus::Succeeded;
+        *self.result.lock().unwrap() = Some(result.clone());
+        let _ = self.notify.send(BuildEvent {
+            event_type: "complete".to_string(),
+            data: result.to_string(),
+        });
+    }
+
+    pub fn fail(&self, error: &str) {
+        *self.status.lock().unwrap() = BuildSessionStatus::Failed;
+        *self.result.lock().unwrap() = Some(json!({"success": false, "error": error}));
+        let _ = self.notify.send(BuildEvent {
+            event_type: "error".to_string(),
+            data: error.to_string(),
+        });
+    }
+}
+
 /// Escape a string for safe embedding in HTML content.
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -703,16 +769,137 @@ pub async fn deploy_from_github(
     State(state): State<AppState>,
     Json(request): Json<GithubDeployRequest>,
 ) -> impl IntoResponse {
-    let url = request.url.trim();
-    let branch = request.branch.as_deref().unwrap_or("main");
-    let root_dir = request.root_directory.as_deref();
+    let url = request.url.trim().to_string();
+    let branch = request.branch.as_deref().unwrap_or("main").to_string();
+    let root_dir = request.root_directory.clone();
 
-    match deploy_github_project(&state, url, branch, root_dir).await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err((status, message)) => {
-            (status, Json(json!({"success": false, "error": message}))).into_response()
-        }
+    // Create a build session for SSE streaming
+    let deploy_id = Uuid::new_v4().to_string();
+    let (session, _rx) = BuildSession::new();
+    let session = Arc::new(session);
+
+    {
+        let mut sessions = write_lock(&state.build_sessions);
+        sessions.insert(deploy_id.clone(), session.clone());
     }
+
+    // Spawn background build task
+    let state_clone = state.clone();
+    let deploy_id_clone = deploy_id.clone();
+    let session_clone = session.clone();
+    tokio::spawn(async move {
+        session_clone.push_log(&format!("Starting deployment from {}", url));
+
+        match deploy_github_project_streaming(
+            &state_clone,
+            &url,
+            &branch,
+            root_dir.as_deref(),
+            &session_clone,
+        )
+        .await
+        {
+            Ok(payload) => {
+                session_clone.complete(payload);
+            }
+            Err((_status, message)) => {
+                session_clone.fail(&message);
+            }
+        }
+
+        // Clean up session after 5 minutes
+        let sessions = state_clone.build_sessions.clone();
+        let id = deploy_id_clone;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            write_lock(&sessions).remove(&id);
+        });
+    });
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "deploy_id": deploy_id,
+            "stream_url": format!("/api/deploy/{}/stream", deploy_id)
+        })),
+    )
+        .into_response()
+}
+
+/// SSE endpoint for streaming build logs in real time.
+pub async fn deploy_stream(
+    State(state): State<AppState>,
+    AxumPath(deploy_id): AxumPath<String>,
+) -> impl IntoResponse {
+    use axum::response::sse::{Event, Sse};
+
+    let session = {
+        let sessions = read_lock(&state.build_sessions);
+        sessions.get(&deploy_id).cloned()
+    };
+
+    let Some(session) = session else {
+        let stream = async_stream::stream! {
+            yield Ok::<_, std::convert::Infallible>(
+                Event::default().event("error").data("Build session not found")
+            );
+        };
+        return Sse::new(stream)
+            .keep_alive(axum::response::sse::KeepAlive::default())
+            .into_response();
+    };
+
+    // Get buffered logs and subscribe for new events
+    let buffered = session.logs.lock().unwrap().clone();
+    let status = session.status.lock().unwrap().clone();
+    let result = session.result.lock().unwrap().clone();
+    let mut rx = session.notify.subscribe();
+
+    let stream = async_stream::stream! {
+        // Replay buffered logs
+        for line in buffered {
+            yield Ok::<_, std::convert::Infallible>(
+                Event::default().event("log").data(line)
+            );
+        }
+
+        // If already complete, send final event and stop
+        if status == BuildSessionStatus::Succeeded {
+            if let Some(r) = result {
+                yield Ok(Event::default().event("complete").data(r.to_string()));
+            }
+            return;
+        } else if status == BuildSessionStatus::Failed {
+            if let Some(r) = result {
+                yield Ok(Event::default().event("error").data(
+                    r.get("error").and_then(|e| e.as_str()).unwrap_or("Build failed").to_string()
+                ));
+            }
+            return;
+        }
+
+        // Stream new events
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let sse_event = Event::default()
+                        .event(&event.event_type)
+                        .data(&event.data);
+                    yield Ok(sse_event);
+
+                    if event.event_type == "complete" || event.event_type == "error" {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            }
+        }
+    };
+
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
 
 pub async fn redeploy_github(
@@ -1634,6 +1821,155 @@ async fn deploy_github_project(
     }))
 }
 
+/// Streaming variant that pushes log lines to a BuildSession for SSE.
+async fn deploy_github_project_streaming(
+    state: &AppState,
+    url: &str,
+    branch: &str,
+    root_directory: Option<&str>,
+    session: &BuildSession,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let repo_info =
+        parse_github_url(url).ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
+
+    if !is_valid_branch_name(branch) {
+        return Err((StatusCode::BAD_REQUEST, "Invalid branch name".to_string()));
+    }
+
+    session.push_log(&format!("Cloning {}/{} (branch: {})", repo_info.owner, repo_info.repo, branch));
+
+    let zip_url = format!(
+        "https://github.com/{}/{}/archive/refs/heads/{}.zip",
+        repo_info.owner, repo_info.repo, branch
+    );
+
+    let mut response = state.http_client.get(&zip_url)
+        .timeout(std::time::Duration::from_secs(60))
+        .send().await.map_err(|e| {
+        (StatusCode::BAD_GATEWAY, format!("Failed to download: {}", e))
+    })?;
+
+    if !response.status().is_success() {
+        return Err((StatusCode::NOT_FOUND, format!("Repository or branch '{}' not found", branch)));
+    }
+
+    const MAX_ZIP_DOWNLOAD: usize = 512 * 1024 * 1024;
+    let mut zip_bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Failed to read: {}", e)))?
+    {
+        if zip_bytes.len() + chunk.len() > MAX_ZIP_DOWNLOAD {
+            return Err((StatusCode::PAYLOAD_TOO_LARGE, "Repository archive exceeds 512 MB limit".to_string()));
+        }
+        zip_bytes.extend_from_slice(&chunk);
+    }
+
+    session.push_log(&format!("Downloaded {:.1} MB, extracting...", zip_bytes.len() as f64 / (1024.0 * 1024.0)));
+
+    let temp_dir = extract_github_zip(&zip_bytes).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let build_root = if let Some(rd) = root_directory.filter(|s| !s.is_empty()) {
+        let cleaned = rd.trim_matches('/');
+        if cleaned.contains("..") {
+            return Err((StatusCode::BAD_REQUEST, "root_directory must not contain '..'".to_string()));
+        }
+        let sub = temp_dir.path().join(cleaned);
+        if !sub.exists() || !sub.is_dir() {
+            return Err((StatusCode::BAD_REQUEST, format!("Root directory '{}' not found in repository", cleaned)));
+        }
+        session.push_log(&format!("Using root directory: {}", cleaned));
+        sub
+    } else {
+        temp_dir.path().to_path_buf()
+    };
+
+    // Run build in blocking thread, streaming logs to session
+    let build_root_clone = build_root.clone();
+    let session_ptr = session as *const BuildSession;
+    // SAFETY: session lives for the duration of this function, and spawn_blocking completes before we return
+    let session_addr = session_ptr as usize;
+    let build_outcome = tokio::task::spawn_blocking(move || {
+        let session = unsafe { &*(session_addr as *const BuildSession) };
+        prepare_deploy_dir_streaming(&build_root_clone, session)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Build task failed: {}", e)))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let storage = state.storage.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE, "IPFS not available".to_string(),
+    ))?;
+
+    fn count_files(dir: &std::path::Path) -> (u64, usize) {
+        let mut size = 0u64;
+        let mut count = 0usize;
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let (s, c) = count_files(&path);
+                    size += s;
+                    count += c;
+                } else if let Ok(meta) = path.metadata() {
+                    size += meta.len();
+                    count += 1;
+                }
+            }
+        }
+        (size, count)
+    }
+
+    let (total_size, file_count) = count_files(&build_outcome.deploy_root);
+    session.push_log(&format!("Uploading {} files ({:.1} KB) to IPFS...", file_count, total_size as f64 / 1024.0));
+
+    let result = storage.store_directory(&build_outcome.deploy_root).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("IPFS upload failed: {}", e))
+    })?;
+
+    let cid = result.root_cid;
+    session.push_log(&format!("Uploaded to IPFS: {}", cid));
+
+    let mut deployment = Deployment::new_github(
+        repo_info.repo.clone(), cid.clone(), total_size, file_count,
+        branch.to_string(), Some(url.to_string()),
+        build_outcome.build_status, Some(build_outcome.build_logs),
+        root_directory.map(|s| s.to_string()),
+    );
+
+    deployment.domain = crate::auto_assign_domain(state, &repo_info.repo, &cid).await;
+
+    if let Some(ref redis) = state.redis {
+        if let Err(e) = deployment.save_to_redis(redis).await {
+            tracing::warn!("Failed to save GitHub deployment to Redis: {}", e);
+        }
+    }
+
+    metrics::record_deployment(true);
+    audit::log_deploy_success(&state.audit_logger, "github", &cid, total_size, None, None).await;
+
+    let domain = deployment.domain.clone();
+    {
+        let mut deployments = write_lock(&state.deployments);
+        deployments.insert(0, deployment);
+        const MAX_IN_MEMORY_DEPLOYMENTS: usize = 1000;
+        deployments.truncate(MAX_IN_MEMORY_DEPLOYMENTS);
+    }
+
+    if let Some(ref d) = domain {
+        session.push_log(&format!("Domain: {}", d));
+    }
+    session.push_log("Deployment complete!");
+
+    Ok(json!({
+        "success": true,
+        "cid": cid,
+        "domain": domain,
+        "repo": format!("{}/{}", repo_info.owner, repo_info.repo),
+        "branch": branch,
+        "url": format!("/ipfs/{}/index.html", cid)
+    }))
+}
+
 struct BuildOutcome {
     deploy_root: PathBuf,
     build_status: String,
@@ -1914,6 +2250,194 @@ fn trim_logs(logs: &str) -> String {
         let start = logs.len().saturating_sub(MAX);
         format!("…\n{}", &logs[start..])
     }
+}
+
+/// Run a command and stream stdout/stderr lines to a BuildSession.
+fn run_cmd_streaming(
+    cmd: &str,
+    args: &[&str],
+    dir: &Path,
+    env: &[(String, String)],
+    timeout_secs: u64,
+    session: &BuildSession,
+) -> Result<(bool, String), String> {
+    use std::io::BufRead;
+    use std::process::Stdio;
+
+    let mut child = Command::new(cmd)
+        .args(args)
+        .current_dir(dir)
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn {}: {}", cmd, e))?;
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    // Collect output for build logs while also streaming to session
+    let session_ptr = session as *const BuildSession;
+    let session_addr = session_ptr as usize;
+
+    let out_handle = std::thread::spawn(move || {
+        let session = unsafe { &*(session_addr as *const BuildSession) };
+        let reader = std::io::BufReader::new(stdout);
+        let mut lines = Vec::new();
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                session.push_log(&line);
+                lines.push(line);
+            }
+        }
+        lines.join("\n")
+    });
+
+    let session_addr2 = session_ptr as usize;
+    let err_handle = std::thread::spawn(move || {
+        let session = unsafe { &*(session_addr2 as *const BuildSession) };
+        let reader = std::io::BufReader::new(stderr);
+        let mut lines = Vec::new();
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                session.push_log(&line);
+                lines.push(line);
+            }
+        }
+        lines.join("\n")
+    });
+
+    // Wait with timeout
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout_text = out_handle.join().unwrap_or_default();
+                let stderr_text = err_handle.join().unwrap_or_default();
+                let mut all = stdout_text;
+                if !stderr_text.is_empty() {
+                    if !all.is_empty() { all.push('\n'); }
+                    all.push_str(&stderr_text);
+                }
+                return Ok((status.success(), all));
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("{} timed out after {}s", cmd, timeout_secs));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(format!("Failed to wait for {}: {}", cmd, e)),
+        }
+    }
+}
+
+/// Streaming variant of prepare_deploy_dir that pushes log lines to a BuildSession.
+fn prepare_deploy_dir_streaming(root: &Path, session: &BuildSession) -> Result<BuildOutcome, String> {
+    let framework = detect_framework(root);
+    let package_json = root.join("package.json");
+
+    if package_json.exists() {
+        let pkg_contents = std::fs::read_to_string(&package_json).ok();
+        let pkg_json = pkg_contents
+            .as_ref()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok());
+
+        let has_build_script = pkg_json
+            .as_ref()
+            .and_then(|v| v.get("scripts"))
+            .and_then(|s| s.get("build"))
+            .is_some();
+
+        if has_build_script {
+            if framework == "Next.js" {
+                ensure_nextjs_static_export(root);
+            }
+
+            let (pm, install_args, build_args) = detect_package_manager(root);
+
+            let mut safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
+                .iter()
+                .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
+                .collect();
+
+            if framework == "Nuxt" {
+                safe_env.push(("NITRO_PRESET".to_string(), "static".to_string()));
+            }
+
+            session.push_log(&format!("Detected framework: {} ({})", framework, pm));
+
+            let install_cmd = format!("$ {} {}", pm, install_args.join(" "));
+            session.push_log(&install_cmd);
+            let mut logs = format!("{}\n", install_cmd);
+
+            let (success, output) = run_cmd_streaming(pm, install_args, root, &safe_env, BUILD_TIMEOUT_SECS, session)?;
+            logs.push_str(&output);
+            if !success {
+                return Err(format!("{} install failed", pm));
+            }
+
+            let build_cmd = format!("$ {} {}", pm, build_args.join(" "));
+            session.push_log(&build_cmd);
+            logs.push_str(&format!("\n{}\n", build_cmd));
+
+            let (success, output) = run_cmd_streaming(pm, build_args, root, &safe_env, BUILD_TIMEOUT_SECS, session)?;
+            logs.push_str(&output);
+            if !success {
+                return Err(format!("{} build failed", pm));
+            }
+
+            for dir_name in OUTPUT_DIRS {
+                if *dir_name == "public" && framework == "Next.js" {
+                    continue;
+                }
+                let dir = root.join(dir_name);
+                if dir.exists() && dir.is_dir() {
+                    session.push_log(&format!("Output directory: {}/", dir_name));
+                    return Ok(BuildOutcome {
+                        deploy_root: dir,
+                        build_status: format!("Built ({})", framework),
+                        build_logs: trim_logs(&logs),
+                    });
+                }
+            }
+
+            return Err(format!(
+                "Build finished but no output folder found. Looked for: {}",
+                OUTPUT_DIRS.join(", ")
+            ));
+        }
+    }
+
+    if root.join("index.html").exists() {
+        session.push_log(&format!("Detected framework: {} — deploying static site", framework));
+        return Ok(BuildOutcome {
+            deploy_root: root.to_path_buf(),
+            build_status: format!("Static ({})", framework),
+            build_logs: format!("Detected framework: {}\nNo build needed.", framework),
+        });
+    }
+
+    let public_dir = root.join("public");
+    if public_dir.exists() && public_dir.join("index.html").exists() {
+        session.push_log("Deploying public/ directory");
+        return Ok(BuildOutcome {
+            deploy_root: public_dir,
+            build_status: format!("Static ({})", framework),
+            build_logs: format!("Detected framework: {}\nDeploying public/ directory.", framework),
+        });
+    }
+
+    session.push_log("No build script detected, deploying as-is");
+    Ok(BuildOutcome {
+        deploy_root: root.to_path_buf(),
+        build_status: "Skipped".to_string(),
+        build_logs: format!("Detected framework: {}\nNo build script detected.", framework),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
