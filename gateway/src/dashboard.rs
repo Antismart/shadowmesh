@@ -1551,15 +1551,30 @@ const BUILD_ENV_ALLOWLIST: &[&str] = &[
     "npm_config_cache", "npm_config_loglevel",
 ];
 
-/// Run an npm command with a timeout. Kills the process if it exceeds the limit.
-fn run_npm_with_timeout(
+/// Detect the package manager from lock files in priority order.
+/// Returns (binary_name, install_args, build_args).
+fn detect_package_manager(root: &Path) -> (&'static str, &'static [&'static str], &'static [&'static str]) {
+    if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
+        ("bun", &["install"], &["run", "build"])
+    } else if root.join("pnpm-lock.yaml").exists() {
+        ("pnpm", &["install", "--frozen-lockfile"], &["run", "build"])
+    } else if root.join("yarn.lock").exists() {
+        ("yarn", &["install", "--frozen-lockfile"], &["build"])
+    } else {
+        ("npm", &["install"], &["run", "build"])
+    }
+}
+
+/// Run a shell command with a timeout. Kills the process if it exceeds the limit.
+fn run_cmd_with_timeout(
+    cmd: &str,
     args: &[&str],
     dir: &Path,
     env: &[(String, String)],
     timeout_secs: u64,
 ) -> Result<std::process::Output, String> {
     use std::process::Stdio;
-    let mut child = Command::new("npm")
+    let mut child = Command::new(cmd)
         .args(args)
         .current_dir(dir)
         .env_clear()
@@ -1567,7 +1582,7 @@ fn run_npm_with_timeout(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to spawn npm: {}", e))?;
+        .map_err(|e| format!("Failed to spawn {}: {}", cmd, e))?;
 
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let start = std::time::Instant::now();
@@ -1576,14 +1591,15 @@ fn run_npm_with_timeout(
             Ok(Some(_)) => {
                 return child
                     .wait_with_output()
-                    .map_err(|e| format!("Failed to read npm output: {}", e));
+                    .map_err(|e| format!("Failed to read {} output: {}", cmd, e));
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!(
-                        "npm {} timed out after {}s in {} — killed",
+                        "{} {} timed out after {}s in {} — killed",
+                        cmd,
                         args.first().unwrap_or(&"<unknown>"),
                         timeout_secs,
                         dir.display()
@@ -1591,7 +1607,7 @@ fn run_npm_with_timeout(
                 }
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
-            Err(e) => return Err(format!("Failed to wait for npm: {}", e)),
+            Err(e) => return Err(format!("Failed to wait for {}: {}", cmd, e)),
         }
     }
 }
@@ -1702,30 +1718,41 @@ fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
                 ensure_nextjs_static_export(root);
             }
 
-            // Collect only safe env vars to prevent leaking secrets to npm scripts
-            let safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
+            // Detect package manager from lock files
+            let (pm, install_args, build_args) = detect_package_manager(root);
+
+            // Collect only safe env vars to prevent leaking secrets to build scripts
+            let mut safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
                 .iter()
                 .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
                 .collect();
 
-            let mut logs = format!("Detected framework: {}\n\n", framework);
-
-            logs.push_str("$ npm install\n");
-            let output =
-                run_npm_with_timeout(&["install"], root, &safe_env, BUILD_TIMEOUT_SECS)?;
-            logs.push_str(&String::from_utf8_lossy(&output.stdout));
-            logs.push_str(&String::from_utf8_lossy(&output.stderr));
-            if !output.status.success() {
-                return Err(format!("npm install failed\n{}", trim_logs(&logs)));
+            // Nuxt 3: force static preset so `nuxi build` produces .output/public/
+            if framework == "Nuxt" {
+                safe_env.push(("NITRO_PRESET".to_string(), "static".to_string()));
             }
 
-            logs.push_str("\n$ npm run build\n");
+            let mut logs = format!("Detected framework: {} ({})\n\n", framework, pm);
+
+            let install_cmd = format!("$ {} {}", pm, install_args.join(" "));
+            logs.push_str(&install_cmd);
+            logs.push('\n');
             let output =
-                run_npm_with_timeout(&["run", "build"], root, &safe_env, BUILD_TIMEOUT_SECS)?;
+                run_cmd_with_timeout(pm, install_args, root, &safe_env, BUILD_TIMEOUT_SECS)?;
             logs.push_str(&String::from_utf8_lossy(&output.stdout));
             logs.push_str(&String::from_utf8_lossy(&output.stderr));
             if !output.status.success() {
-                return Err(format!("npm run build failed\n{}", trim_logs(&logs)));
+                return Err(format!("{} install failed\n{}", pm, trim_logs(&logs)));
+            }
+
+            let build_cmd = format!("$ {} {}", pm, build_args.join(" "));
+            logs.push_str(&format!("\n{}\n", build_cmd));
+            let output =
+                run_cmd_with_timeout(pm, build_args, root, &safe_env, BUILD_TIMEOUT_SECS)?;
+            logs.push_str(&String::from_utf8_lossy(&output.stdout));
+            logs.push_str(&String::from_utf8_lossy(&output.stderr));
+            if !output.status.success() {
+                return Err(format!("{} build failed\n{}", pm, trim_logs(&logs)));
             }
 
             // Check all known output directories
