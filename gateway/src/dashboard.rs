@@ -1232,6 +1232,105 @@ pub async fn github_repos(State(state): State<AppState>) -> impl IntoResponse {
     Json(repos).into_response()
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RepoTreeQuery {
+    pub repo: String,
+    pub branch: String,
+}
+
+/// Proxy GitHub's tree API to list repo folder structure.
+/// Used by the dashboard folder browser for root directory selection.
+pub async fn github_repo_tree(
+    State(state): State<AppState>,
+    Query(query): Query<RepoTreeQuery>,
+) -> impl IntoResponse {
+    let auth = read_lock(&state.github_auth).clone();
+    let auth = match auth {
+        Some(auth) => auth,
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "GitHub not connected"})),
+            )
+                .into_response()
+        }
+    };
+
+    if !is_valid_branch_name(&query.branch) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Invalid branch name"})),
+        )
+            .into_response();
+    }
+
+    // Validate repo format "owner/repo"
+    let parts: Vec<&str> = query.repo.splitn(2, '/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Invalid repo format, expected owner/repo"})),
+        )
+            .into_response();
+    }
+
+    let url = format!(
+        "https://api.github.com/repos/{}/git/trees/{}?recursive=1",
+        query.repo, query.branch
+    );
+
+    let response = match state
+        .http_client
+        .get(&url)
+        .header("User-Agent", "otter-gateway")
+        .bearer_auth(&auth.token)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": format!("Failed to fetch tree: {}", e)})),
+            )
+                .into_response()
+        }
+    };
+
+    let body: serde_json::Value = match response.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({"error": "Failed to parse tree response"})),
+            )
+                .into_response()
+        }
+    };
+
+    // Extract directory entries from the tree
+    let entries: Vec<serde_json::Value> = body
+        .get("tree")
+        .and_then(|t| t.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let path = item.get("path")?.as_str()?;
+                    let item_type = item.get("type")?.as_str()?;
+                    if item_type == "tree" {
+                        Some(json!({"path": path, "type": "tree"}))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Json(json!({ "entries": entries })).into_response()
+}
+
 struct RepoInfo {
     owner: String,
     repo: String,
