@@ -10,8 +10,12 @@ export const deployments = {
     return apiUpload<DeployResponse>('/api/deploy', fd);
   },
 
-  deployGithub: (url: string, branch: string) =>
-    apiPost<DeployResponse>('/api/deploy/github', { url, branch }),
+  deployGithub: (url: string, branch: string, rootDirectory?: string) =>
+    apiPost<DeployResponse>('/api/deploy/github', {
+      url,
+      branch,
+      ...(rootDirectory ? { root_directory: rootDirectory } : {}),
+    }),
 
   remove: (cid: string) =>
     apiDelete<{ success: boolean }>(`/api/deployments/${cid}`),
