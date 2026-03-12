@@ -72,6 +72,9 @@ blake3 = "1.8"
 # Constant-time comparison to prevent timing side-channels
 subtle = "2.6"
 
+# SSE streaming for real-time build logs
+async-stream = "0.3"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 hyper = { workspace = true }
