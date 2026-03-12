@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { deployments as deploymentsApi } from '../api/deployments';
 import { github as githubApi } from '../api/github';
-import type { GithubRepo } from '../api/types';
+import type { GithubRepo, DeployResponse } from '../api/types';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import FileDropZone from '../components/FileDropZone';
 import FolderBrowser from '../components/FolderBrowser';
+import BuildLogViewer from '../components/BuildLogViewer';
+
+type BuildStatus = 'building' | 'success' | 'error' | null;
 
 export default function NewDeploymentPage() {
   const navigate = useNavigate();
@@ -19,28 +22,94 @@ export default function NewDeploymentPage() {
   const [rootDirectory, setRootDirectory] = useState('');
   const [deploying, setDeploying] = useState(false);
 
+  // SSE streaming state
+  const [buildLogs, setBuildLogs] = useState<string[]>([]);
+  const [buildStatus, setBuildStatus] = useState<BuildStatus>(null);
+  const [buildResult, setBuildResult] = useState<DeployResponse | null>(null);
+  const [buildError, setBuildError] = useState<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+
   useEffect(() => {
     if (connected) {
       githubApi.repos().then(setRepos).catch(() => {});
     }
   }, [connected]);
 
+  // Cleanup EventSource on unmount
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close();
+    };
+  }, []);
+
+  const resetBuild = () => {
+    setBuildLogs([]);
+    setBuildStatus(null);
+    setBuildResult(null);
+    setBuildError(null);
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+  };
+
   const handleGithubDeploy = async () => {
     if (!selectedRepo) return;
     const repo = repos.find((r) => r.full_name === selectedRepo);
     if (!repo) return;
+
+    resetBuild();
     setDeploying(true);
+    setBuildStatus('building');
+
     try {
-      const result = await deploymentsApi.deployGithub(
+      const { deploy_id, stream_url } = await deploymentsApi.deployGithubAsync(
         repo.html_url,
         branch || repo.default_branch,
         rootDirectory || undefined,
       );
-      addToast('success', `Deployed ${repo.name}`);
-      navigate(`/deployments/${result.cid}`);
+
+      const es = new EventSource(stream_url);
+      eventSourceRef.current = es;
+
+      es.addEventListener('log', (e) => {
+        setBuildLogs((prev) => [...prev, e.data]);
+      });
+
+      es.addEventListener('complete', (e) => {
+        try {
+          const result = JSON.parse(e.data);
+          setBuildResult(result);
+          setBuildStatus('success');
+        } catch {
+          setBuildStatus('success');
+        }
+        setDeploying(false);
+        es.close();
+      });
+
+      es.addEventListener('error', (e) => {
+        if (e instanceof MessageEvent && e.data) {
+          setBuildError(e.data);
+          setBuildLogs((prev) => [...prev, `Error: ${e.data}`]);
+        } else {
+          setBuildError('Build failed');
+        }
+        setBuildStatus('error');
+        setDeploying(false);
+        es.close();
+      });
+
+      // Handle connection errors
+      es.onerror = () => {
+        if (buildStatus === 'building') {
+          setBuildError('Connection to build stream lost');
+          setBuildStatus('error');
+          setDeploying(false);
+        }
+        es.close();
+      };
     } catch (e) {
-      addToast('error', `Deploy failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
-    } finally {
+      setBuildError(e instanceof Error ? e.message : 'Deploy failed');
+      setBuildStatus('error');
       setDeploying(false);
     }
   };
@@ -63,110 +132,209 @@ export default function NewDeploymentPage() {
     { key: 'upload' as const, label: 'Upload ZIP' },
   ];
 
+  // Show build view when deploying or when we have a result
+  const showBuildView = buildStatus !== null;
+
   return (
     <div>
       <h1 className="text-2xl font-semibold text-mesh-text mb-2">Import Project</h1>
       <p className="text-sm text-mesh-muted mb-8">Deploy from a GitHub repository or upload a ZIP file.</p>
 
-      {/* Tabs */}
-      <div className="flex gap-6 border-b border-mesh-border mb-8">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
-              tab === t.key
-                ? 'text-mesh-text border-mesh-text'
-                : 'text-mesh-muted border-transparent hover:text-mesh-text'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'github' ? (
-        <div className="border border-mesh-border rounded-lg p-6 max-w-xl">
-          {!connected ? (
-            <div className="text-center py-8">
-              <p className="text-sm text-mesh-muted mb-4">Connect your GitHub account to deploy from repositories.</p>
-              <a href="/api/github/login" className="btn-primary inline-flex items-center gap-2">
-                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
-                </svg>
-                Connect GitHub
-              </a>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-mesh-text mb-2">Repository</label>
-                <select
-                  value={selectedRepo}
-                  onChange={(e) => {
-                    setSelectedRepo(e.target.value);
-                    const repo = repos.find((r) => r.full_name === e.target.value);
-                    setBranch(repo?.default_branch ?? '');
-                  }}
-                  className="input w-full"
+      {/* Success Banner */}
+      {buildStatus === 'success' && buildResult && (
+        <div className="mb-6 border border-mesh-accent/30 rounded-lg bg-mesh-accent/5 p-4">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 text-mesh-accent flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-mesh-accent">Deployment Successful</p>
+              <p className="text-xs text-mesh-muted mt-1 font-mono truncate">CID: {buildResult.cid}</p>
+              {buildResult.shadow_url && (
+                <a
+                  href={buildResult.shadow_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-mesh-accent hover:underline mt-1 inline-block"
                 >
-                  <option value="">Select a repository...</option>
-                  {repos.map((repo) => (
-                    <option key={repo.id} value={repo.full_name}>
-                      {repo.full_name} {repo.private ? '(private)' : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {selectedRepo && (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium text-mesh-text mb-2">Branch</label>
-                    <input
-                      type="text"
-                      value={branch}
-                      onChange={(e) => setBranch(e.target.value)}
-                      placeholder="main"
-                      className="input w-full"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-mesh-text mb-2">Root Directory</label>
-                    <FolderBrowser
-                      repo={selectedRepo}
-                      branch={branch || repos.find((r) => r.full_name === selectedRepo)?.default_branch || 'main'}
-                      value={rootDirectory}
-                      onChange={setRootDirectory}
-                    />
-                    <p className="text-xs text-mesh-muted mt-1">
-                      Select the directory containing your project.
-                    </p>
-                  </div>
-                </>
+                  {buildResult.shadow_url}
+                </a>
               )}
+              <div className="flex gap-3 mt-3">
+                <button
+                  onClick={() => navigate(`/deployments/${buildResult.cid}`)}
+                  className="btn-primary text-xs px-3 py-1.5"
+                >
+                  View Deployment
+                </button>
+                {buildResult.url && (
+                  <a
+                    href={buildResult.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs px-3 py-1.5 border border-mesh-border rounded text-mesh-text hover:bg-mesh-surface transition-colors inline-flex items-center gap-1"
+                  >
+                    Visit Site
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                    </svg>
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
+      {/* Error Banner */}
+      {buildStatus === 'error' && (
+        <div className="mb-6 border border-[#ee0000]/30 rounded-lg bg-[#ee0000]/5 p-4">
+          <div className="flex items-start gap-3">
+            <svg className="w-5 h-5 text-[#ee0000] flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-[#ee0000]">Deployment Failed</p>
+              <p className="text-xs text-mesh-muted mt-1">{buildError || 'An unknown error occurred'}</p>
               <button
-                onClick={handleGithubDeploy}
-                disabled={!selectedRepo || deploying}
-                className="btn-primary w-full"
+                onClick={() => {
+                  resetBuild();
+                  setDeploying(false);
+                }}
+                className="mt-3 text-xs px-3 py-1.5 border border-mesh-border rounded text-mesh-text hover:bg-mesh-surface transition-colors"
               >
-                {deploying ? 'Deploying...' : 'Deploy'}
+                Try Again
               </button>
             </div>
-          )}
+          </div>
         </div>
-      ) : (
-        <div className="max-w-xl">
-          <FileDropZone onFile={handleFileDeploy} disabled={deploying} />
-          {deploying && (
-            <div className="mt-4 border border-mesh-border rounded-lg p-4">
-              <div className="flex items-center gap-3">
-                <div className="w-4 h-4 border-2 border-mesh-accent border-t-transparent rounded-full animate-spin" />
-                <span className="text-sm text-mesh-muted">Deploying...</span>
-              </div>
+      )}
+
+      {/* Build Logs (shown during/after build) */}
+      {showBuildView && (
+        <div className="mb-6">
+          <BuildLogViewer
+            logs=""
+            status={buildStatus === 'success' ? 'Built' : buildStatus === 'error' ? 'Failed' : 'Building'}
+            streamingLines={buildLogs}
+            isStreaming={buildStatus === 'building'}
+          />
+        </div>
+      )}
+
+      {/* Tabs - hide form during active build */}
+      {!deploying && buildStatus !== 'building' && (
+        <>
+          <div className="flex gap-6 border-b border-mesh-border mb-8">
+            {tabs.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
+                  tab === t.key
+                    ? 'text-mesh-text border-mesh-text'
+                    : 'text-mesh-muted border-transparent hover:text-mesh-text'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'github' ? (
+            <div className="border border-mesh-border rounded-lg p-6 max-w-xl">
+              {!connected ? (
+                <div className="text-center py-8">
+                  <p className="text-sm text-mesh-muted mb-4">Connect your GitHub account to deploy from repositories.</p>
+                  <a href="/api/github/login" className="btn-primary inline-flex items-center gap-2">
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+                    </svg>
+                    Connect GitHub
+                  </a>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-mesh-text mb-2">Repository</label>
+                    <select
+                      value={selectedRepo}
+                      onChange={(e) => {
+                        setSelectedRepo(e.target.value);
+                        const repo = repos.find((r) => r.full_name === e.target.value);
+                        setBranch(repo?.default_branch ?? '');
+                      }}
+                      className="input w-full"
+                    >
+                      <option value="">Select a repository...</option>
+                      {repos.map((repo) => (
+                        <option key={repo.id} value={repo.full_name}>
+                          {repo.full_name} {repo.private ? '(private)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {selectedRepo && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-mesh-text mb-2">Branch</label>
+                        <input
+                          type="text"
+                          value={branch}
+                          onChange={(e) => setBranch(e.target.value)}
+                          placeholder="main"
+                          className="input w-full"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-mesh-text mb-2">Root Directory</label>
+                        <FolderBrowser
+                          repo={selectedRepo}
+                          branch={branch || repos.find((r) => r.full_name === selectedRepo)?.default_branch || 'main'}
+                          value={rootDirectory}
+                          onChange={setRootDirectory}
+                        />
+                        <p className="text-xs text-mesh-muted mt-1">
+                          Select the directory containing your project.
+                        </p>
+                      </div>
+                    </>
+                  )}
+
+                  <button
+                    onClick={handleGithubDeploy}
+                    disabled={!selectedRepo || deploying}
+                    className="btn-primary w-full"
+                  >
+                    {deploying ? 'Deploying...' : 'Deploy'}
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="max-w-xl">
+              <FileDropZone onFile={handleFileDeploy} disabled={deploying} />
+              {deploying && (
+                <div className="mt-4 border border-mesh-border rounded-lg p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-4 h-4 border-2 border-mesh-accent border-t-transparent rounded-full animate-spin" />
+                    <span className="text-sm text-mesh-muted">Deploying...</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
+        </>
+      )}
+
+      {/* Loading state during build - show when form is hidden */}
+      {deploying && buildStatus === 'building' && buildLogs.length === 0 && (
+        <div className="border border-mesh-border rounded-lg p-6 max-w-xl">
+          <div className="flex items-center gap-3">
+            <div className="w-4 h-4 border-2 border-mesh-accent border-t-transparent rounded-full animate-spin" />
+            <span className="text-sm text-mesh-muted">Starting build...</span>
+          </div>
         </div>
       )}
     </div>
