@@ -15,6 +15,7 @@ export default function NewDeploymentPage() {
   const [repos, setRepos] = useState<GithubRepo[]>([]);
   const [selectedRepo, setSelectedRepo] = useState('');
   const [branch, setBranch] = useState('');
+  const [rootDirectory, setRootDirectory] = useState('');
   const [deploying, setDeploying] = useState(false);
 
   useEffect(() => {
@@ -29,7 +30,11 @@ export default function NewDeploymentPage() {
     if (!repo) return;
     setDeploying(true);
     try {
-      const result = await deploymentsApi.deployGithub(repo.html_url, branch || repo.default_branch);
+      const result = await deploymentsApi.deployGithub(
+        repo.html_url,
+        branch || repo.default_branch,
+        rootDirectory || undefined,
+      );
       addToast('success', `Deployed ${repo.name}`);
       navigate(`/deployments/${result.cid}`);
     } catch (e) {
@@ -114,16 +119,31 @@ export default function NewDeploymentPage() {
               </div>
 
               {selectedRepo && (
-                <div>
-                  <label className="block text-sm font-medium text-mesh-text mb-2">Branch</label>
-                  <input
-                    type="text"
-                    value={branch}
-                    onChange={(e) => setBranch(e.target.value)}
-                    placeholder="main"
-                    className="input w-full"
-                  />
-                </div>
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-mesh-text mb-2">Branch</label>
+                    <input
+                      type="text"
+                      value={branch}
+                      onChange={(e) => setBranch(e.target.value)}
+                      placeholder="main"
+                      className="input w-full"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-mesh-text mb-2">Root Directory</label>
+                    <input
+                      type="text"
+                      value={rootDirectory}
+                      onChange={(e) => setRootDirectory(e.target.value)}
+                      placeholder="./"
+                      className="input w-full"
+                    />
+                    <p className="text-xs text-mesh-muted mt-1">
+                      The directory within your repo that contains your project. Leave empty for the repository root.
+                    </p>
+                  </div>
+                </>
               )}
 
               <button
