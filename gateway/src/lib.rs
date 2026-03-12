@@ -120,6 +120,8 @@ pub struct AppState {
     pub node_health_tracker: Option<Arc<node_health::NodeHealthTracker>>,
     /// Shared HTTP client (connection-pooled)
     pub http_client: reqwest::Client,
+    /// Active build sessions for SSE log streaming
+    pub build_sessions: Arc<RwLock<std::collections::HashMap<String, Arc<dashboard::BuildSession>>>>,
 }
 
 /// Build a Router with just the content-serving routes.
