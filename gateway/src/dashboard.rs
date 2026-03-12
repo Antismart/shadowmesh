@@ -1645,6 +1645,39 @@ const OUTPUT_DIRS: &[&str] = &[
     "storybook-static", // Storybook
 ];
 
+/// For Next.js projects, ensure `output: 'export'` is in the config so that
+/// `next build` produces a static `out/` directory instead of `.next/` (server mode).
+/// Otter serves content from IPFS, so only static exports work.
+fn ensure_nextjs_static_export(root: &Path) {
+    let config_files = ["next.config.mjs", "next.config.js", "next.config.ts"];
+    for name in &config_files {
+        let path = root.join(name);
+        if !path.exists() {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        // Already has output configured — don't override
+        if content.contains("output") {
+            return;
+        }
+        // Find the config object opening brace and inject `output: 'export'`
+        // Works for: `const nextConfig = {`, `const config: NextConfig = {`, etc.
+        if let Some(brace_pos) = content.rfind("= {").map(|p| p + 2) {
+            let mut patched = String::with_capacity(content.len() + 30);
+            patched.push_str(&content[..=brace_pos]);
+            patched.push_str("\n  output: 'export',");
+            patched.push_str(&content[brace_pos + 1..]);
+            if std::fs::write(&path, &patched).is_ok() {
+                tracing::info!(file = %name, "Injected output: 'export' into Next.js config for static hosting");
+            }
+        }
+        return;
+    }
+}
+
 fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
     let framework = detect_framework(root);
     let package_json = root.join("package.json");
@@ -1662,6 +1695,13 @@ fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
             .is_some();
 
         if has_build_script {
+            // For Next.js: ensure static export is configured so `next build`
+            // produces an `out/` directory with static HTML files.
+            // Without this, Next.js only creates `.next/` (server mode).
+            if framework == "Next.js" {
+                ensure_nextjs_static_export(root);
+            }
+
             // Collect only safe env vars to prevent leaking secrets to npm scripts
             let safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
                 .iter()
@@ -1690,6 +1730,10 @@ fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
 
             // Check all known output directories
             for dir_name in OUTPUT_DIRS {
+                // Skip 'public' for Next.js — it's the static assets dir, not build output
+                if *dir_name == "public" && framework == "Next.js" {
+                    continue;
+                }
                 let dir = root.join(dir_name);
                 if dir.exists() && dir.is_dir() {
                     logs.push_str(&format!("\nOutput directory: {}/\n", dir_name));
