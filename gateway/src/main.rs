@@ -358,6 +358,7 @@ async fn main() {
         p2p: p2p_state,
         node_health_tracker: node_health_tracker.clone(),
         http_client,
+        build_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     // Clone audit logger before state is moved into the router
@@ -466,6 +467,7 @@ async fn main() {
         .route("/api/deploy", post(deploy::deploy_zip))
         .route("/api/deploy/info", get(deploy::deploy_info))
         .route("/api/deploy/github", post(dashboard::deploy_from_github))
+        .route("/api/deploy/:deploy_id/stream", get(dashboard::deploy_stream))
         .route("/api/deployments", get(dashboard::get_deployments))
         .route(
             "/api/deployments/:cid",
