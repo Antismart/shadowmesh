@@ -7,6 +7,8 @@ interface ConfirmDialogProps {
   title: string;
   message: string;
   confirmLabel?: string;
+  loadingLabel?: string;
+  confirmVariant?: 'danger' | 'primary';
   loading?: boolean;
 }
 
@@ -17,8 +19,11 @@ export default function ConfirmDialog({
   title,
   message,
   confirmLabel = 'Delete',
+  loadingLabel,
+  confirmVariant = 'danger',
   loading = false,
 }: ConfirmDialogProps) {
+  const btnClass = confirmVariant === 'primary' ? 'btn-primary' : 'btn-danger';
   return (
     <Modal open={open} onClose={onClose} title={title}>
       <p className="text-sm text-mesh-muted mb-6">{message}</p>
@@ -26,8 +31,8 @@ export default function ConfirmDialog({
         <button onClick={onClose} className="btn-secondary" disabled={loading}>
           Cancel
         </button>
-        <button onClick={onConfirm} className="btn-danger" disabled={loading}>
-          {loading ? 'Deleting...' : confirmLabel}
+        <button onClick={onConfirm} className={btnClass} disabled={loading}>
+          {loading ? (loadingLabel || 'Processing...') : confirmLabel}
         </button>
       </div>
     </Modal>

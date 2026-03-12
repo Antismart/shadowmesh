@@ -23,6 +23,7 @@ export default function DeploymentDetailPage() {
   const [logs, setLogs] = useState('');
   const [loading, setLoading] = useState(true);
   const [showDelete, setShowDelete] = useState(false);
+  const [showRedeploy, setShowRedeploy] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [redeploying, setRedeploying] = useState(false);
 
@@ -57,8 +58,10 @@ export default function DeploymentDetailPage() {
     if (!cid) return;
     setRedeploying(true);
     try {
-      await deploymentsApi.redeploy(cid);
-      addToast('success', 'Redeployment started');
+      const result = await deploymentsApi.redeploy(cid);
+      addToast('success', 'Redeployment successful');
+      setShowRedeploy(false);
+      navigate(`/deployments/${result.cid}`);
     } catch {
       addToast('error', 'Failed to redeploy');
     } finally {
@@ -101,8 +104,8 @@ export default function DeploymentDetailPage() {
             Visit
           </a>
           {deployment.source === 'github' && (
-            <button onClick={handleRedeploy} disabled={redeploying} className="btn-secondary">
-              {redeploying ? 'Redeploying...' : 'Redeploy'}
+            <button onClick={() => setShowRedeploy(true)} disabled={redeploying} className="btn-secondary">
+              Redeploy
             </button>
           )}
           <button onClick={() => setShowDelete(true)} className="btn-danger">
@@ -173,6 +176,19 @@ export default function DeploymentDetailPage() {
         title="Delete Deployment"
         message={`Are you sure you want to delete "${deployment.name}"? This action cannot be undone.`}
         loading={deleting}
+        loadingLabel="Deleting..."
+      />
+
+      <ConfirmDialog
+        open={showRedeploy}
+        onClose={() => setShowRedeploy(false)}
+        onConfirm={handleRedeploy}
+        title="Redeploy Project"
+        message={`This will rebuild and redeploy from ${deployment.repo_url || 'the original repository'} (branch: ${deployment.branch || 'main'}). The current deployment will be replaced.`}
+        confirmLabel="Redeploy"
+        loadingLabel="Redeploying..."
+        confirmVariant="primary"
+        loading={redeploying}
       />
     </div>
   );

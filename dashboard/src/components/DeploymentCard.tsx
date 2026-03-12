@@ -2,7 +2,12 @@ import { Link } from 'react-router-dom';
 import type { Deployment } from '../api/types';
 import StatusBadge from './StatusBadge';
 
-export default function DeploymentCard({ deployment }: { deployment: Deployment }) {
+interface DeploymentCardProps {
+  deployment: Deployment;
+  onRedeploy?: (cid: string) => void;
+}
+
+export default function DeploymentCard({ deployment, onRedeploy }: DeploymentCardProps) {
   return (
     <Link
       to={`/deployments/${deployment.cid}`}
@@ -29,16 +34,21 @@ export default function DeploymentCard({ deployment }: { deployment: Deployment 
         {deployment.created_at}
       </span>
 
-      <button
-        onClick={(e) => e.preventDefault()}
-        className="text-mesh-muted hover:text-mesh-text opacity-0 group-hover:opacity-100 transition-opacity p-1"
-      >
-        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 16 16">
-          <circle cx="8" cy="3" r="1.5" />
-          <circle cx="8" cy="8" r="1.5" />
-          <circle cx="8" cy="13" r="1.5" />
-        </svg>
-      </button>
+      {deployment.source === 'github' && onRedeploy && (
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRedeploy(deployment.cid);
+          }}
+          className="text-mesh-muted hover:text-mesh-accent opacity-0 group-hover:opacity-100 transition-opacity p-1"
+          title="Redeploy"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
+          </svg>
+        </button>
+      )}
     </Link>
   );
 }
