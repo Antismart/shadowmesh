@@ -6,6 +6,7 @@ import type { GithubRepo } from '../api/types';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import FileDropZone from '../components/FileDropZone';
+import FolderBrowser from '../components/FolderBrowser';
 
 export default function NewDeploymentPage() {
   const navigate = useNavigate();
@@ -132,15 +133,14 @@ export default function NewDeploymentPage() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-mesh-text mb-2">Root Directory</label>
-                    <input
-                      type="text"
+                    <FolderBrowser
+                      repo={selectedRepo}
+                      branch={branch || repos.find((r) => r.full_name === selectedRepo)?.default_branch || 'main'}
                       value={rootDirectory}
-                      onChange={(e) => setRootDirectory(e.target.value)}
-                      placeholder="./"
-                      className="input w-full"
+                      onChange={setRootDirectory}
                     />
                     <p className="text-xs text-mesh-muted mt-1">
-                      The directory within your repo that contains your project. Leave empty for the repository root.
+                      Select the directory containing your project.
                     </p>
                   </div>
                 </>
