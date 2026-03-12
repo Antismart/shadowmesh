@@ -12,7 +12,7 @@ axum = { version = "0.7.9", features = ["multipart"] }
 tower-http = { workspace = true }
 protocol = { path = "../protocol" }
 config = "0.14"
-toml = "0.8"
+toml = "1.0"
 tempfile = "3.10"
 blake3 = { workspace = true }
 libp2p = { workspace = true, features = ["identify", "relay", "rendezvous", "autonat", "dcutr", "upnp"] }
