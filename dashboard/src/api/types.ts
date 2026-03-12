@@ -23,6 +23,11 @@ export interface DeployResponse {
   total_size: number;
 }
 
+export interface AsyncDeployResponse {
+  deploy_id: string;
+  stream_url: string;
+}
+
 export interface DeployLogsResponse {
   success: boolean;
   status: string;
