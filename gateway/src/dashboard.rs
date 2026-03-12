@@ -694,6 +694,9 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
 pub struct GithubDeployRequest {
     pub url: String,
     pub branch: Option<String>,
+    /// Subdirectory within the repo containing the project (e.g. "frontend", "packages/app")
+    #[serde(default)]
+    pub root_directory: Option<String>,
 }
 
 pub async fn deploy_from_github(
@@ -702,8 +705,9 @@ pub async fn deploy_from_github(
 ) -> impl IntoResponse {
     let url = request.url.trim();
     let branch = request.branch.as_deref().unwrap_or("main");
+    let root_dir = request.root_directory.as_deref();
 
-    match deploy_github_project(&state, url, branch).await {
+    match deploy_github_project(&state, url, branch, root_dir).await {
         Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
         Err((status, message)) => {
             (status, Json(json!({"success": false, "error": message}))).into_response()
@@ -746,8 +750,9 @@ pub async fn redeploy_github(
         .branch
         .clone()
         .unwrap_or_else(|| "main".to_string());
+    let root_dir = deployment.root_directory.clone();
 
-    match deploy_github_project(&state, &repo_url, &branch).await {
+    match deploy_github_project(&state, &repo_url, &branch, root_dir.as_deref()).await {
         Ok(payload) => {
             {
                 let mut deployments = write_lock(&state.deployments);
@@ -840,20 +845,22 @@ pub async fn github_webhook(
     tracing::info!(repo = %repo_url, branch = %branch, "GitHub webhook: auto-redeploy triggered");
 
     // Find matching deployment
-    let old_cid = {
+    let (old_cid, root_dir) = {
         let deployments = read_lock(&state.deployments);
-        deployments
+        match deployments
             .iter()
             .find(|d| {
                 d.source == "github"
                     && d.repo_url.as_deref() == Some(&repo_url)
                     && d.branch.as_deref() == Some(branch)
-            })
-            .map(|d| d.cid.clone())
+            }) {
+            Some(d) => (Some(d.cid.clone()), d.root_directory.clone()),
+            None => (None, None),
+        }
     };
 
     // Redeploy
-    match deploy_github_project(&state, &repo_url, branch).await {
+    match deploy_github_project(&state, &repo_url, branch, root_dir.as_deref()).await {
         Ok(payload) => {
             // Remove old deployment if exists
             if let Some(ref old_cid) = old_cid {
@@ -1367,6 +1374,7 @@ async fn deploy_github_project(
     state: &AppState,
     url: &str,
     branch: &str,
+    root_directory: Option<&str>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo_info =
         parse_github_url(url).ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
@@ -1416,8 +1424,27 @@ async fn deploy_github_project(
     let temp_dir =
         extract_github_zip(&zip_bytes).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    // If root_directory is specified, resolve build root to that subdirectory
+    let build_root = if let Some(rd) = root_directory.filter(|s| !s.is_empty()) {
+        // Sanitize: strip leading/trailing slashes, reject path traversal
+        let cleaned = rd.trim_matches('/');
+        if cleaned.contains("..") {
+            return Err((StatusCode::BAD_REQUEST, "root_directory must not contain '..'".to_string()));
+        }
+        let sub = temp_dir.path().join(cleaned);
+        if !sub.exists() || !sub.is_dir() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Root directory '{}' not found in repository", cleaned),
+            ));
+        }
+        sub
+    } else {
+        temp_dir.path().to_path_buf()
+    };
+
     let build_outcome =
-        prepare_deploy_dir(temp_dir.path()).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        prepare_deploy_dir(&build_root).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let storage = state.storage.as_ref().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
@@ -1466,6 +1493,7 @@ async fn deploy_github_project(
         Some(url.to_string()),
         build_outcome.build_status,
         Some(build_outcome.build_logs),
+        root_directory.map(|s| s.to_string()),
     );
 
     // Auto-assign .shadow domain
@@ -1733,6 +1761,9 @@ pub struct Deployment {
     pub status: String,
     #[serde(default)]
     pub domain: Option<String>,
+    /// Subdirectory within the repo containing the project (e.g. "frontend")
+    #[serde(default)]
+    pub root_directory: Option<String>,
 }
 
 impl Deployment {
@@ -1750,6 +1781,7 @@ impl Deployment {
             build_logs: Some("Uploaded ZIP without build step".to_string()),
             status: "Ready".to_string(),
             domain: None,
+            root_directory: None,
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -1762,6 +1794,7 @@ impl Deployment {
         repo_url: Option<String>,
         build_status: String,
         build_logs: Option<String>,
+        root_directory: Option<String>,
     ) -> Self {
         Self {
             name,
@@ -1776,6 +1809,7 @@ impl Deployment {
             build_logs,
             status: "Ready".to_string(),
             domain: None,
+            root_directory,
         }
     }
 
@@ -1873,6 +1907,7 @@ mod tests {
             Some("https://github.com/user/repo".into()),
             "Built".into(),
             Some("build logs here".into()),
+            None,
         );
         assert_eq!(d.source, "github");
         assert_eq!(d.branch, Some("main".to_string()));
@@ -1883,6 +1918,7 @@ mod tests {
         assert_eq!(d.build_status, "Built");
         assert_eq!(d.status, "Ready");
         assert!(d.domain.is_none());
+        assert!(d.root_directory.is_none());
     }
 
     #[test]
@@ -1896,9 +1932,11 @@ mod tests {
             None,
             "Skipped".into(),
             None,
+            Some("packages/frontend".into()),
         );
         assert!(d.repo_url.is_none());
         assert!(d.build_logs.is_none());
+        assert_eq!(d.root_directory, Some("packages/frontend".to_string()));
     }
 
     // ── Serialization / Deserialization ─────────────────────────────
@@ -1927,6 +1965,7 @@ mod tests {
             Some("https://github.com/user/my-repo".into()),
             "Built".into(),
             Some("npm install\nnpm run build".into()),
+            Some("packages/web".into()),
         );
 
         let json_str = serde_json::to_string(&original).unwrap();
