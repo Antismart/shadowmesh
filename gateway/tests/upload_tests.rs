@@ -52,6 +52,7 @@ fn test_state(cfg: config::Config, storage: Option<Arc<protocol::StorageLayer>>)
         p2p: None,
         node_health_tracker: None,
         http_client: reqwest::Client::new(),
+        build_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     }
 }
 

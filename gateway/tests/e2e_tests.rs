@@ -86,6 +86,7 @@ fn gateway_app(node_runner_url: &str) -> Router {
         p2p: None,
         node_health_tracker: None,
         http_client: reqwest::Client::new(),
+        build_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     gateway::content_router(state)
@@ -190,6 +191,7 @@ async fn test_e2e_cache_hit() {
         p2p: None,
         node_health_tracker: None,
         http_client: reqwest::Client::new(),
+        build_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     let app1 = gateway::content_router(state.clone());
@@ -354,6 +356,7 @@ async fn test_e2e_failover_to_second_node() {
         p2p: None,
         node_health_tracker: None,
         http_client: reqwest::Client::new(),
+        build_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     let app = gateway::content_router(state);
