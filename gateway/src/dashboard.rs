@@ -1185,7 +1185,17 @@ struct GithubTokenResponse {
     access_token: String,
 }
 
-pub async fn github_login(State(state): State<AppState>) -> impl IntoResponse {
+#[derive(Debug, Deserialize)]
+pub struct GithubLoginQuery {
+    /// Where to redirect the user after OAuth completes (the dashboard URL).
+    /// When omitted the callback redirects to "/" on the same gateway.
+    pub redirect_to: Option<String>,
+}
+
+pub async fn github_login(
+    State(state): State<AppState>,
+    Query(params): Query<GithubLoginQuery>,
+) -> impl IntoResponse {
     let client_id = match std::env::var("GITHUB_CLIENT_ID") {
         Ok(val) => val,
         Err(_) => {
@@ -1214,9 +1224,9 @@ pub async fn github_login(State(state): State<AppState>) -> impl IntoResponse {
         // Evict expired states and cap to prevent unbounded growth
         if states.len() >= 10_000 {
             let cutoff = std::time::Duration::from_secs(600);
-            states.retain(|_, created| created.elapsed() <= cutoff);
+            states.retain(|_, (created, _)| created.elapsed() <= cutoff);
         }
-        states.insert(csrf_state.clone(), std::time::Instant::now());
+        states.insert(csrf_state.clone(), (std::time::Instant::now(), params.redirect_to));
     }
 
     let url = format!(
@@ -1262,12 +1272,13 @@ pub async fn github_callback(
         )
     });
 
-    // Validate and consume the CSRF state token
+    // Validate and consume the CSRF state token, recovering the redirect_to URL.
+    let redirect_to: Option<String>;
     match &query.state {
         Some(state_param) => {
             let mut states = write_lock(&state.github_oauth_states);
             match states.remove(state_param.as_str()) {
-                Some(created_at) => {
+                Some((created_at, stored_redirect)) => {
                     // Reject tokens older than 10 minutes
                     if created_at.elapsed() > std::time::Duration::from_secs(600) {
                         return (
@@ -1276,6 +1287,7 @@ pub async fn github_callback(
                         )
                             .into_response();
                     }
+                    redirect_to = stored_redirect;
                 }
                 None => {
                     return (
@@ -1358,25 +1370,82 @@ pub async fn github_callback(
         }
     };
 
+    // Store auth locally (for same-gateway usage)
     *write_lock(&state.github_auth) = Some(GithubAuth {
-        token: token_body.access_token,
-        user,
+        token: token_body.access_token.clone(),
+        user: user.clone(),
     });
-    Redirect::to("/").into_response()
+
+    // If an auth secret is configured, issue a JWT and redirect with it.
+    // This lets the dashboard work across multiple gateways.
+    if let Some(secret) = crate::jwt::auth_secret() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let claims = crate::jwt::Claims {
+            sub: user.login.clone(),
+            login: user.login,
+            avatar_url: user.avatar_url,
+            github_token: token_body.access_token,
+            iat: now,
+            exp: now + 7 * 24 * 3600, // 7 days
+        };
+
+        if let Ok(jwt) = crate::jwt::encode(&claims, &secret) {
+            let base = redirect_to.as_deref().unwrap_or("/");
+            let sep = if base.contains('?') { "&" } else { "?" };
+            let target = format!("{base}{sep}token={jwt}");
+            return Redirect::to(&target).into_response();
+        }
+    }
+
+    // Fallback: redirect to dashboard origin or "/" (legacy same-gateway flow)
+    let target = redirect_to.as_deref().unwrap_or("/");
+    Redirect::to(target).into_response()
 }
 
-pub async fn github_status(State(state): State<AppState>) -> impl IntoResponse {
-    let auth = read_lock(&state.github_auth).clone();
-    if let Some(auth) = auth {
+/// Extract GitHub auth from server-side state or a JWT Bearer token.
+/// This allows authenticated endpoints to work on any gateway that
+/// shares the `SHADOWMESH_AUTH_SECRET`.
+fn resolve_auth(state: &AppState, headers: &axum::http::HeaderMap) -> Option<GithubAuth> {
+    // 1. Try server-side session (legacy same-gateway flow)
+    if let Some(auth) = read_lock(&state.github_auth).clone() {
+        return Some(auth);
+    }
+
+    // 2. Try JWT from Authorization: Bearer <token>
+    let header_val = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let token = header_val.strip_prefix("Bearer ")?;
+    let secret = crate::jwt::auth_secret()?;
+    let claims = crate::jwt::decode(token, &secret).ok()?;
+
+    Some(GithubAuth {
+        token: claims.github_token,
+        user: GithubUser {
+            login: claims.login,
+            avatar_url: claims.avatar_url,
+        },
+    })
+}
+
+pub async fn github_status(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if let Some(auth) = resolve_auth(&state, &headers) {
         Json(json!({"connected": true, "user": auth.user}))
     } else {
         Json(json!({"connected": false, "user": null}))
     }
 }
 
-pub async fn github_repos(State(state): State<AppState>) -> impl IntoResponse {
-    let auth = read_lock(&state.github_auth).clone();
-    let auth = match auth {
+pub async fn github_repos(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let auth = match resolve_auth(&state, &headers) {
         Some(auth) => auth,
         None => {
             return (
@@ -1429,10 +1498,10 @@ pub struct RepoTreeQuery {
 /// Used by the dashboard folder browser for root directory selection.
 pub async fn github_repo_tree(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Query(query): Query<RepoTreeQuery>,
 ) -> impl IntoResponse {
-    let auth = read_lock(&state.github_auth).clone();
-    let auth = match auth {
+    let auth = match resolve_auth(&state, &headers) {
         Some(auth) => auth,
         None => {
             return (
