@@ -500,6 +500,10 @@ async fn main() {
         .route("/api/names/:name", delete(name_delete_handler))
         .route("/api/names/:name/assign", post(name_assign_handler))
         .route("/api/services/:service_type", get(service_discovery_handler))
+        // Pinning endpoints
+        .route("/api/pin/:cid", post(pin::pin_content))
+        .route("/api/pin/:cid", delete(pin::unpin_content))
+        .route("/api/pin/:cid", get(pin::pin_status))
         // Admin endpoints
         .route("/api/admin/reload", post(config_watcher::handler::reload_config_handler))
         // Content retrieval (CID paths only — SPA routes handled by fallback)
