@@ -61,6 +61,30 @@ export async function gatewayUrl(path: string): Promise<string> {
   return `${base}${path}`;
 }
 
+// ── JWT token management ────────────────────────────────────────────────
+
+const TOKEN_KEY = 'shadowmesh_auth_token';
+
+/** Store (or clear) the JWT auth token. */
+export function setAuthToken(token: string | null): void {
+  if (token) {
+    localStorage.setItem(TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(TOKEN_KEY);
+  }
+}
+
+/** Retrieve the stored JWT auth token. */
+export function getAuthToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+/** Build the auth headers object (empty if no token). */
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 // ── Error type ──────────────────────────────────────────────────────────
 
 export class ApiError extends Error {
@@ -85,6 +109,7 @@ export async function apiFetch<T>(
   const res = await fetch(url, {
     ...options,
     headers: {
+      ...authHeaders(),
       ...options.headers,
     },
   });
@@ -96,7 +121,7 @@ export async function apiFetch<T>(
         try {
           const retry = await fetch(`${gw}${path}`, {
             ...options,
-            headers: { ...options.headers },
+            headers: { ...authHeaders(), ...options.headers },
             signal: AbortSignal.timeout(8000),
           });
           if (retry.ok) {
