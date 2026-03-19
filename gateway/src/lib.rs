@@ -154,14 +154,29 @@ pub async fn ipfs_content_path_handler(
     // It could be just "cid" or "cid/subpath/..."
     let parts: Vec<&str> = path.splitn(2, '/').collect();
     let cid = parts[0];
+    let base_prefix = format!("/ipfs/{}/", cid);
 
     if parts.len() == 1 {
-        // Just a CID, redirect to content_handler logic
-        fetch_content(&state, cid.to_string(), Some(format!("/ipfs/{}/", cid))).await
+        // Just a CID — try fetching; if IPFS returns a directory listing
+        // (not valid HTML), redirect to CID/index.html instead.
+        let result = fetch_content(&state, cid.to_string(), Some(base_prefix.clone())).await;
+        // Check if the response looks like a directory listing (not HTML)
+        // by inspecting content-type. If it's octet-stream or empty, try index.html.
+        let ct = result
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if ct.contains("text/html") || ct.contains("application/javascript") || ct.contains("text/css") {
+            return result;
+        }
+        // Likely a directory — try fetching index.html
+        let index_path = format!("{}/index.html", cid);
+        fetch_content(&state, index_path, Some(base_prefix)).await
     } else {
         // CID with path
         let full_path = path.clone();
-        fetch_content(&state, full_path, Some(format!("/ipfs/{}/", cid))).await
+        fetch_content(&state, full_path, Some(base_prefix)).await
     }
 }
 
