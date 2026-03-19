@@ -7,6 +7,7 @@ import { useToast } from '../context/ToastContext';
 import Modal from '../components/Modal';
 import LoadingSkeleton from '../components/LoadingSkeleton';
 import CopyButton from '../components/CopyButton';
+import GithubLoginLink from '../components/GithubLoginLink';
 
 export default function SettingsPage() {
   const { connected, user } = useAuth();
@@ -93,7 +94,7 @@ export default function SettingsPage() {
           ) : (
             <div className="flex items-center justify-between">
               <p className="text-sm text-mesh-muted">No GitHub account connected</p>
-              <a href="/api/github/login" className="btn-primary text-sm">Connect GitHub</a>
+              <GithubLoginLink className="btn-primary text-sm">Connect GitHub</GithubLoginLink>
             </div>
           )}
         </div>
