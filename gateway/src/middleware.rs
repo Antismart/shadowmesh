@@ -57,13 +57,18 @@ pub async fn security_headers(req: Request<Body>, next: Next) -> Response {
     if let Ok(value) = "max-age=31536000; includeSubDomains".parse() {
         headers.insert(header::STRICT_TRANSPORT_SECURITY, value);
     }
-    let csp = if path.starts_with("/assets/")
+    let is_cid_path = path.starts_with("/Qm") || path.starts_with("/bafy") || path.starts_with("/ipfs/");
+    let csp = if is_cid_path {
+        // IPFS-served content (deployed sites/dashboards) — permissive CSP
+        // so user-deployed sites can load external resources
+        "default-src 'self' https: data:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-inline' https:; img-src 'self' https: data:; font-src 'self' https: data:; connect-src 'self' https: http:"
+    } else if path.starts_with("/assets/")
         || path == "/"
         || path == "/metrics"
-        || (!path.starts_with("/api/") && !path.starts_with("/ipfs/"))
+        || !path.starts_with("/api/")
     {
         // SPA dashboard pages and assets — allow inline styles (Tailwind), fonts, and GitHub avatars
-        "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' https://avatars.githubusercontent.com data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'"
+        "default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self'; img-src 'self' https://avatars.githubusercontent.com data:; font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com; connect-src 'self' https: http:"
     } else {
         "default-src 'self'"
     };
