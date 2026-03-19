@@ -691,7 +691,19 @@ async fn content_or_spa_handler(
         && cid.len() <= 512
         && cid.chars().all(|c| c.is_ascii_alphanumeric())
     {
-        return fetch_content(&state, cid, None).await;
+        let base_prefix = format!("/{}/", cid);
+        let result = fetch_content(&state, cid.clone(), Some(base_prefix.clone())).await;
+        // If IPFS returned a directory (not HTML), try index.html
+        let ct = result
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if ct.contains("text/html") || ct.contains("application/javascript") || ct.contains("text/css") || ct.contains("image/") {
+            return result;
+        }
+        let index_path = format!("{}/index.html", cid);
+        return fetch_content(&state, index_path, Some(base_prefix)).await;
     }
 
     // Everything else is a SPA route (e.g. /analytics, /settings, /login)
