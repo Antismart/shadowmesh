@@ -22,6 +22,7 @@ pub mod node_health;
 pub mod node_resolver;
 pub mod p2p;
 pub mod p2p_commands;
+pub mod pin;
 pub mod p2p_resolver;
 pub mod production;
 pub mod rate_limit;
