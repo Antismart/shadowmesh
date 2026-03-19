@@ -98,6 +98,32 @@ impl IpfsHttpClient {
         self.client.post(&url).multipart(form).send().await?.json().await
     }
 
+    async fn pin_add(&self, cid: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/api/v0/pin/add?arg={}", self.base_url, cid);
+        let resp = self.client.post(&url).send().await?;
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("IPFS pin/add failed: {}", text).into());
+        }
+        Ok(())
+    }
+
+    async fn pin_rm(&self, cid: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/api/v0/pin/rm?arg={}", self.base_url, cid);
+        let resp = self.client.post(&url).send().await?;
+        if !resp.status().is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("IPFS pin/rm failed: {}", text).into());
+        }
+        Ok(())
+    }
+
+    async fn pin_ls(&self, cid: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/api/v0/pin/ls?arg={}", self.base_url, cid);
+        let resp = self.client.post(&url).send().await?;
+        Ok(resp.status().is_success())
+    }
+
     async fn add_directory(
         &self,
         files: Vec<(String, Vec<u8>)>,
@@ -350,6 +376,30 @@ impl StorageLayer {
             files,
             total_size,
         })
+    }
+
+    /// Pin content on the local IPFS node so it is never garbage-collected.
+    pub async fn pin_content(
+        &self,
+        cid: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.ipfs_client.pin_add(cid).await
+    }
+
+    /// Unpin content from the local IPFS node.
+    pub async fn unpin_content(
+        &self,
+        cid: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.ipfs_client.pin_rm(cid).await
+    }
+
+    /// Check whether a CID is pinned on the local IPFS node.
+    pub async fn is_pinned(
+        &self,
+        cid: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        self.ipfs_client.pin_ls(cid).await
     }
 
     /// Get reference to the HTTP client for advanced operations
