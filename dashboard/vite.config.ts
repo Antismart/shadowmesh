@@ -26,4 +26,6 @@ export default defineConfig({
     outDir: 'dist',
     sourcemap: false,
   },
+  // Use relative paths so the dashboard works when served under any CID path
+  base: './',
 });
