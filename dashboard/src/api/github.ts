@@ -1,4 +1,4 @@
-import { apiFetch } from './client';
+import { apiFetch, gatewayUrl } from './client';
 import type { GithubStatus, GithubRepo } from './types';
 
 export interface TreeEntry {
@@ -16,5 +16,5 @@ export const github = {
       `/api/github/tree?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`,
     ),
 
-  loginUrl: () => '/api/github/login',
+  loginUrl: () => gatewayUrl('/api/github/login'),
 };
