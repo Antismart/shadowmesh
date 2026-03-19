@@ -15,6 +15,7 @@ pub mod dashboard;
 pub mod deploy;
 pub mod distributed_rate_limit;
 pub mod error;
+pub mod jwt;
 pub mod lock_utils;
 pub mod metrics;
 pub mod middleware;
@@ -104,7 +105,7 @@ pub struct AppState {
     pub start_time: Instant,
     pub deployments: Arc<RwLock<Vec<dashboard::Deployment>>>,
     pub github_auth: Arc<RwLock<Option<dashboard::GithubAuth>>>,
-    pub github_oauth_states: Arc<RwLock<std::collections::HashMap<String, Instant>>>,
+    pub github_oauth_states: Arc<RwLock<std::collections::HashMap<String, (Instant, Option<String>)>>>,
     /// Circuit breaker for IPFS operations
     pub ipfs_circuit_breaker: Arc<circuit_breaker::CircuitBreaker>,
     /// Audit logger for security events
