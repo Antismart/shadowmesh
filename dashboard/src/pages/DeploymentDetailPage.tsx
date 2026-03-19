@@ -79,7 +79,7 @@ export default function DeploymentDetailPage() {
     );
   }
 
-  const previewUrl = `/ipfs/${deployment.cid}/index.html`;
+  const previewUrl = `/${deployment.cid}`;
 
   return (
     <div>

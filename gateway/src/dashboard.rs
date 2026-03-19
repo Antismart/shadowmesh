@@ -161,7 +161,7 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
             String::new()
         };
         format!(
-            r##"<div class="card deploy-card" onclick="window.open('/ipfs/{}/index.html','_blank')">
+            r##"<div class="card deploy-card" onclick="window.open('/{}','_blank')">
                 <div class="deploy-top">
                     <div>
                         <div class="deploy-name">{}</div>
@@ -179,7 +179,7 @@ pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoRespon
                 <div class="deploy-bottom">
                     <span class="deploy-url">shadowmesh.local/{}...</span>
                     <div style="display:flex; gap:8px;">
-                        <button onclick="event.stopPropagation();navigator.clipboard.writeText(location.origin+'/ipfs/{}/index.html');alert('URL copied!')" class="btn-ghost">Copy URL</button>
+                        <button onclick="event.stopPropagation();navigator.clipboard.writeText(location.origin+'/{}');alert('URL copied!')" class="btn-ghost">Copy URL</button>
                         {}
                         <button onclick="event.stopPropagation();deleteDeployment('{}')" class="btn-ghost btn-danger">Delete</button>
                     </div>
@@ -1886,7 +1886,7 @@ async fn deploy_github_project(
         "domain": domain,
         "repo": format!("{}/{}", repo_info.owner, repo_info.repo),
         "branch": branch,
-        "url": format!("http://localhost:8081/ipfs/{}/index.html", cid)
+        "url": format!("/{}", cid)
     }))
 }
 
@@ -2035,7 +2035,7 @@ async fn deploy_github_project_streaming(
         "domain": domain,
         "repo": format!("{}/{}", repo_info.owner, repo_info.repo),
         "branch": branch,
-        "url": format!("/ipfs/{}/index.html", cid)
+        "url": format!("/{}", cid)
     }))
 }
 
