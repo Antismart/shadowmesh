@@ -8,14 +8,15 @@ interface Props {
 
 /**
  * An <a> that points to the active gateway's GitHub OAuth login endpoint.
- * Resolves the gateway URL on mount so the link works when the dashboard
- * is deployed as static content outside of a gateway origin.
+ * Passes `redirect_to` so the auth gateway redirects back to the current
+ * dashboard URL with a JWT token after OAuth completes.
  */
 export default function GithubLoginLink({ className, children }: Props) {
-  const [href, setHref] = useState('/api/github/login');
+  const [href, setHref] = useState('#');
 
   useEffect(() => {
-    gatewayUrl('/api/github/login').then(setHref);
+    const currentUrl = window.location.origin + window.location.pathname;
+    gatewayUrl(`/api/github/login?redirect_to=${encodeURIComponent(currentUrl)}`).then(setHref);
   }, []);
 
   return (
