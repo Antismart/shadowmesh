@@ -514,18 +514,24 @@ pub fn rewrite_html_assets(data: &[u8], content_type: &str, base_prefix: Option<
     };
 
     let mut html = String::from_utf8_lossy(data).to_string();
-    let guard = "__IPFS_GUARD__";
 
+    // Insert a <base> tag so relative paths (assets/app.js) resolve correctly.
+    // When a <base> tag is present, we do NOT rewrite absolute paths — the
+    // browser handles resolution via the base href.
     if !html.to_lowercase().contains("<base ") {
         if let Some(head_pos) = html.to_lowercase().find("<head") {
             if let Some(end_pos) = html[head_pos..].find('>') {
                 let insert_pos = head_pos + end_pos + 1;
                 let base_tag = format!("\n    <base href=\"{}\">", base_prefix);
                 html.insert_str(insert_pos, &base_tag);
+                return html.into_bytes();
             }
         }
     }
 
+    // No <head> found or <base> already present — fall back to rewriting
+    // absolute paths manually.
+    let guard = "__IPFS_GUARD__";
     for attr in ["href", "src", "srcset"] {
         let guard_token = format!("{}=\"{}/", attr, guard);
         html = html.replace(&format!("{}=\"/ipfs/", attr), &guard_token);
