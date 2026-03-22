@@ -37,7 +37,7 @@ fn test_state(cfg: config::Config, storage: Option<Arc<protocol::StorageLayer>>)
         config: Arc::new(tokio::sync::RwLock::new(cfg)),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
-        deployments: Arc::new(std::sync::RwLock::new(Vec::new())),
+        deployments: Arc::new(dashmap::DashMap::new()),
         github_auth: Arc::new(std::sync::RwLock::new(None)),
         github_oauth_states: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         ipfs_circuit_breaker: Arc::new(circuit_breaker::CircuitBreaker::new(

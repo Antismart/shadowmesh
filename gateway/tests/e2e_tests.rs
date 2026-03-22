@@ -73,7 +73,7 @@ fn gateway_app(node_runner_url: &str) -> Router {
         config: Arc::new(tokio::sync::RwLock::new(cfg)),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
-        deployments: Arc::new(std::sync::RwLock::new(Vec::new())),
+        deployments: Arc::new(dashmap::DashMap::new()),
         github_auth: Arc::new(std::sync::RwLock::new(None)),
         github_oauth_states: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         ipfs_circuit_breaker: Arc::new(circuit_breaker::CircuitBreaker::new(
@@ -179,7 +179,7 @@ async fn test_e2e_cache_hit() {
         config: Arc::new(tokio::sync::RwLock::new(cfg.clone())),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
-        deployments: Arc::new(std::sync::RwLock::new(Vec::new())),
+        deployments: Arc::new(dashmap::DashMap::new()),
         github_auth: Arc::new(std::sync::RwLock::new(None)),
         github_oauth_states: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         ipfs_circuit_breaker: Arc::new(circuit_breaker::CircuitBreaker::new(
@@ -218,9 +218,9 @@ async fn test_e2e_missing_content_returns_error() {
     let (node_url, _state, _dir) = start_node_runner().await;
     let app = gateway_app(&node_url);
 
-    // Request a CID that doesn't exist
-    let resp = gateway_get(app, "/ipfs/nonexistent_cid_12345").await;
-    // Without IPFS, this should return 503 (IPFS Not Connected)
+    // Request a CID that doesn't exist (must be alphanumeric to pass validation)
+    let resp = gateway_get(app, "/ipfs/deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567").await;
+    // Without IPFS, this should return 503 (IPFS Not Connected) or 404
     assert!(
         resp.status() == 503 || resp.status() == 404,
         "Expected 503 or 404, got {}",
@@ -345,7 +345,7 @@ async fn test_e2e_failover_to_second_node() {
         config: Arc::new(tokio::sync::RwLock::new(cfg)),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
-        deployments: Arc::new(std::sync::RwLock::new(Vec::new())),
+        deployments: Arc::new(dashmap::DashMap::new()),
         github_auth: Arc::new(std::sync::RwLock::new(None)),
         github_oauth_states: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         ipfs_circuit_breaker: Arc::new(circuit_breaker::CircuitBreaker::new(

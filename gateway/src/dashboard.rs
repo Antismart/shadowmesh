@@ -135,9 +135,9 @@ fn escape_js_attr(s: &str) -> String {
 }
 
 pub async fn dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let deployments = read_lock(&state.deployments);
+    let all_deployments: Vec<Deployment> = state.deployments.iter().map(|r| r.value().clone()).collect();
     let mut grouped: BTreeMap<String, Vec<&Deployment>> = BTreeMap::new();
-    for deployment in deployments.iter() {
+    for deployment in all_deployments.iter() {
         let key = if deployment.source == "github" {
             deployment
                 .repo_url
@@ -952,10 +952,7 @@ pub async fn redeploy_github(
     State(state): State<AppState>,
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
-    let deployment = {
-        let deployments = read_lock(&state.deployments);
-        deployments.iter().find(|d| d.cid == cid).cloned()
-    };
+    let deployment = state.deployments.get(&cid).map(|r| r.value().clone());
 
     let Some(deployment) = deployment else {
         return (
@@ -987,10 +984,7 @@ pub async fn redeploy_github(
 
     match deploy_github_project(&state, &repo_url, &branch, root_dir.as_deref()).await {
         Ok(payload) => {
-            {
-                let mut deployments = write_lock(&state.deployments);
-                deployments.retain(|d| d.cid != cid);
-            }
+            state.deployments.remove(&cid);
             // Clean old deployment from Redis
             if let Some(ref redis) = state.redis {
                 if let Err(e) = Deployment::delete_from_redis(&cid, redis).await {
@@ -1079,15 +1073,17 @@ pub async fn github_webhook(
 
     // Find matching deployment
     let (old_cid, root_dir) = {
-        let deployments = read_lock(&state.deployments);
-        match deployments
+        let found = state.deployments
             .iter()
-            .find(|d| {
+            .find(|r| {
+                let d = r.value();
                 d.source == "github"
                     && d.repo_url.as_deref() == Some(&repo_url)
                     && d.branch.as_deref() == Some(branch)
-            }) {
-            Some(d) => (Some(d.cid.clone()), d.root_directory.clone()),
+            })
+            .map(|r| (r.value().cid.clone(), r.value().root_directory.clone()));
+        match found {
+            Some((cid, root_dir)) => (Some(cid), root_dir),
             None => (None, None),
         }
     };
@@ -1097,10 +1093,7 @@ pub async fn github_webhook(
         Ok(payload) => {
             // Remove old deployment if exists
             if let Some(ref old_cid) = old_cid {
-                {
-                    let mut deployments = write_lock(&state.deployments);
-                    deployments.retain(|d| d.cid != *old_cid);
-                }
+                state.deployments.remove(old_cid);
                 if let Some(ref redis) = state.redis {
                     if let Err(e) = Deployment::delete_from_redis(old_cid, redis).await {
                         tracing::warn!("Failed to delete old deployment from Redis: {}", e);
@@ -1145,20 +1138,15 @@ fn verify_webhook_signature(secret: &str, body: &[u8], signature: &str) -> bool 
 }
 
 pub async fn get_deployments(State(state): State<AppState>) -> impl IntoResponse {
-    let deployments = read_lock(&state.deployments);
-    Json(deployments.clone())
+    let deployments: Vec<Deployment> = state.deployments.iter().map(|r| r.value().clone()).collect();
+    Json(deployments)
 }
 
 pub async fn delete_deployment(
     State(state): State<AppState>,
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
-    let found = {
-        let mut deployments = write_lock(&state.deployments);
-        let before = deployments.len();
-        deployments.retain(|d| d.cid != cid);
-        deployments.len() != before
-    };
+    let found = state.deployments.remove(&cid).is_some();
 
     if !found {
         (
@@ -1182,8 +1170,7 @@ pub async fn deployment_logs(
     State(state): State<AppState>,
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
-    let deployments = read_lock(&state.deployments);
-    if let Some(deployment) = deployments.iter().find(|d| d.cid == cid) {
+    if let Some(deployment) = state.deployments.get(&cid) {
         (StatusCode::OK, Json(json!({
             "success": true,
             "status": deployment.build_status,
@@ -1976,12 +1963,7 @@ async fn deploy_github_project(
     .await;
 
     let domain = deployment.domain.clone();
-    {
-        let mut deployments = write_lock(&state.deployments);
-        deployments.insert(0, deployment);
-        const MAX_IN_MEMORY_DEPLOYMENTS: usize = 1000;
-        deployments.truncate(MAX_IN_MEMORY_DEPLOYMENTS);
-    }
+    state.deployments.insert(deployment.cid.clone(), deployment);
 
     Ok(json!({
         "success": true,
@@ -2117,12 +2099,7 @@ async fn deploy_github_project_streaming(
     audit::log_deploy_success(&state.audit_logger, "github", &cid, total_size, None, None).await;
 
     let domain = deployment.domain.clone();
-    {
-        let mut deployments = write_lock(&state.deployments);
-        deployments.insert(0, deployment);
-        const MAX_IN_MEMORY_DEPLOYMENTS: usize = 1000;
-        deployments.truncate(MAX_IN_MEMORY_DEPLOYMENTS);
-    }
+    state.deployments.insert(deployment.cid.clone(), deployment);
 
     if let Some(ref d) = domain {
         session.push_log(&format!("Domain: {}", d));

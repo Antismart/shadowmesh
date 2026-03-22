@@ -13,6 +13,7 @@ use axum::{
 use tokio_util::sync::CancellationToken;
 use protocol::{NamingManager, StorageConfig, StorageLayer};
 use serde::{Deserialize, Serialize};
+use dashmap::DashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tower_http::cors::{Any, CorsLayer};
@@ -137,19 +138,23 @@ async fn main() {
     };
 
     // Load existing deployments from Redis if available
-    let initial_deployments = if let Some(ref redis_client) = redis {
+    let initial_deployments: DashMap<String, dashboard::Deployment> = if let Some(ref redis_client) = redis {
         match dashboard::Deployment::load_all_from_redis(redis_client).await {
             Ok(deployments) => {
                 println!("✓ Loaded {} deployments from Redis", deployments.len());
-                deployments
+                let map = DashMap::with_capacity(deployments.len());
+                for d in deployments {
+                    map.insert(d.cid.clone(), d);
+                }
+                map
             }
             Err(e) => {
                 tracing::warn!("Failed to load deployments from Redis: {}", e);
-                Vec::new()
+                DashMap::new()
             }
         }
     } else {
-        Vec::new()
+        DashMap::new()
     };
 
     // Initialize naming manager and keypair
@@ -347,7 +352,7 @@ async fn main() {
         config: config_lock.clone(),
         metrics: Arc::new(Metrics::default()),
         start_time: Instant::now(),
-        deployments: Arc::new(RwLock::new(initial_deployments)),
+        deployments: Arc::new(initial_deployments),
         github_auth: Arc::new(RwLock::new(None)),
         github_oauth_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
         ipfs_circuit_breaker,
@@ -758,12 +763,9 @@ async fn content_or_spa_handler(
         return resolve_shadow_name_and_serve(&state, &cid, "").await;
     }
 
-    // Only treat paths starting with "Qm" (CIDv0) or "bafy" (CIDv1) as IPFS content,
-    // and validate the CID contains only safe characters to prevent injection/XSS.
-    if (cid.starts_with("Qm") || cid.starts_with("bafy"))
-        && cid.len() <= 512
-        && cid.chars().all(|c| c.is_ascii_alphanumeric())
-    {
+    // Strict CID validation — only CIDv0 (Qm, 46 chars, base58) and
+    // CIDv1 (bafy, 59 chars, base32lower) are accepted.
+    if cid_validation::validate_cid(&cid) {
         let base_prefix = format!("/{}/", cid);
         let result = fetch_content(&state, cid.clone(), Some(base_prefix.clone())).await;
         // If IPFS returned a directory (not HTML), try index.html
@@ -794,14 +796,25 @@ async fn shadow_or_content_subpath_handler(
         return resolve_shadow_name_and_serve(&state, &name, &path).await;
     }
 
-    // Fall through to CID-with-path behavior
-    if (name.starts_with("Qm") || name.starts_with("bafy"))
-        && name.len() <= 512
-        && name.chars().all(|c| c.is_ascii_alphanumeric())
-    {
+    // Validate the content identifier and subpath for traversal / control-character
+    // attacks. Uses validate_content_path because this endpoint handles both IPFS
+    // CIDs and node-runner content hashes.
+    let full_path = format!("{}/{}", name, path);
+    if let Ok((_cid, _subpath)) = cid_validation::validate_content_path(&full_path) {
         let base_prefix = Some(format!("/{}/", name));
-        let full_path = format!("{}/{}", name, path);
-        return fetch_content(&state, full_path, base_prefix).await;
+        let result = fetch_content(&state, full_path, base_prefix.clone()).await;
+
+        // SPA fallback: if the subpath returned 404 and doesn't look like a
+        // static asset (no file extension), serve index.html instead so that
+        // client-side routing can handle it.
+        if result.status() == axum::http::StatusCode::NOT_FOUND
+            && !path.contains('.')
+        {
+            let index_path = format!("{}/index.html", name);
+            return fetch_content(&state, index_path, base_prefix).await;
+        }
+
+        return result;
     }
 
     // SPA fallback
@@ -996,19 +1009,10 @@ async fn name_assign_handler(
             .into_response();
     }
 
-    if body.cid.is_empty() || body.cid.len() > 512 {
+    if !cid_validation::validate_cid(&body.cid) {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "CID is required and must be at most 512 characters"})),
-        )
-            .into_response();
-    }
-
-    // Basic CID format validation: must be alphanumeric (base-encoded)
-    if !body.cid.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid CID format"})),
+            Json(serde_json::json!({"error": "Invalid CID format (expected CIDv0 Qm... or CIDv1 bafy...)"})),
         )
             .into_response();
     }
