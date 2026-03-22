@@ -382,7 +382,7 @@ cargo bench -p benchmarks
 - [x] ENS integration (eth.limo gateway + `shadow://` contenthash)
 - [x] Censorship detection & adaptive routing
 - [ ] Mobile SDK (React Native)
-- [ ] Incentive layer with token rewards
+- [ ] Incentive layer with token rewards — [Tokenomics Spec](docs/tokenomics.md) (MESH token, Sepolia testnet, Phase 1 in progress)
 - [ ] Browser extension
 - [ ] IPFS pinning service integration
 
