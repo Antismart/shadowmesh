@@ -11,7 +11,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::{audit, AppState};
+use crate::{audit, cid_validation, AppState};
 
 // ── Response types ──────────────────────────────────────────────────────
 
@@ -40,15 +40,6 @@ impl PinError {
     }
 }
 
-/// Validate that a string looks like a CID (alphanumeric + dash/underscore).
-fn is_valid_cid(cid: &str) -> bool {
-    !cid.is_empty()
-        && cid.len() <= 512
-        && cid
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
 // ── Handlers ────────────────────────────────────────────────────────────
 
 /// POST /api/pin/:cid — pin content on the local IPFS node.
@@ -61,7 +52,7 @@ pub async fn pin_content(State(state): State<AppState>, Path(cid): Path<String>)
             .into_response();
     };
 
-    if !is_valid_cid(&cid) {
+    if !cid_validation::validate_cid(&cid) {
         return (
             StatusCode::BAD_REQUEST,
             Json(PinError::new("Invalid CID format", "INVALID_CID")),
@@ -111,7 +102,7 @@ pub async fn unpin_content(State(state): State<AppState>, Path(cid): Path<String
             .into_response();
     };
 
-    if !is_valid_cid(&cid) {
+    if !cid_validation::validate_cid(&cid) {
         return (
             StatusCode::BAD_REQUEST,
             Json(PinError::new("Invalid CID format", "INVALID_CID")),

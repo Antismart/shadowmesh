@@ -8,6 +8,7 @@ pub mod api_keys;
 pub mod audit;
 pub mod auth;
 pub mod cache;
+pub mod cid_validation;
 pub mod circuit_breaker;
 pub mod config;
 pub mod config_watcher;
@@ -40,6 +41,7 @@ use axum::{
     routing::get,
     Router,
 };
+use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -103,7 +105,7 @@ pub struct AppState {
     pub config: Arc<tokio::sync::RwLock<config::Config>>,
     pub metrics: Arc<Metrics>,
     pub start_time: Instant,
-    pub deployments: Arc<RwLock<Vec<dashboard::Deployment>>>,
+    pub deployments: Arc<DashMap<String, dashboard::Deployment>>,
     pub github_auth: Arc<RwLock<Option<dashboard::GithubAuth>>>,
     pub github_oauth_states: Arc<RwLock<std::collections::HashMap<String, (Instant, Option<String>)>>>,
     /// Circuit breaker for IPFS operations
@@ -154,13 +156,28 @@ pub async fn ipfs_content_path_handler(
     State(state): State<AppState>,
     Path(path): Path<String>,
 ) -> Response {
-    // The path contains everything after /ipfs/
-    // It could be just "cid" or "cid/subpath/..."
-    let parts: Vec<&str> = path.splitn(2, '/').collect();
-    let cid = parts[0];
+    // Validate content path (CID/hash + optional subpath) before any backend interaction.
+    // Uses validate_content_path (not validate_cid_path) because the /ipfs/* endpoint
+    // resolves content from multiple backends including node-runners that use
+    // non-CID identifiers (e.g. blake3 hex hashes).
+    let (cid, subpath) = match cid_validation::validate_content_path(&path) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            tracing::warn!(path = %path, error = %e, "Rejected invalid CID path");
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Html(format!(
+                    r#"<html><body><h1>Bad Request</h1><p>{}</p></body></html>"#,
+                    escape_html(&e.to_string())
+                )),
+            )
+                .into_response();
+        }
+    };
+
     let base_prefix = format!("/ipfs/{}/", cid);
 
-    if parts.len() == 1 {
+    if subpath.is_none() {
         // Just a CID — try fetching; if IPFS returns a directory listing
         // (not valid HTML), redirect to CID/index.html instead.
         let result = fetch_content(&state, cid.to_string(), Some(base_prefix.clone())).await;
@@ -179,8 +196,21 @@ pub async fn ipfs_content_path_handler(
         fetch_content(&state, index_path, Some(base_prefix)).await
     } else {
         // CID with path
+        let sub = subpath.unwrap();
         let full_path = path.clone();
-        fetch_content(&state, full_path, Some(base_prefix)).await
+        let result = fetch_content(&state, full_path, Some(base_prefix.clone())).await;
+
+        // SPA fallback: if the subpath returned 404 and doesn't look like a
+        // static asset (no file extension), serve index.html instead so that
+        // client-side routing can handle it (e.g. /ipfs/QmXXX/settings).
+        if result.status() == axum::http::StatusCode::NOT_FOUND
+            && !sub.contains('.')
+        {
+            let index_path = format!("{}/index.html", cid);
+            return fetch_content(&state, index_path, Some(base_prefix)).await;
+        }
+
+        result
     }
 }
 

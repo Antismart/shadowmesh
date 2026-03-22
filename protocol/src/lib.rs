@@ -19,6 +19,7 @@
 //! - `naming` - Decentralized naming layer (DHT-native name resolution)
 //! - `bootstrap` - DNS-free bootstrap configuration
 
+pub mod cid_validation;
 pub mod content_protocol;
 pub mod adaptive_routing;
 pub mod bandwidth;
@@ -119,3 +120,6 @@ pub use bootstrap::{
     is_valid_bootstrap_multiaddr, DEFAULT_BOOTSTRAP_NODES, RENDEZVOUS_NAMESPACE,
     BOOTSTRAP_GOSSIP_TOPIC, FALLBACK_STUN_SERVERS, PUBLIC_STUN_SERVERS,
 };
+
+// Re-export CID validation types
+pub use cid_validation::{validate_cid, validate_cid_path, validate_content_path, CidValidationError};

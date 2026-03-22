@@ -78,14 +78,14 @@ impl IpfsHttpClient {
     }
 
     async fn cat(&self, cid: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        // Validate CID contains only safe base-encoded characters to prevent
-        // query parameter injection into the IPFS API URL.
-        if cid.is_empty()
-            || cid.len() > 512
-            || !cid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/' || c == '.')
-        {
-            return Err(format!("Invalid CID format: '{}'", &cid[..cid.len().min(32)]).into());
-        }
+        // Strict CID validation: only CIDv0 (Qm, 46 chars, base58) and
+        // CIDv1 (bafy, 59 chars, base32lower) with optional subpath.
+        // Rejects `/`, `.`, `..`, control characters, and unknown formats
+        // to prevent query-parameter injection into the IPFS API URL.
+        crate::cid_validation::validate_cid_path(cid)
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                Box::new(e)
+            })?;
         let url = format!("{}/api/v0/cat?arg={}", self.base_url, cid);
         let resp = self.client.post(&url).send().await?;
         Ok(resp.bytes().await?.to_vec())

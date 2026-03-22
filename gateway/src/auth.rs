@@ -139,10 +139,10 @@ impl AuthConfig {
 
             // Parameter match (e.g., "GET:/:cid" matches single-segment GET paths)
             if public_route == "GET:/:cid" && method == "GET" {
-                // Match paths that are just a CID (single segment, starts with Qm or bafy)
+                // Match paths that are just a valid CID (single segment)
                 let trimmed = path.trim_start_matches('/');
                 if !trimmed.contains('/')
-                    && (trimmed.starts_with("Qm") || trimmed.starts_with("bafy"))
+                    && crate::cid_validation::validate_cid(trimmed)
                 {
                     return true;
                 }
@@ -285,9 +285,12 @@ mod tests {
         assert!(config.is_public_route("GET", "/analytics"));
         assert!(config.is_public_route("GET", "/settings"));
         assert!(config.is_public_route("GET", "/assets/index-abc.js"));
-        assert!(config.is_public_route("GET", "/ipfs/QmTest123"));
-        assert!(config.is_public_route("GET", "/QmTest123"));
-        assert!(config.is_public_route("GET", "/bafyTest123"));
+        assert!(config.is_public_route("GET", "/ipfs/QmYwAPJzv5CZsnN625s3Xf2nemtYgPpHdWEz79ojWnPbdG"));
+        assert!(config.is_public_route("GET", "/QmYwAPJzv5CZsnN625s3Xf2nemtYgPpHdWEz79ojWnPbdG"));
+        assert!(config.is_public_route("GET", "/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"));
+        // Short/invalid CIDs should NOT match the /:cid public route
+        assert!(!config.is_public_route("GET", "/QmTest123"));
+        assert!(!config.is_public_route("GET", "/bafyTest123"));
 
         // Protected routes
         assert!(!config.is_public_route("POST", "/api/deploy"));
