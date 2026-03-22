@@ -15,36 +15,33 @@ pub fn generate_session_id() -> String {
     hex::encode(&bytes)
 }
 
-/// Get random bytes using Web Crypto API
+/// Get random bytes securely.
+///
+/// Uses `crypto.getRandomValues()` via the Web Crypto API when a `window`
+/// object is available (main thread). Falls back to the `getrandom` crate
+/// (configured with `features = ["js"]`) which also calls
+/// `crypto.getRandomValues()` under the hood but works in Web Workers and
+/// other non-window contexts.
+///
+/// **No insecure fallback** — if both sources fail the function panics,
+/// because generating predictable "random" bytes silently would be a
+/// security vulnerability (session IDs, encryption nonces, etc.).
 fn getrandom(dest: &mut [u8]) {
-    let win = match window() {
-        Ok(w) => w,
-        Err(_) => {
-            // Fallback: use getrandom crate which works in WASM contexts
-            // without window (e.g. web workers, Node.js)
-            tracing::warn!("No window object, using getrandom fallback");
-            if getrandom::getrandom(dest).is_err() {
-                tracing::error!("All random sources failed — session IDs will be insecure");
-                // Last resort: use index-based fill (NOT cryptographically secure)
-                for (i, byte) in dest.iter_mut().enumerate() {
-                    *byte = (i as u8).wrapping_mul(137).wrapping_add(43);
-                }
+    // Try the Web Crypto API directly (available on the main thread)
+    if let Ok(win) = window() {
+        if let Ok(crypto) = win.crypto() {
+            if crypto.get_random_values_with_u8_array(dest).is_ok() {
+                return;
             }
-            return;
         }
-    };
-
-    let crypto = match win.crypto() {
-        Ok(c) => c,
-        Err(_) => {
-            tracing::warn!("No Web Crypto API available");
-            return;
-        }
-    };
-
-    if let Err(e) = crypto.get_random_values_with_u8_array(dest) {
-        tracing::warn!("get_random_values failed: {:?}", e);
     }
+
+    // Fallback: `getrandom` crate with `js` feature — delegates to
+    // `crypto.getRandomValues()` via wasm-bindgen, works in Web Workers.
+    getrandom::getrandom(dest).expect(
+        "FATAL: no secure random source available — \
+         crypto.getRandomValues() is required in this browser environment",
+    );
 }
 
 /// Hex encoding (simple implementation)
