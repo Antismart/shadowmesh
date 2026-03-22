@@ -46,6 +46,9 @@ export default function BuildLogViewer({ logs, status, streamingLines, isStreami
       </div>
       <pre
         ref={preRef}
+        role="log"
+        aria-label="Build log output"
+        aria-live={isStreaming ? 'polite' : 'off'}
         className="p-4 text-xs font-mono text-mesh-muted leading-relaxed overflow-x-auto max-h-96 overflow-y-auto bg-mesh-bg"
       >
         {displayText || 'No build logs available.'}

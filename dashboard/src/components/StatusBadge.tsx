@@ -10,8 +10,8 @@ const dotColors: Record<string, string> = {
 export default function StatusBadge({ status }: { status: string }) {
   const dot = dotColors[status] ?? dotColors.Skipped;
   return (
-    <span className="inline-flex items-center gap-2 text-sm text-mesh-muted">
-      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${dot}`} />
+    <span className="inline-flex items-center gap-2 text-sm text-mesh-muted" role="status" aria-label={`Status: ${status}`}>
+      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${dot}`} aria-hidden="true" />
       {status}
     </span>
   );

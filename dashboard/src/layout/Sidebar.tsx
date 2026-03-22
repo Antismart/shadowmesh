@@ -22,7 +22,7 @@ export default function Sidebar() {
     >
       {/* Team selector */}
       <div className="flex items-center gap-3 px-4 h-14 border-b border-mesh-border">
-        <div className="w-7 h-7 rounded-full bg-white flex items-center justify-center flex-shrink-0">
+        <div className="w-7 h-7 rounded-full bg-white flex items-center justify-center flex-shrink-0" aria-hidden="true">
           <span className="text-black font-bold text-xs">S</span>
         </div>
         {!collapsed && (
@@ -30,7 +30,7 @@ export default function Sidebar() {
             <span className="text-sm font-medium text-mesh-text truncate">
               {connected && user ? user.login : 'ShadowMesh'}
             </span>
-            <svg className="w-3 h-3 text-mesh-muted flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="w-3 h-3 text-mesh-muted flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" d="M8 9l4-4 4 4m0 6l-4 4-4-4" />
             </svg>
           </div>
@@ -40,20 +40,20 @@ export default function Sidebar() {
       {/* Search */}
       {!collapsed ? (
         <div className="px-3 pt-3">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-mesh-border text-sm text-mesh-muted cursor-pointer hover:border-mesh-border-hover transition-colors">
-            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <button className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-mesh-border text-sm text-mesh-muted cursor-pointer hover:border-mesh-border-hover transition-colors w-full" aria-label="Search">
+            <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
             <span>Search...</span>
             <kbd className="ml-auto text-[10px] text-mesh-muted border border-mesh-border rounded px-1 py-0.5 leading-none">
               {'\u2318K'}
             </kbd>
-          </div>
+          </button>
         </div>
       ) : (
         <div className="px-3 pt-3 flex justify-center">
-          <button className="p-2 text-mesh-muted hover:text-mesh-text transition-colors">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <button className="p-2 text-mesh-muted hover:text-mesh-text transition-colors" aria-label="Search">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
           </button>
@@ -61,12 +61,13 @@ export default function Sidebar() {
       )}
 
       {/* Navigation */}
-      <nav className="flex-1 py-3 px-3 space-y-0.5">
+      <nav className="flex-1 py-3 px-3 space-y-0.5" aria-label="Main navigation">
         {navItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.to === '/'}
+            aria-label={item.label}
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-1.5 rounded-md text-sm transition-colors duration-100 ${
                 isActive
@@ -75,7 +76,7 @@ export default function Sidebar() {
               }`
             }
           >
-            <svg className="w-[18px] h-[18px] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <svg className="w-[18px] h-[18px] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
             </svg>
             {!collapsed && <span>{item.label}</span>}
@@ -86,6 +87,7 @@ export default function Sidebar() {
       {/* Collapse toggle */}
       <button
         onClick={() => setCollapsed(!collapsed)}
+        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         className="flex items-center justify-center h-10 border-t border-mesh-border text-mesh-muted hover:text-mesh-text transition-colors"
       >
         <svg
@@ -94,6 +96,7 @@ export default function Sidebar() {
           viewBox="0 0 24 24"
           stroke="currentColor"
           strokeWidth={2}
+          aria-hidden="true"
         >
           <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
         </svg>
