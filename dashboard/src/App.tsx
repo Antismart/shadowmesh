@@ -1,28 +1,87 @@
+import React, { Suspense } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import RootLayout from './layout/RootLayout';
 import LoginPage from './pages/LoginPage';
-import OverviewPage from './pages/OverviewPage';
-import ProjectDetailPage from './pages/ProjectDetailPage';
-import DeploymentDetailPage from './pages/DeploymentDetailPage';
-import NewDeploymentPage from './pages/NewDeploymentPage';
-import DomainsPage from './pages/DomainsPage';
-import AnalyticsPage from './pages/AnalyticsPage';
-import SettingsPage from './pages/SettingsPage';
-import NotFoundPage from './pages/NotFoundPage';
+import LoadingSkeleton from './components/LoadingSkeleton';
+
+const OverviewPage = React.lazy(() => import('./pages/OverviewPage'));
+const ProjectDetailPage = React.lazy(() => import('./pages/ProjectDetailPage'));
+const DeploymentDetailPage = React.lazy(() => import('./pages/DeploymentDetailPage'));
+const NewDeploymentPage = React.lazy(() => import('./pages/NewDeploymentPage'));
+const DomainsPage = React.lazy(() => import('./pages/DomainsPage'));
+const AnalyticsPage = React.lazy(() => import('./pages/AnalyticsPage'));
+const SettingsPage = React.lazy(() => import('./pages/SettingsPage'));
+const NotFoundPage = React.lazy(() => import('./pages/NotFoundPage'));
 
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/" element={<RootLayout />}>
-        <Route index element={<OverviewPage />} />
-        <Route path="projects/:repoName" element={<ProjectDetailPage />} />
-        <Route path="deployments/:cid" element={<DeploymentDetailPage />} />
-        <Route path="new" element={<NewDeploymentPage />} />
-        <Route path="domains" element={<DomainsPage />} />
-        <Route path="analytics" element={<AnalyticsPage />} />
-        <Route path="settings" element={<SettingsPage />} />
-        <Route path="*" element={<NotFoundPage />} />
+        <Route
+          index
+          element={
+            <Suspense fallback={<LoadingSkeleton />}>
+              <OverviewPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="projects/:repoName"
+          element={
+            <Suspense fallback={<LoadingSkeleton />}>
+              <ProjectDetailPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="deployments/:cid"
+          element={
+            <Suspense fallback={<LoadingSkeleton />}>
+              <DeploymentDetailPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="new"
+          element={
+            <Suspense fallback={<LoadingSkeleton />}>
+              <NewDeploymentPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="domains"
+          element={
+            <Suspense fallback={<LoadingSkeleton />}>
+              <DomainsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="analytics"
+          element={
+            <Suspense fallback={<LoadingSkeleton />}>
+              <AnalyticsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="settings"
+          element={
+            <Suspense fallback={<LoadingSkeleton />}>
+              <SettingsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="*"
+          element={
+            <Suspense fallback={<LoadingSkeleton />}>
+              <NotFoundPage />
+            </Suspense>
+          }
+        />
       </Route>
     </Routes>
   );
