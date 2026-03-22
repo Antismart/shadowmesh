@@ -11,6 +11,18 @@ export interface Deployment {
   build_logs: string | null;
   status: string;
   domain: string | null;
+  env_vars?: Record<string, string>;
+  build_command?: string;
+  output_directory?: string;
+}
+
+export interface GithubDeployRequest {
+  url: string;
+  branch: string;
+  root_directory?: string;
+  env_vars?: Record<string, string>;
+  build_command?: string;
+  output_directory?: string;
 }
 
 export interface DeployResponse {

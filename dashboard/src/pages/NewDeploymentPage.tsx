@@ -13,6 +13,11 @@ import GithubLoginLink from '../components/GithubLoginLink';
 
 type BuildStatus = 'building' | 'success' | 'error' | null;
 
+interface EnvVar {
+  key: string;
+  value: string;
+}
+
 export default function NewDeploymentPage() {
   const navigate = useNavigate();
   const { connected } = useAuth();
@@ -23,6 +28,12 @@ export default function NewDeploymentPage() {
   const [branch, setBranch] = useState('');
   const [rootDirectory, setRootDirectory] = useState('');
   const [deploying, setDeploying] = useState(false);
+
+  // Build settings state
+  const [showBuildSettings, setShowBuildSettings] = useState(false);
+  const [envVars, setEnvVars] = useState<EnvVar[]>([]);
+  const [buildCommand, setBuildCommand] = useState('');
+  const [outputDirectory, setOutputDirectory] = useState('');
 
   // SSE streaming state
   const [buildLogs, setBuildLogs] = useState<string[]>([]);
@@ -63,11 +74,23 @@ export default function NewDeploymentPage() {
     setBuildStatus('building');
 
     try {
-      const { deploy_id, stream_url } = await deploymentsApi.deployGithubAsync(
-        repo.html_url,
-        branch || repo.default_branch,
-        rootDirectory || undefined,
-      );
+      // Build env vars map from the key-value pairs
+      const envVarsMap: Record<string, string> = {};
+      for (const ev of envVars) {
+        const k = ev.key.trim();
+        if (k) {
+          envVarsMap[k] = ev.value;
+        }
+      }
+
+      const { deploy_id, stream_url } = await deploymentsApi.deployGithubAsync({
+        url: repo.html_url,
+        branch: branch || repo.default_branch,
+        rootDirectory: rootDirectory || undefined,
+        envVars: Object.keys(envVarsMap).length > 0 ? envVarsMap : undefined,
+        buildCommand: buildCommand.trim() || undefined,
+        outputDirectory: outputDirectory.trim() || undefined,
+      });
 
       const fullStreamUrl = await gatewayUrl(stream_url);
       const es = new EventSource(fullStreamUrl);
@@ -301,6 +324,120 @@ export default function NewDeploymentPage() {
                         <p className="text-xs text-mesh-muted mt-1">
                           Select the directory containing your project.
                         </p>
+                      </div>
+
+                      {/* Build Settings (collapsible) */}
+                      <div className="border border-mesh-border rounded-lg">
+                        <button
+                          type="button"
+                          onClick={() => setShowBuildSettings(!showBuildSettings)}
+                          className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-mesh-text hover:bg-mesh-surface transition-colors rounded-lg"
+                        >
+                          <span>Build Settings</span>
+                          <svg
+                            className={`w-4 h-4 text-mesh-muted transition-transform ${showBuildSettings ? 'rotate-180' : ''}`}
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={2}
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                          </svg>
+                        </button>
+
+                        {showBuildSettings && (
+                          <div className="px-4 pb-4 space-y-4 border-t border-mesh-border">
+                            {/* Build Command */}
+                            <div className="pt-4">
+                              <label className="block text-sm font-medium text-mesh-text mb-2">Build Command</label>
+                              <input
+                                type="text"
+                                value={buildCommand}
+                                onChange={(e) => setBuildCommand(e.target.value)}
+                                placeholder="auto-detected (e.g., npm run build)"
+                                className="input w-full"
+                              />
+                              <p className="text-xs text-mesh-muted mt-1">
+                                Override the auto-detected build command.
+                              </p>
+                            </div>
+
+                            {/* Output Directory */}
+                            <div>
+                              <label className="block text-sm font-medium text-mesh-text mb-2">Output Directory</label>
+                              <input
+                                type="text"
+                                value={outputDirectory}
+                                onChange={(e) => setOutputDirectory(e.target.value)}
+                                placeholder="auto-detected (e.g., dist)"
+                                className="input w-full"
+                              />
+                              <p className="text-xs text-mesh-muted mt-1">
+                                Override the auto-detected output directory.
+                              </p>
+                            </div>
+
+                            {/* Environment Variables */}
+                            <div>
+                              <label className="block text-sm font-medium text-mesh-text mb-2">Environment Variables</label>
+                              {envVars.length > 0 && (
+                                <div className="space-y-2 mb-2">
+                                  {envVars.map((ev, idx) => (
+                                    <div key={idx} className="flex items-center gap-2">
+                                      <input
+                                        type="text"
+                                        value={ev.key}
+                                        onChange={(e) => {
+                                          const updated = [...envVars];
+                                          updated[idx] = { ...updated[idx], key: e.target.value };
+                                          setEnvVars(updated);
+                                        }}
+                                        placeholder="NAME"
+                                        className="input flex-1 font-mono text-xs"
+                                      />
+                                      <input
+                                        type="text"
+                                        value={ev.value}
+                                        onChange={(e) => {
+                                          const updated = [...envVars];
+                                          updated[idx] = { ...updated[idx], value: e.target.value };
+                                          setEnvVars(updated);
+                                        }}
+                                        placeholder="value"
+                                        className="input flex-1 font-mono text-xs"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEnvVars(envVars.filter((_, i) => i !== idx));
+                                        }}
+                                        className="btn-ghost px-2 py-1.5 text-mesh-muted hover:text-[#ee0000] transition-colors"
+                                        title="Remove variable"
+                                      >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setEnvVars([...envVars, { key: '', value: '' }])}
+                                className="btn-ghost text-xs inline-flex items-center gap-1"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                                </svg>
+                                Add Variable
+                              </button>
+                              <p className="text-xs text-mesh-muted mt-1">
+                                These variables will be available during the build process.
+                              </p>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </>
                   )}

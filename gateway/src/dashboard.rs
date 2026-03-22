@@ -14,7 +14,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -791,6 +791,15 @@ pub struct GithubDeployRequest {
     /// Subdirectory within the repo containing the project (e.g. "frontend", "packages/app")
     #[serde(default)]
     pub root_directory: Option<String>,
+    /// User-provided environment variables to merge into the build environment
+    #[serde(default)]
+    pub env_vars: Option<HashMap<String, String>>,
+    /// Override the auto-detected build command (e.g. "npm run build")
+    #[serde(default)]
+    pub build_command: Option<String>,
+    /// Override the auto-detected output directory (e.g. "dist", "build")
+    #[serde(default)]
+    pub output_directory: Option<String>,
 }
 
 pub async fn deploy_from_github(
@@ -800,6 +809,9 @@ pub async fn deploy_from_github(
     let url = request.url.trim().to_string();
     let branch = request.branch.as_deref().unwrap_or("main").to_string();
     let root_dir = request.root_directory.clone();
+    let env_vars = request.env_vars.clone();
+    let build_command = request.build_command.clone();
+    let output_directory = request.output_directory.clone();
 
     // Create a build session for SSE streaming
     let deploy_id = Uuid::new_v4().to_string();
@@ -823,6 +835,9 @@ pub async fn deploy_from_github(
             &url,
             &branch,
             root_dir.as_deref(),
+            env_vars.as_ref(),
+            build_command.as_deref(),
+            output_directory.as_deref(),
             &session_clone,
         )
         .await
@@ -981,8 +996,14 @@ pub async fn redeploy_github(
         .clone()
         .unwrap_or_else(|| "main".to_string());
     let root_dir = deployment.root_directory.clone();
+    let env_vars = deployment.env_vars.clone();
+    let build_command = deployment.build_command.clone();
+    let output_directory = deployment.output_directory.clone();
 
-    match deploy_github_project(&state, &repo_url, &branch, root_dir.as_deref()).await {
+    match deploy_github_project(
+        &state, &repo_url, &branch, root_dir.as_deref(),
+        env_vars.as_ref(), build_command.as_deref(), output_directory.as_deref(),
+    ).await {
         Ok(payload) => {
             state.deployments.remove(&cid);
             // Clean old deployment from Redis
@@ -1072,7 +1093,7 @@ pub async fn github_webhook(
     tracing::info!(repo = %repo_url, branch = %branch, "GitHub webhook: auto-redeploy triggered");
 
     // Find matching deployment
-    let (old_cid, root_dir) = {
+    let (old_cid, root_dir, env_vars, build_command, output_directory) = {
         let found = state.deployments
             .iter()
             .find(|r| {
@@ -1081,15 +1102,21 @@ pub async fn github_webhook(
                     && d.repo_url.as_deref() == Some(&repo_url)
                     && d.branch.as_deref() == Some(branch)
             })
-            .map(|r| (r.value().cid.clone(), r.value().root_directory.clone()));
+            .map(|r| {
+                let d = r.value();
+                (d.cid.clone(), d.root_directory.clone(), d.env_vars.clone(), d.build_command.clone(), d.output_directory.clone())
+            });
         match found {
-            Some((cid, root_dir)) => (Some(cid), root_dir),
-            None => (None, None),
+            Some((cid, root_dir, env_vars, build_command, output_directory)) => (Some(cid), root_dir, env_vars, build_command, output_directory),
+            None => (None, None, None, None, None),
         }
     };
 
     // Redeploy
-    match deploy_github_project(&state, &repo_url, branch, root_dir.as_deref()).await {
+    match deploy_github_project(
+        &state, &repo_url, branch, root_dir.as_deref(),
+        env_vars.as_ref(), build_command.as_deref(), output_directory.as_deref(),
+    ).await {
         Ok(payload) => {
             // Remove old deployment if exists
             if let Some(ref old_cid) = old_cid {
@@ -1820,6 +1847,9 @@ async fn deploy_github_project(
     url: &str,
     branch: &str,
     root_directory: Option<&str>,
+    env_vars: Option<&HashMap<String, String>>,
+    build_command: Option<&str>,
+    output_directory: Option<&str>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo_info =
         parse_github_url(url).ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
@@ -1889,7 +1919,8 @@ async fn deploy_github_project(
     };
 
     let build_outcome =
-        prepare_deploy_dir(&build_root).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        prepare_deploy_dir(&build_root, env_vars, build_command, output_directory)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let storage = state.storage.as_ref().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
@@ -1939,6 +1970,9 @@ async fn deploy_github_project(
         build_outcome.build_status,
         Some(build_outcome.build_logs),
         root_directory.map(|s| s.to_string()),
+        env_vars.cloned(),
+        build_command.map(|s| s.to_string()),
+        output_directory.map(|s| s.to_string()),
     );
 
     // Auto-assign .shadow domain
@@ -1981,6 +2015,9 @@ async fn deploy_github_project_streaming(
     url: &str,
     branch: &str,
     root_directory: Option<&str>,
+    env_vars: Option<&HashMap<String, String>>,
+    build_command: Option<&str>,
+    output_directory: Option<&str>,
     session: &Arc<BuildSession>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo_info =
@@ -2040,8 +2077,17 @@ async fn deploy_github_project_streaming(
     // Run build in blocking thread, streaming logs to session
     let build_root_clone = build_root.clone();
     let session_clone = Arc::clone(session);
+    let env_vars_clone = env_vars.cloned();
+    let build_command_owned = build_command.map(|s| s.to_string());
+    let output_directory_owned = output_directory.map(|s| s.to_string());
     let build_outcome = tokio::task::spawn_blocking(move || {
-        prepare_deploy_dir_streaming(&build_root_clone, &session_clone)
+        prepare_deploy_dir_streaming(
+            &build_root_clone,
+            &session_clone,
+            env_vars_clone.as_ref(),
+            build_command_owned.as_deref(),
+            output_directory_owned.as_deref(),
+        )
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Build task failed: {}", e)))?
@@ -2085,6 +2131,9 @@ async fn deploy_github_project_streaming(
         branch.to_string(), Some(url.to_string()),
         build_outcome.build_status, Some(build_outcome.build_logs),
         root_directory.map(|s| s.to_string()),
+        env_vars.cloned(),
+        build_command.map(|s| s.to_string()),
+        output_directory.map(|s| s.to_string()),
     );
 
     deployment.domain = crate::auto_assign_domain(state, &repo_info.repo, &cid).await;
@@ -2275,46 +2324,66 @@ fn ensure_nextjs_static_export(root: &Path) {
     }
 }
 
-fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
+fn prepare_deploy_dir(
+    root: &Path,
+    env_vars: Option<&HashMap<String, String>>,
+    build_command: Option<&str>,
+    output_directory: Option<&str>,
+) -> Result<BuildOutcome, String> {
     let framework = detect_framework(root);
     let package_json = root.join("package.json");
 
-    if package_json.exists() {
+    // Determine if we should run a build: either a custom build command was
+    // provided, or the project has a build script in package.json.
+    let has_build_script = if package_json.exists() {
         let pkg_contents = std::fs::read_to_string(&package_json).ok();
         let pkg_json = pkg_contents
             .as_ref()
             .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok());
-
-        let has_build_script = pkg_json
+        pkg_json
             .as_ref()
             .and_then(|v| v.get("scripts"))
             .and_then(|s| s.get("build"))
-            .is_some();
+            .is_some()
+    } else {
+        false
+    };
 
-        if has_build_script {
+    if has_build_script || build_command.is_some() {
+        if package_json.exists() {
             // For Next.js: ensure static export is configured so `next build`
             // produces an `out/` directory with static HTML files.
             // Without this, Next.js only creates `.next/` (server mode).
             if framework == "Next.js" {
                 ensure_nextjs_static_export(root);
             }
+        }
 
-            // Detect package manager from lock files
-            let (pm, install_args, build_args) = detect_package_manager(root);
+        // Detect package manager from lock files
+        let (pm, install_args, build_args) = detect_package_manager(root);
 
-            // Collect only safe env vars to prevent leaking secrets to build scripts
-            let mut safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
-                .iter()
-                .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
-                .collect();
+        // Collect only safe env vars to prevent leaking secrets to build scripts
+        let mut safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
+            .iter()
+            .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
+            .collect();
 
-            // Nuxt 3: force static preset so `nuxi build` produces .output/public/
-            if framework == "Nuxt" {
-                safe_env.push(("NITRO_PRESET".to_string(), "static".to_string()));
+        // Nuxt 3: force static preset so `nuxi build` produces .output/public/
+        if framework == "Nuxt" {
+            safe_env.push(("NITRO_PRESET".to_string(), "static".to_string()));
+        }
+
+        // Merge user-provided env vars
+        if let Some(user_env) = env_vars {
+            for (k, v) in user_env {
+                safe_env.push((k.clone(), v.clone()));
             }
+        }
 
-            let mut logs = format!("Detected framework: {} ({})\n\n", framework, pm);
+        let mut logs = format!("Detected framework: {} ({})\n\n", framework, pm);
 
+        // Only run install if package.json exists
+        if package_json.exists() {
             let install_cmd = format!("$ {} {}", pm, install_args.join(" "));
             logs.push_str(&install_cmd);
             logs.push('\n');
@@ -2325,7 +2394,26 @@ fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
             if !output.status.success() {
                 return Err(format!("{} install failed\n{}", pm, trim_logs(&logs)));
             }
+        }
 
+        // Use custom build command if provided, otherwise auto-detected
+        if let Some(custom_cmd) = build_command {
+            let build_cmd_display = format!("$ {}", custom_cmd);
+            logs.push_str(&format!("\n{}\n", build_cmd_display));
+            // Parse the custom command: first token is the program, rest are args
+            let parts: Vec<&str> = custom_cmd.split_whitespace().collect();
+            if parts.is_empty() {
+                return Err("Empty build command".to_string());
+            }
+            let output = run_cmd_with_timeout(
+                parts[0], &parts[1..], root, &safe_env, BUILD_TIMEOUT_SECS,
+            )?;
+            logs.push_str(&String::from_utf8_lossy(&output.stdout));
+            logs.push_str(&String::from_utf8_lossy(&output.stderr));
+            if !output.status.success() {
+                return Err(format!("Custom build command failed\n{}", trim_logs(&logs)));
+            }
+        } else {
             let build_cmd = format!("$ {} {}", pm, build_args.join(" "));
             logs.push_str(&format!("\n{}\n", build_cmd));
             let output =
@@ -2335,30 +2423,47 @@ fn prepare_deploy_dir(root: &Path) -> Result<BuildOutcome, String> {
             if !output.status.success() {
                 return Err(format!("{} build failed\n{}", pm, trim_logs(&logs)));
             }
+        }
 
-            // Check all known output directories
-            for dir_name in OUTPUT_DIRS {
-                // Skip 'public' for Next.js — it's the static assets dir, not build output
-                if *dir_name == "public" && framework == "Next.js" {
-                    continue;
-                }
-                let dir = root.join(dir_name);
-                if dir.exists() && dir.is_dir() {
-                    logs.push_str(&format!("\nOutput directory: {}/\n", dir_name));
-                    return Ok(BuildOutcome {
-                        deploy_root: dir,
-                        build_status: format!("Built ({})", framework),
-                        build_logs: trim_logs(&logs),
-                    });
-                }
+        // Use custom output directory if provided
+        if let Some(custom_out) = output_directory {
+            let dir = root.join(custom_out);
+            if dir.exists() && dir.is_dir() {
+                logs.push_str(&format!("\nOutput directory: {}/\n", custom_out));
+                return Ok(BuildOutcome {
+                    deploy_root: dir,
+                    build_status: format!("Built ({})", framework),
+                    build_logs: trim_logs(&logs),
+                });
             }
-
             return Err(format!(
-                "Build finished but no output folder found.\nLooked for: {}\n{}",
-                OUTPUT_DIRS.join(", "),
-                trim_logs(&logs)
+                "Custom output directory '{}' not found after build.\n{}",
+                custom_out, trim_logs(&logs)
             ));
         }
+
+        // Check all known output directories
+        for dir_name in OUTPUT_DIRS {
+            // Skip 'public' for Next.js — it's the static assets dir, not build output
+            if *dir_name == "public" && framework == "Next.js" {
+                continue;
+            }
+            let dir = root.join(dir_name);
+            if dir.exists() && dir.is_dir() {
+                logs.push_str(&format!("\nOutput directory: {}/\n", dir_name));
+                return Ok(BuildOutcome {
+                    deploy_root: dir,
+                    build_status: format!("Built ({})", framework),
+                    build_logs: trim_logs(&logs),
+                });
+            }
+        }
+
+        return Err(format!(
+            "Build finished but no output folder found.\nLooked for: {}\n{}",
+            OUTPUT_DIRS.join(", "),
+            trim_logs(&logs)
+        ));
     }
 
     // No package.json or no build script — check for static site generators
@@ -2481,40 +2586,59 @@ fn run_cmd_streaming(
 }
 
 /// Streaming variant of prepare_deploy_dir that pushes log lines to a BuildSession.
-fn prepare_deploy_dir_streaming(root: &Path, session: &Arc<BuildSession>) -> Result<BuildOutcome, String> {
+fn prepare_deploy_dir_streaming(
+    root: &Path,
+    session: &Arc<BuildSession>,
+    env_vars: Option<&HashMap<String, String>>,
+    build_command: Option<&str>,
+    output_directory: Option<&str>,
+) -> Result<BuildOutcome, String> {
     let framework = detect_framework(root);
     let package_json = root.join("package.json");
 
-    if package_json.exists() {
+    // Determine if we should run a build: either a custom build command was
+    // provided, or the project has a build script in package.json.
+    let has_build_script = if package_json.exists() {
         let pkg_contents = std::fs::read_to_string(&package_json).ok();
         let pkg_json = pkg_contents
             .as_ref()
             .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok());
-
-        let has_build_script = pkg_json
+        pkg_json
             .as_ref()
             .and_then(|v| v.get("scripts"))
             .and_then(|s| s.get("build"))
-            .is_some();
+            .is_some()
+    } else {
+        false
+    };
 
-        if has_build_script {
-            if framework == "Next.js" {
-                ensure_nextjs_static_export(root);
+    if has_build_script || build_command.is_some() {
+        if package_json.exists() && framework == "Next.js" {
+            ensure_nextjs_static_export(root);
+        }
+
+        let (pm, install_args, build_args) = detect_package_manager(root);
+
+        let mut safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
+            .iter()
+            .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
+            .collect();
+
+        if framework == "Nuxt" {
+            safe_env.push(("NITRO_PRESET".to_string(), "static".to_string()));
+        }
+
+        // Merge user-provided env vars
+        if let Some(user_env) = env_vars {
+            for (k, v) in user_env {
+                safe_env.push((k.clone(), v.clone()));
             }
+        }
 
-            let (pm, install_args, build_args) = detect_package_manager(root);
+        session.push_log(&format!("Detected framework: {} ({})", framework, pm));
 
-            let mut safe_env: Vec<(String, String)> = BUILD_ENV_ALLOWLIST
-                .iter()
-                .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
-                .collect();
-
-            if framework == "Nuxt" {
-                safe_env.push(("NITRO_PRESET".to_string(), "static".to_string()));
-            }
-
-            session.push_log(&format!("Detected framework: {} ({})", framework, pm));
-
+        // Only run install if package.json exists
+        if package_json.exists() {
             let install_cmd = format!("$ {} {}", pm, install_args.join(" "));
             session.push_log(&install_cmd);
             let mut logs = format!("{}\n", install_cmd);
@@ -2524,7 +2648,28 @@ fn prepare_deploy_dir_streaming(root: &Path, session: &Arc<BuildSession>) -> Res
             if !success {
                 return Err(format!("{} install failed", pm));
             }
+        }
 
+        let mut logs = String::new();
+
+        // Use custom build command if provided, otherwise auto-detected
+        if let Some(custom_cmd) = build_command {
+            let build_cmd_display = format!("$ {}", custom_cmd);
+            session.push_log(&build_cmd_display);
+            logs.push_str(&format!("\n{}\n", build_cmd_display));
+            // Parse the custom command: first token is the program, rest are args
+            let parts: Vec<&str> = custom_cmd.split_whitespace().collect();
+            if parts.is_empty() {
+                return Err("Empty build command".to_string());
+            }
+            let owned_args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+            let arg_refs: Vec<&str> = owned_args.iter().map(|s| s.as_str()).collect();
+            let (success, output) = run_cmd_streaming(parts[0], &arg_refs, root, &safe_env, BUILD_TIMEOUT_SECS, session)?;
+            logs.push_str(&output);
+            if !success {
+                return Err("Custom build command failed".to_string());
+            }
+        } else {
             let build_cmd = format!("$ {} {}", pm, build_args.join(" "));
             session.push_log(&build_cmd);
             logs.push_str(&format!("\n{}\n", build_cmd));
@@ -2534,27 +2679,44 @@ fn prepare_deploy_dir_streaming(root: &Path, session: &Arc<BuildSession>) -> Res
             if !success {
                 return Err(format!("{} build failed", pm));
             }
+        }
 
-            for dir_name in OUTPUT_DIRS {
-                if *dir_name == "public" && framework == "Next.js" {
-                    continue;
-                }
-                let dir = root.join(dir_name);
-                if dir.exists() && dir.is_dir() {
-                    session.push_log(&format!("Output directory: {}/", dir_name));
-                    return Ok(BuildOutcome {
-                        deploy_root: dir,
-                        build_status: format!("Built ({})", framework),
-                        build_logs: trim_logs(&logs),
-                    });
-                }
+        // Use custom output directory if provided
+        if let Some(custom_out) = output_directory {
+            let dir = root.join(custom_out);
+            if dir.exists() && dir.is_dir() {
+                session.push_log(&format!("Output directory: {}/", custom_out));
+                return Ok(BuildOutcome {
+                    deploy_root: dir,
+                    build_status: format!("Built ({})", framework),
+                    build_logs: trim_logs(&logs),
+                });
             }
-
             return Err(format!(
-                "Build finished but no output folder found. Looked for: {}",
-                OUTPUT_DIRS.join(", ")
+                "Custom output directory '{}' not found after build.",
+                custom_out
             ));
         }
+
+        for dir_name in OUTPUT_DIRS {
+            if *dir_name == "public" && framework == "Next.js" {
+                continue;
+            }
+            let dir = root.join(dir_name);
+            if dir.exists() && dir.is_dir() {
+                session.push_log(&format!("Output directory: {}/", dir_name));
+                return Ok(BuildOutcome {
+                    deploy_root: dir,
+                    build_status: format!("Built ({})", framework),
+                    build_logs: trim_logs(&logs),
+                });
+            }
+        }
+
+        return Err(format!(
+            "Build finished but no output folder found. Looked for: {}",
+            OUTPUT_DIRS.join(", ")
+        ));
     }
 
     if root.join("index.html").exists() {
@@ -2602,6 +2764,15 @@ pub struct Deployment {
     /// Subdirectory within the repo containing the project (e.g. "frontend")
     #[serde(default)]
     pub root_directory: Option<String>,
+    /// User-provided environment variables used during the build
+    #[serde(default)]
+    pub env_vars: Option<HashMap<String, String>>,
+    /// Custom build command override (e.g. "npm run build")
+    #[serde(default)]
+    pub build_command: Option<String>,
+    /// Custom output directory override (e.g. "dist")
+    #[serde(default)]
+    pub output_directory: Option<String>,
 }
 
 impl Deployment {
@@ -2620,6 +2791,9 @@ impl Deployment {
             status: "Ready".to_string(),
             domain: None,
             root_directory: None,
+            env_vars: None,
+            build_command: None,
+            output_directory: None,
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -2633,6 +2807,9 @@ impl Deployment {
         build_status: String,
         build_logs: Option<String>,
         root_directory: Option<String>,
+        env_vars: Option<HashMap<String, String>>,
+        build_command: Option<String>,
+        output_directory: Option<String>,
     ) -> Self {
         Self {
             name,
@@ -2648,6 +2825,9 @@ impl Deployment {
             status: "Ready".to_string(),
             domain: None,
             root_directory,
+            env_vars,
+            build_command,
+            output_directory,
         }
     }
 
@@ -2746,6 +2926,9 @@ mod tests {
             "Built".into(),
             Some("build logs here".into()),
             None,
+            None,
+            None,
+            None,
         );
         assert_eq!(d.source, "github");
         assert_eq!(d.branch, Some("main".to_string()));
@@ -2771,6 +2954,9 @@ mod tests {
             "Skipped".into(),
             None,
             Some("packages/frontend".into()),
+            None,
+            None,
+            None,
         );
         assert!(d.repo_url.is_none());
         assert!(d.build_logs.is_none());
@@ -2804,6 +2990,9 @@ mod tests {
             "Built".into(),
             Some("npm install\nnpm run build".into()),
             Some("packages/web".into()),
+            None,
+            None,
+            None,
         );
 
         let json_str = serde_json::to_string(&original).unwrap();

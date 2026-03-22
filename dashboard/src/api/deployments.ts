@@ -1,6 +1,15 @@
 import { apiFetch, apiPost, apiDelete, apiUpload } from './client';
 import type { Deployment, DeployResponse, DeployLogsResponse, AsyncDeployResponse } from './types';
 
+export interface DeployGithubOptions {
+  url: string;
+  branch: string;
+  rootDirectory?: string;
+  envVars?: Record<string, string>;
+  buildCommand?: string;
+  outputDirectory?: string;
+}
+
 export const deployments = {
   list: () => apiFetch<Deployment[]>('/api/deployments'),
 
@@ -17,11 +26,16 @@ export const deployments = {
       ...(rootDirectory ? { root_directory: rootDirectory } : {}),
     }),
 
-  deployGithubAsync: (url: string, branch: string, rootDirectory?: string) =>
+  deployGithubAsync: (opts: DeployGithubOptions) =>
     apiPost<AsyncDeployResponse>('/api/deploy/github', {
-      url,
-      branch,
-      ...(rootDirectory ? { root_directory: rootDirectory } : {}),
+      url: opts.url,
+      branch: opts.branch,
+      ...(opts.rootDirectory ? { root_directory: opts.rootDirectory } : {}),
+      ...(opts.envVars && Object.keys(opts.envVars).length > 0
+        ? { env_vars: opts.envVars }
+        : {}),
+      ...(opts.buildCommand ? { build_command: opts.buildCommand } : {}),
+      ...(opts.outputDirectory ? { output_directory: opts.outputDirectory } : {}),
     }),
 
   remove: (cid: string) =>
