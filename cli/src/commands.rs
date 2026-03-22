@@ -1,10 +1,14 @@
 //! Command execution and output formatting.
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
+use std::io::Write;
 use std::path::Path;
+use walkdir::WalkDir;
+use zip::write::SimpleFileOptions;
 
 use crate::client::NodeClient;
+use crate::gateway_client::GatewayClient;
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -526,6 +530,313 @@ pub async fn shutdown(client: &NodeClient, json: bool) -> Result<()> {
     }
 
     println!("{}", val["message"].as_str().unwrap_or("Shutdown initiated"));
+
+    Ok(())
+}
+
+// ── Deploy (zip + upload) ───────────────────────────────────────────
+
+/// Directories to skip when creating the deploy ZIP.
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    ".shadowmesh",
+    "target",
+    "dist",
+    "build",
+    ".next",
+];
+
+/// Create an in-memory ZIP of `dir`, excluding common build artifacts.
+fn create_deploy_zip(dir: &Path) -> Result<Vec<u8>> {
+    let dir = dir
+        .canonicalize()
+        .with_context(|| format!("Directory not found: {}", dir.display()))?;
+
+    let buf = std::io::Cursor::new(Vec::new());
+    let mut zip_writer = zip::ZipWriter::new(buf);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    let mut file_count: usize = 0;
+
+    for entry in WalkDir::new(&dir).into_iter().filter_entry(|e| {
+        // Skip excluded directories
+        if e.file_type().is_dir() {
+            if let Some(name) = e.file_name().to_str() {
+                return !SKIP_DIRS.contains(&name);
+            }
+        }
+        true
+    }) {
+        let entry = entry?;
+        let abs_path = entry.path();
+        let rel_path = abs_path
+            .strip_prefix(&dir)
+            .unwrap_or(abs_path)
+            .to_string_lossy()
+            .to_string();
+
+        // Skip the root directory itself
+        if rel_path.is_empty() {
+            continue;
+        }
+
+        if entry.file_type().is_dir() {
+            zip_writer.add_directory(&format!("{}/", rel_path), options)?;
+        } else {
+            zip_writer.start_file(&rel_path, options)?;
+            let data = std::fs::read(abs_path)
+                .with_context(|| format!("Failed to read file: {}", abs_path.display()))?;
+            zip_writer.write_all(&data)?;
+            file_count += 1;
+        }
+    }
+
+    let cursor = zip_writer.finish()?;
+    let zip_bytes = cursor.into_inner();
+
+    if file_count == 0 {
+        bail!("No files found in directory: {}", dir.display());
+    }
+
+    println!(
+        "Zipped {} file(s) ({})",
+        file_count,
+        format_bytes(zip_bytes.len() as u64)
+    );
+
+    Ok(zip_bytes)
+}
+
+pub async fn deploy(
+    gateway: &GatewayClient,
+    dir: &Path,
+    name: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let dir_name = name
+        .map(|s| s.to_string())
+        .or_else(|| {
+            dir.canonicalize()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        })
+        .unwrap_or_else(|| "deploy".to_string());
+
+    println!("Deploying \"{}\" ...", dir_name);
+
+    let zip_data = create_deploy_zip(dir)?;
+
+    println!("Uploading to gateway...");
+    let val = gateway.deploy_zip(zip_data).await?;
+
+    if json {
+        print_json(&val);
+        return Ok(());
+    }
+
+    let success = val["success"].as_bool().unwrap_or(false);
+    if !success {
+        let err = val["error"].as_str().unwrap_or("Unknown error");
+        bail!("Deploy failed: {}", err);
+    }
+
+    println!("\nDeployment successful!");
+    println!("  CID:        {}", val["cid"].as_str().unwrap_or("-"));
+    println!("  URL:        {}", val["url"].as_str().unwrap_or("-"));
+    println!("  IPFS:       {}", val["ipfs_url"].as_str().unwrap_or("-"));
+    println!("  Shadow:     {}", val["shadow_url"].as_str().unwrap_or("-"));
+    println!(
+        "  Files:      {}",
+        val["file_count"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "  Size:       {}",
+        format_bytes(val["total_size"].as_u64().unwrap_or(0))
+    );
+
+    Ok(())
+}
+
+// ── Deploy from GitHub ──────────────────────────────────────────────
+
+pub async fn deploy_github(
+    gateway: &GatewayClient,
+    url: &str,
+    branch: &str,
+    root_dir: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    println!("Deploying from GitHub: {} (branch: {})", url, branch);
+    if let Some(rd) = root_dir {
+        println!("  Root directory: {}", rd);
+    }
+
+    let val = gateway.deploy_github(url, branch, root_dir).await?;
+
+    if json {
+        print_json(&val);
+        return Ok(());
+    }
+
+    let deploy_id = val["deploy_id"].as_str().unwrap_or("");
+    let stream_url = val["stream_url"].as_str().unwrap_or("");
+
+    if deploy_id.is_empty() || stream_url.is_empty() {
+        // Synchronous response — show result directly
+        let success = val["success"].as_bool().unwrap_or(false);
+        if !success {
+            let err = val["error"].as_str().unwrap_or("Unknown error");
+            bail!("Deploy failed: {}", err);
+        }
+        println!("\nDeployment successful!");
+        println!("  CID: {}", val["cid"].as_str().unwrap_or("-"));
+        println!("  URL: {}", val["url"].as_str().unwrap_or("-"));
+        return Ok(());
+    }
+
+    println!("  Deploy ID: {}", deploy_id);
+    println!("\nBuild logs:");
+
+    gateway.stream_build_logs(stream_url).await?;
+
+    Ok(())
+}
+
+// ── List Deployments ────────────────────────────────────────────────
+
+pub async fn deployments(gateway: &GatewayClient, json: bool) -> Result<()> {
+    let items = gateway.list_deployments().await?;
+
+    if json {
+        print_json(&Value::Array(items));
+        return Ok(());
+    }
+
+    if items.is_empty() {
+        println!("No deployments found.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<24} {:<20} {:>10} {:>6} {:<12} {}",
+        "CID", "NAME", "SIZE", "FILES", "STATUS", "CREATED"
+    );
+
+    for item in &items {
+        let cid = truncate(item["cid"].as_str().unwrap_or("-"), 21);
+        let name = truncate(item["name"].as_str().unwrap_or("-"), 17);
+        let size = format_bytes(item["size"].as_u64().unwrap_or(0));
+        let files = item["file_count"].as_u64().unwrap_or(0);
+        let status = item["status"].as_str().unwrap_or("-");
+        let created = item["created_at"].as_str().unwrap_or("-");
+        println!(
+            "{:<24} {:<20} {:>10} {:>6} {:<12} {}",
+            cid, name, size, files, status, created
+        );
+    }
+
+    println!("\n{} deployment(s)", items.len());
+
+    Ok(())
+}
+
+// ── Init (framework detection) ──────────────────────────────────────
+
+/// Framework detection rules: (glob patterns to check, framework name, build command, output dir).
+const FRAMEWORKS: &[(&[&str], &str, &str, &str)] = &[
+    (
+        &["next.config.js", "next.config.ts", "next.config.mjs"],
+        "Next.js",
+        "npm run build",
+        ".next",
+    ),
+    (
+        &["vite.config.ts", "vite.config.js", "vite.config.mjs"],
+        "Vite",
+        "npm run build",
+        "dist",
+    ),
+    (
+        &["nuxt.config.ts", "nuxt.config.js"],
+        "Nuxt",
+        "npm run build",
+        ".output",
+    ),
+    (
+        &["svelte.config.js", "svelte.config.ts"],
+        "SvelteKit",
+        "npm run build",
+        "build",
+    ),
+    (
+        &["astro.config.mjs", "astro.config.ts"],
+        "Astro",
+        "npm run build",
+        "dist",
+    ),
+    (&["angular.json"], "Angular", "npm run build", "dist"),
+    (
+        &["gatsby-config.js", "gatsby-config.ts"],
+        "Gatsby",
+        "npm run build",
+        "public",
+    ),
+    (
+        &["package.json"],
+        "Node.js",
+        "npm run build",
+        "dist",
+    ),
+    (
+        &["index.html"],
+        "Static HTML",
+        "(none)",
+        ".",
+    ),
+];
+
+pub async fn init() -> Result<()> {
+    let cwd = std::env::current_dir().context("Cannot determine current directory")?;
+
+    println!("ShadowMesh Project Init");
+    println!("  Directory: {}", cwd.display());
+
+    let mut detected: Option<(&str, &str, &str)> = None;
+
+    for (files, name, build_cmd, output_dir) in FRAMEWORKS {
+        for file in *files {
+            if cwd.join(file).exists() {
+                detected = Some((name, build_cmd, output_dir));
+                break;
+            }
+        }
+        if detected.is_some() {
+            break;
+        }
+    }
+
+    match detected {
+        Some((framework, build_cmd, output_dir)) => {
+            println!("\n  Detected framework: {}", framework);
+            println!("\n  Deploy configuration:");
+            println!("    Build command:  {}", build_cmd);
+            println!("    Output dir:     {}", output_dir);
+            println!("\n  To deploy, run:");
+            if output_dir == "." {
+                println!("    shadowmesh-cli deploy");
+            } else {
+                println!("    shadowmesh-cli deploy {}", output_dir);
+            }
+            println!("\n  Or deploy via GitHub:");
+            println!("    shadowmesh-cli deploy-github <repo-url> --branch main");
+        }
+        None => {
+            println!("\n  No known framework detected.");
+            println!("  You can still deploy any directory:");
+            println!("    shadowmesh-cli deploy .");
+        }
+    }
 
     Ok(())
 }

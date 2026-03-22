@@ -6,6 +6,7 @@ use std::process;
 
 use shadowmesh_cli::client::NodeClient;
 use shadowmesh_cli::commands;
+use shadowmesh_cli::gateway_client::GatewayClient;
 
 #[derive(Parser)]
 #[command(name = "shadowmesh-cli", about = "ShadowMesh node management CLI")]
@@ -13,6 +14,10 @@ struct Cli {
     /// Node API base URL
     #[arg(long, default_value = "http://127.0.0.1:3030", global = true)]
     node_url: String,
+
+    /// Gateway API base URL (for deploy commands)
+    #[arg(long, default_value = "http://localhost:8081", global = true)]
+    gateway_url: String,
 
     /// Output raw JSON instead of formatted text
     #[arg(long, global = true)]
@@ -127,12 +132,46 @@ enum Command {
 
     /// Gracefully shutdown the node
     Shutdown,
+
+    // ── Deploy commands ─────────────────────────────────────────────
+
+    /// Deploy a directory to ShadowMesh (zip and upload)
+    Deploy {
+        /// Directory to deploy (defaults to current directory)
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+
+        /// Deployment name (defaults to directory name)
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+
+    /// Deploy a GitHub repository to ShadowMesh
+    DeployGithub {
+        /// GitHub repository URL
+        url: String,
+
+        /// Branch to deploy
+        #[arg(short, long, default_value = "main")]
+        branch: String,
+
+        /// Subdirectory within the repo containing the project
+        #[arg(short, long)]
+        root_dir: Option<String>,
+    },
+
+    /// List all deployments
+    Deployments,
+
+    /// Detect framework in current directory and show deploy config
+    Init,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     let client = NodeClient::new(&cli.node_url);
+    let gateway = GatewayClient::new(&cli.gateway_url);
     let json = cli.json;
 
     let result = match cli.command {
@@ -165,6 +204,16 @@ async fn main() {
         Command::Bandwidth => commands::bandwidth(&client, json).await,
         Command::Replication => commands::replication(&client, json).await,
         Command::Shutdown => commands::shutdown(&client, json).await,
+
+        // Deploy commands
+        Command::Deploy { dir, name } => commands::deploy(&gateway, &dir, name.as_deref(), json).await,
+        Command::DeployGithub {
+            url,
+            branch,
+            root_dir,
+        } => commands::deploy_github(&gateway, &url, &branch, root_dir.as_deref(), json).await,
+        Command::Deployments => commands::deployments(&gateway, json).await,
+        Command::Init => commands::init().await,
     };
 
     if let Err(e) = result {

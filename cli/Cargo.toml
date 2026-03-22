@@ -18,6 +18,8 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+zip = "2.2"
+walkdir = "2"
 
 [dev-dependencies]
 node-runner = { path = "../node-runner" }
