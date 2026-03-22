@@ -162,11 +162,29 @@ impl CircuitBreakerConfig {
 pub struct DeployConfig {
     /// Maximum deployment size in MB
     pub max_size_mb: u64,
+    /// Enable build dependency caching between deploys
+    #[serde(default = "default_build_cache_enabled")]
+    pub build_cache_enabled: bool,
+    /// Directory for storing cached node_modules
+    #[serde(default = "default_build_cache_dir")]
+    pub build_cache_dir: String,
+    /// Maximum total cache size in GB before eviction
+    #[serde(default = "default_build_cache_max_gb")]
+    pub build_cache_max_gb: u64,
 }
+
+fn default_build_cache_enabled() -> bool { true }
+fn default_build_cache_dir() -> String { "/tmp/shadowmesh-build-cache".to_string() }
+fn default_build_cache_max_gb() -> u64 { 10 }
 
 impl Default for DeployConfig {
     fn default() -> Self {
-        Self { max_size_mb: 100 }
+        Self {
+            max_size_mb: 100,
+            build_cache_enabled: default_build_cache_enabled(),
+            build_cache_dir: default_build_cache_dir(),
+            build_cache_max_gb: default_build_cache_max_gb(),
+        }
     }
 }
 

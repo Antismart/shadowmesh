@@ -130,6 +130,10 @@ pub struct AppState {
     /// Maps code -> (jwt_string, created_at).  Codes expire after 60 seconds
     /// and are single-use (deleted on exchange).
     pub auth_codes: Arc<RwLock<std::collections::HashMap<String, (String, Instant)>>>,
+    /// Per-CID request counters for deployment analytics
+    pub per_cid_requests: Arc<DashMap<String, std::sync::atomic::AtomicU64>>,
+    /// Per-CID bytes served counters for deployment analytics
+    pub per_cid_bytes: Arc<DashMap<String, std::sync::atomic::AtomicU64>>,
 }
 
 /// Build a Router with just the content-serving routes.
@@ -214,6 +218,27 @@ pub async fn ipfs_content_path_handler(
     }
 }
 
+/// Extract the root CID from a content path that may include a subpath
+/// (e.g. "QmXXX/index.html" -> "QmXXX").
+fn root_cid(cid: &str) -> &str {
+    cid.split('/').next().unwrap_or(cid)
+}
+
+/// Record per-CID analytics (requests + bytes).
+fn record_per_cid(state: &AppState, cid: &str, bytes: u64) {
+    let root = root_cid(cid);
+    state
+        .per_cid_requests
+        .entry(root.to_string())
+        .or_default()
+        .fetch_add(1, Ordering::Relaxed);
+    state
+        .per_cid_bytes
+        .entry(root.to_string())
+        .or_default()
+        .fetch_add(bytes, Ordering::Relaxed);
+}
+
 // Unified content fetching logic with circuit breaker protection
 pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<String>) -> Response {
     state.metrics.increment_requests();
@@ -223,6 +248,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
     if let Some((data, content_type)) = state.cache.get(&cid) {
         state.metrics.increment_success();
         state.metrics.add_bytes(data.len() as u64);
+        record_per_cid(state, &cid, data.len() as u64);
         metrics::record_cache_hit();
         return (
             [
@@ -263,7 +289,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
                         .command_tx
                         .send(p2p_commands::P2pCommand::AnnounceContent {
                             content_hash: cid.clone(),
-                            fragment_hashes: vec![cid],
+                            fragment_hashes: vec![cid.clone()],
                             total_size: data.len() as u64,
                             mime_type: content_type.clone(),
                         })
@@ -272,6 +298,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
 
                 state.metrics.increment_success();
                 state.metrics.add_bytes(data.len() as u64);
+                record_per_cid(state, &cid, data.len() as u64);
                 metrics::record_bytes_served(data.len() as u64);
 
                 return (
@@ -336,6 +363,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
 
                     state.metrics.increment_success();
                     state.metrics.add_bytes(data.len() as u64);
+                    record_per_cid(state, &cid, data.len() as u64);
                     metrics::record_bytes_served(data.len() as u64);
 
                     return (
@@ -363,6 +391,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
 
                     state.metrics.increment_success();
                     state.metrics.add_bytes(streaming.content_length);
+                    record_per_cid(state, &cid, streaming.content_length);
                     metrics::record_bytes_served(streaming.content_length);
 
                     let body = Body::from_stream(streaming.stream);
@@ -437,7 +466,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
                         .command_tx
                         .send(p2p_commands::P2pCommand::AnnounceContent {
                             content_hash: cid.clone(),
-                            fragment_hashes: vec![cid],
+                            fragment_hashes: vec![cid.clone()],
                             total_size: data.len() as u64,
                             mime_type: content_type.clone(),
                         })
@@ -447,6 +476,7 @@ pub async fn fetch_content(state: &AppState, cid: String, base_prefix: Option<St
 
             state.metrics.increment_success();
             state.metrics.add_bytes(data.len() as u64);
+            record_per_cid(state, &cid, data.len() as u64);
             metrics::record_bytes_served(data.len() as u64);
 
             (

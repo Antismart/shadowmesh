@@ -2074,6 +2074,9 @@ async fn deploy_github_project_streaming(
         temp_dir.path().to_path_buf()
     };
 
+    // Read deploy config before entering blocking thread
+    let deploy_config = state.config.read().await.deploy.clone();
+
     // Run build in blocking thread, streaming logs to session
     let build_root_clone = build_root.clone();
     let session_clone = Arc::clone(session);
@@ -2087,6 +2090,7 @@ async fn deploy_github_project_streaming(
             env_vars_clone.as_ref(),
             build_command_owned.as_deref(),
             output_directory_owned.as_deref(),
+            &deploy_config,
         )
     })
     .await
@@ -2180,6 +2184,212 @@ const BUILD_ENV_ALLOWLIST: &[&str] = &[
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "NODE_ENV",
     "npm_config_cache", "npm_config_loglevel",
 ];
+
+// ── Build cache helpers ──────────────────────────────────────────────
+
+/// Lockfile names in priority order (matches detect_package_manager order).
+const LOCKFILE_NAMES: &[&str] = &[
+    "bun.lockb",
+    "bun.lock",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "package-lock.json",
+];
+
+/// Compute a BLAKE3 hash of the first lockfile found in the project root.
+/// Returns `None` if no lockfile exists.
+fn compute_lockfile_hash(root: &Path) -> Option<String> {
+    for name in LOCKFILE_NAMES {
+        let path = root.join(name);
+        if path.exists() {
+            if let Ok(contents) = std::fs::read(&path) {
+                let hash = blake3::hash(&contents);
+                return Some(hash.to_hex().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Restore cached node_modules into the build directory.
+/// Returns `true` if the cache was restored successfully.
+fn restore_build_cache(
+    cache_dir: &Path,
+    cache_key: &str,
+    build_root: &Path,
+    session: &Arc<BuildSession>,
+) -> bool {
+    let cached_nm = cache_dir.join(cache_key).join("node_modules");
+    if !cached_nm.exists() || !cached_nm.is_dir() {
+        session.push_log("Build cache: miss (no cached node_modules for this lockfile)");
+        return false;
+    }
+    session.push_log("Restoring cached dependencies...");
+    let dest = build_root.join("node_modules");
+    match copy_dir_recursive(&cached_nm, &dest) {
+        Ok(()) => {
+            session.push_log("Build cache: restored successfully");
+            // Update mtime on the cache entry so LRU eviction works correctly
+            let cache_entry = cache_dir.join(cache_key);
+            let _ = filetime::set_file_mtime(
+                &cache_entry,
+                filetime::FileTime::now(),
+            );
+            true
+        }
+        Err(e) => {
+            session.push_log(&format!("Build cache: restore failed ({}), continuing without cache", e));
+            // Clean up partial copy
+            let _ = std::fs::remove_dir_all(&dest);
+            false
+        }
+    }
+}
+
+/// Save node_modules to the build cache after a successful install.
+fn save_build_cache(
+    cache_dir: &Path,
+    cache_key: &str,
+    build_root: &Path,
+    max_gb: u64,
+    session: &Arc<BuildSession>,
+) {
+    let source = build_root.join("node_modules");
+    if !source.exists() || !source.is_dir() {
+        return;
+    }
+    session.push_log("Saving dependencies to cache...");
+
+    let cache_entry = cache_dir.join(cache_key);
+    let dest = cache_entry.join("node_modules");
+
+    // Create parent directory
+    if let Err(e) = std::fs::create_dir_all(&cache_entry) {
+        session.push_log(&format!("Build cache: failed to create cache directory ({})", e));
+        return;
+    }
+
+    // Remove previous cache entry for this key if it exists
+    if dest.exists() {
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    match copy_dir_recursive(&source, &dest) {
+        Ok(()) => {
+            session.push_log("Build cache: saved successfully");
+        }
+        Err(e) => {
+            session.push_log(&format!("Build cache: save failed ({})", e));
+            let _ = std::fs::remove_dir_all(&dest);
+            return;
+        }
+    }
+
+    // Run eviction if total cache exceeds the limit
+    evict_build_cache(cache_dir, max_gb, session);
+}
+
+/// Remove oldest cache entries (by mtime) until total size is under the limit.
+fn evict_build_cache(cache_dir: &Path, max_gb: u64, session: &Arc<BuildSession>) {
+    let max_bytes = max_gb * 1024 * 1024 * 1024;
+
+    // Collect cache entries with their mtime and size
+    let entries = match std::fs::read_dir(cache_dir) {
+        Ok(rd) => rd,
+        Err(_) => return,
+    };
+
+    let mut entry_info: Vec<(PathBuf, std::time::SystemTime, u64)> = Vec::new();
+    let mut total_size: u64 = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let size = dir_size_bytes(&path);
+        total_size += size;
+        entry_info.push((path, mtime, size));
+    }
+
+    if total_size <= max_bytes {
+        return;
+    }
+
+    // Sort by mtime ascending (oldest first)
+    entry_info.sort_by_key(|(_, mtime, _)| *mtime);
+
+    let mut evicted = 0u64;
+    for (path, _, size) in &entry_info {
+        if total_size <= max_bytes {
+            break;
+        }
+        if let Err(e) = std::fs::remove_dir_all(path) {
+            session.push_log(&format!(
+                "Build cache: failed to evict {} ({})",
+                path.display(),
+                e
+            ));
+            continue;
+        }
+        total_size -= size;
+        evicted += size;
+    }
+
+    if evicted > 0 {
+        session.push_log(&format!(
+            "Build cache: evicted {:.1} MB to stay under {} GB limit",
+            evicted as f64 / (1024.0 * 1024.0),
+            max_gb,
+        ));
+    }
+}
+
+/// Recursively compute the total size in bytes of a directory.
+fn dir_size_bytes(path: &Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                total += dir_size_bytes(&entry.path());
+            } else {
+                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            }
+        }
+    }
+    total
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest_path)?;
+        } else if ft.is_symlink() {
+            let target = std::fs::read_link(entry.path())?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &dest_path)?;
+            #[cfg(not(unix))]
+            std::fs::copy(entry.path(), &dest_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dest_path)?;
+        }
+    }
+    Ok(())
+}
 
 /// Detect the package manager from lock files in priority order.
 /// Returns (binary_name, install_args, build_args).
@@ -2592,6 +2802,7 @@ fn prepare_deploy_dir_streaming(
     env_vars: Option<&HashMap<String, String>>,
     build_command: Option<&str>,
     output_directory: Option<&str>,
+    deploy_config: &crate::config::DeployConfig,
 ) -> Result<BuildOutcome, String> {
     let framework = detect_framework(root);
     let package_json = root.join("package.json");
@@ -2637,6 +2848,27 @@ fn prepare_deploy_dir_streaming(
 
         session.push_log(&format!("Detected framework: {} ({})", framework, pm));
 
+        // ── Build cache: compute key and attempt restore ────────────
+        let cache_key = if deploy_config.build_cache_enabled {
+            compute_lockfile_hash(root)
+        } else {
+            None
+        };
+        let cache_dir = PathBuf::from(&deploy_config.build_cache_dir);
+        let _cache_restored = if let Some(ref key) = cache_key {
+            if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                session.push_log(&format!("Build cache: cannot create cache dir ({})", e));
+                false
+            } else {
+                restore_build_cache(&cache_dir, key, root, session)
+            }
+        } else {
+            if deploy_config.build_cache_enabled {
+                session.push_log("Build cache: skipped (no lockfile found)");
+            }
+            false
+        };
+
         // Only run install if package.json exists
         if package_json.exists() {
             let install_cmd = format!("$ {} {}", pm, install_args.join(" "));
@@ -2647,6 +2879,11 @@ fn prepare_deploy_dir_streaming(
             logs.push_str(&output);
             if !success {
                 return Err(format!("{} install failed", pm));
+            }
+
+            // ── Build cache: save after successful install ──────────
+            if let Some(ref key) = cache_key {
+                save_build_cache(&cache_dir, key, root, deploy_config.build_cache_max_gb, session);
             }
         }
 

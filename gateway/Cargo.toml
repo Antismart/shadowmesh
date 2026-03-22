@@ -75,6 +75,9 @@ subtle = "2.6"
 # SSE streaming for real-time build logs
 async-stream = "0.3"
 
+# File mtime manipulation for build cache eviction
+filetime = "0.2"
+
 # Lock-free concurrent hash map
 dashmap = "6"
 
