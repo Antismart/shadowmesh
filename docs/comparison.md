@@ -4,26 +4,26 @@ An honest comparison of ShadowMesh against other content delivery and hosting pl
 
 ## Feature Comparison Table
 
-| Feature | ShadowMesh | Vercel | Fleek | Pinata | 4EVERLAND |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Decentralized hosting | Yes | No | Partial | No | Partial |
-| Privacy / onion routing | Yes | No | No | No | No |
-| Content-addressed (CID) | Yes | No | Yes | Yes | Yes |
-| Censorship detection | Yes | No | No | No | No |
-| .shadow naming (DHT) | Yes | No | No | No | No |
-| ENS integration | Yes | No | Yes | No | Yes |
-| WebRTC P2P delivery | Yes | No | No | No | No |
-| Global edge CDN | No | Yes | No | No | Partial |
-| Serverless functions | No | Yes | No | No | Yes |
-| Polished UI / DX | Basic | Excellent | Good | Good | Good |
-| Git-push deploys | Yes | Yes | Yes | No | Yes |
-| Custom domains (DNS) | No (use .shadow / ENS) | Yes | Yes | N/A | Yes |
-| Free tier | Self-host | Yes | Yes | Yes | Yes |
-| Open source | Yes (MIT) | Partial | Partial | No | Partial |
-| Encrypted storage | Yes (ChaCha20-Poly1305) | No | No | No | No |
-| Content fragmentation | Yes | No | No | No | No |
-| Rate limiting / bandwidth tracking | Built-in | Platform-managed | Platform-managed | Plan-based | Platform-managed |
-| WASM browser SDK | Yes | N/A | No | No | No |
+| Feature | ShadowMesh | Vercel | Pinata | 4EVERLAND |
+|---|:---:|:---:|:---:|:---:|
+| Decentralized hosting | Yes | No | No | Partial |
+| Privacy / onion routing | Yes | No | No | No |
+| Content-addressed (CID) | Yes | No | Yes | Yes |
+| Censorship detection | Yes | No | No | No |
+| .shadow naming (DHT) | Yes | No | No | No |
+| ENS integration | Yes | No | No | Yes |
+| WebRTC P2P delivery | Yes | No | No | No |
+| Global edge CDN | No | Yes | No | Partial |
+| Serverless functions | No | Yes | No | Yes |
+| Polished UI / DX | Good | Excellent | Good | Good |
+| Git-push deploys | Yes | Yes | No | Yes |
+| Custom domains (DNS) | No (use .shadow / ENS) | Yes | N/A | Yes |
+| Free tier | Self-host | Yes | Yes | Yes |
+| Open source | Yes (MIT) | Partial | No | Partial |
+| Encrypted storage | Yes (ChaCha20-Poly1305) | No | No | No |
+| Content fragmentation | Yes | No | No | No |
+| Rate limiting / bandwidth tracking | Built-in | Platform-managed | Plan-based | Platform-managed |
+| WASM browser SDK | Yes | N/A | No | No |
 
 ## Detailed Comparisons
 
@@ -48,21 +48,11 @@ Vercel is the gold standard for frontend DX: `git push`, preview deploys, server
 
 ### ShadowMesh vs Fleek
 
-Fleek is the closest competitor in spirit -- both target decentralized web hosting. Fleek deploys to IPFS and offers ENS integration, a CLI, and a dashboard.
+> **Note (March 2026):** Fleek has pivoted away from decentralized web hosting. They no longer offer app deployment or IPFS hosting as a product. The comparison below is retained for historical context but Fleek is no longer a direct competitor.
 
-**Where ShadowMesh wins:**
-- True privacy layer. Fleek deploys to IPFS through centralized infrastructure (their own build servers, Cloudflare IPFS gateway). ShadowMesh adds onion routing so no single hop sees the full picture.
-- Censorship detection is built into the routing layer. If a path to a peer starts getting blocked, the adaptive router reroutes automatically.
-- WebRTC P2P means browsers can fetch content directly from other browsers or nodes without touching a gateway.
-- .shadow naming is fully DHT-native with no DNS dependency. Fleek still depends on DNS for its dashboard and build pipeline.
+Fleek previously targeted decentralized web hosting with IPFS deploys, ENS integration, and a dashboard. ShadowMesh differs in architecture: onion routing for privacy, DHT-native naming, censorship detection, and WebRTC P2P delivery — none of which Fleek offered even when they were active in the space.
 
-**Where Fleek wins:**
-- More mature product with a larger user base.
-- Better build pipeline: framework detection, environment variables, build caching.
-- Managed IPFS pinning -- you do not have to run your own infrastructure.
-- Better documentation and onboarding flow.
-
-**Bottom line:** Fleek is decentralized at the storage layer but centralized at the build and delivery layers. ShadowMesh is decentralized end-to-end but less polished.
+With Fleek's exit, the decentralized hosting space has fewer options, making ShadowMesh's approach more relevant for teams that need censorship-resistant static hosting.
 
 ### ShadowMesh vs Pinata
 
