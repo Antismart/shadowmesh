@@ -1,6 +1,7 @@
 //! Commands sent from API handlers to the P2P event loop.
 
 use libp2p::PeerId;
+use shadowmesh_protocol::adaptive_routing::FailureType;
 use tokio::sync::oneshot;
 
 /// Commands that API handlers can send to the P2P event loop.
@@ -45,6 +46,17 @@ pub enum P2pCommand {
         total_size: u64,
         fragment_count: u32,
         mime_type: String,
+    },
+
+    /// Report a censorship event from an external source (e.g. API handler).
+    ///
+    /// Feeds the failure into the adaptive router's censorship detection so that
+    /// the path to the given peer can be marked as suspected/confirmed blocked.
+    ReportCensorship {
+        /// The peer whose path is experiencing censorship-like failures.
+        peer_id: PeerId,
+        /// The type of failure observed.
+        failure_type: FailureType,
     },
 }
 
