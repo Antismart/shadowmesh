@@ -28,6 +28,8 @@ pub struct BuildSession {
     pub status: std::sync::Mutex<BuildSessionStatus>,
     pub result: std::sync::Mutex<Option<serde_json::Value>>,
     pub notify: tokio::sync::broadcast::Sender<BuildEvent>,
+    /// When this session was created (for TTL-based cleanup).
+    pub created_at: std::time::Instant,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -52,6 +54,7 @@ impl BuildSession {
                 status: std::sync::Mutex::new(BuildSessionStatus::Building),
                 result: std::sync::Mutex::new(None),
                 notify: tx,
+                created_at: std::time::Instant::now(),
             },
             rx,
         )
@@ -68,8 +71,20 @@ impl BuildSession {
     }
 
     pub fn complete(&self, result: serde_json::Value) {
-        *self.status.lock().unwrap() = BuildSessionStatus::Succeeded;
-        *self.result.lock().unwrap() = Some(result.clone());
+        match self.status.lock() {
+            Ok(mut s) => *s = BuildSessionStatus::Succeeded,
+            Err(e) => {
+                tracing::warn!("BuildSession status lock poisoned in complete(), recovering");
+                *e.into_inner() = BuildSessionStatus::Succeeded;
+            }
+        }
+        match self.result.lock() {
+            Ok(mut r) => *r = Some(result.clone()),
+            Err(e) => {
+                tracing::warn!("BuildSession result lock poisoned in complete(), recovering");
+                *e.into_inner() = Some(result.clone());
+            }
+        }
         let _ = self.notify.send(BuildEvent {
             event_type: "complete".to_string(),
             data: result.to_string(),
@@ -77,8 +92,21 @@ impl BuildSession {
     }
 
     pub fn fail(&self, error: &str) {
-        *self.status.lock().unwrap() = BuildSessionStatus::Failed;
-        *self.result.lock().unwrap() = Some(json!({"success": false, "error": error}));
+        let error_value = json!({"success": false, "error": error});
+        match self.status.lock() {
+            Ok(mut s) => *s = BuildSessionStatus::Failed,
+            Err(e) => {
+                tracing::warn!("BuildSession status lock poisoned in fail(), recovering");
+                *e.into_inner() = BuildSessionStatus::Failed;
+            }
+        }
+        match self.result.lock() {
+            Ok(mut r) => *r = Some(error_value),
+            Err(e) => {
+                tracing::warn!("BuildSession result lock poisoned in fail(), recovering");
+                *e.into_inner() = Some(json!({"success": false, "error": error}));
+            }
+        }
         let _ = self.notify.send(BuildEvent {
             event_type: "error".to_string(),
             data: error.to_string(),
@@ -850,9 +878,27 @@ pub async fn deploy_stream(
     };
 
     // Get buffered logs and subscribe for new events
-    let buffered = session.logs.lock().unwrap().clone();
-    let status = session.status.lock().unwrap().clone();
-    let result = session.result.lock().unwrap().clone();
+    let buffered = match session.logs.lock() {
+        Ok(l) => l.clone(),
+        Err(e) => {
+            tracing::warn!("BuildSession logs lock poisoned, recovering");
+            e.into_inner().clone()
+        }
+    };
+    let status = match session.status.lock() {
+        Ok(s) => s.clone(),
+        Err(e) => {
+            tracing::warn!("BuildSession status lock poisoned, recovering");
+            e.into_inner().clone()
+        }
+    };
+    let result = match session.result.lock() {
+        Ok(r) => r.clone(),
+        Err(e) => {
+            tracing::warn!("BuildSession result lock poisoned, recovering");
+            e.into_inner().clone()
+        }
+    };
     let mut rx = session.notify.subscribe();
 
     let stream = async_stream::stream! {
@@ -1221,10 +1267,12 @@ pub async fn github_login(
     let csrf_state = Uuid::new_v4().to_string();
     {
         let mut states = write_lock(&state.github_oauth_states);
-        // Evict expired states and cap to prevent unbounded growth
+        // Always evict expired states (>10 min) to prevent unbounded growth.
+        let cutoff = std::time::Duration::from_secs(600);
+        states.retain(|_, (created, _)| created.elapsed() <= cutoff);
+        // Hard cap as a safety net after eviction.
         if states.len() >= 10_000 {
-            let cutoff = std::time::Duration::from_secs(600);
-            states.retain(|_, (created, _)| created.elapsed() <= cutoff);
+            tracing::warn!(count = states.len(), "OAuth state map at capacity after eviction");
         }
         states.insert(csrf_state.clone(), (std::time::Instant::now(), params.redirect_to));
     }
@@ -1376,8 +1424,11 @@ pub async fn github_callback(
         user: user.clone(),
     });
 
-    // If an auth secret is configured, issue a JWT and redirect with it.
-    // This lets the dashboard work across multiple gateways.
+    // If an auth secret is configured, issue a JWT and redirect with a
+    // short-lived authorization code instead of embedding the JWT in the
+    // URL.  The dashboard exchanges the code for the JWT via a POST to
+    // /api/github/exchange, keeping the token out of browser history,
+    // Referer headers, and server access logs.
     if let Some(secret) = crate::jwt::auth_secret() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1394,9 +1445,21 @@ pub async fn github_callback(
         };
 
         if let Ok(jwt) = crate::jwt::encode(&claims, &secret) {
+            // Store a single-use auth code that maps to this JWT.
+            let auth_code = Uuid::new_v4().to_string();
+            {
+                let mut codes = write_lock(&state.auth_codes);
+                // Evict expired codes (>60 s old) and cap to prevent unbounded growth.
+                if codes.len() >= 10_000 {
+                    let cutoff = std::time::Duration::from_secs(60);
+                    codes.retain(|_, (_, created)| created.elapsed() <= cutoff);
+                }
+                codes.insert(auth_code.clone(), (jwt, std::time::Instant::now()));
+            }
+
             let base = redirect_to.as_deref().unwrap_or("/");
             let sep = if base.contains('?') { "&" } else { "?" };
-            let target = format!("{base}{sep}token={jwt}");
+            let target = format!("{base}{sep}code={auth_code}");
             return Redirect::to(&target).into_response();
         }
     }
@@ -1404,6 +1467,46 @@ pub async fn github_callback(
     // Fallback: redirect to dashboard origin or "/" (legacy same-gateway flow)
     let target = redirect_to.as_deref().unwrap_or("/");
     Redirect::to(target).into_response()
+}
+
+// ── Auth code exchange endpoint ─────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ExchangeCodeRequest {
+    pub code: String,
+}
+
+/// POST /api/github/exchange
+/// Exchange a short-lived authorization code for the JWT.
+/// The code is single-use and expires after 60 seconds.
+pub async fn exchange_auth_code(
+    State(state): State<AppState>,
+    Json(body): Json<ExchangeCodeRequest>,
+) -> impl IntoResponse {
+    let mut codes = write_lock(&state.auth_codes);
+
+    // Evict expired codes on every call to bound memory growth.
+    let cutoff = std::time::Duration::from_secs(60);
+    codes.retain(|_, (_, created)| created.elapsed() <= cutoff);
+
+    match codes.remove(&body.code) {
+        Some((jwt, created)) => {
+            if created.elapsed() > cutoff {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"success": false, "error": "Authorization code expired"})),
+                )
+                    .into_response()
+            } else {
+                Json(json!({"success": true, "token": jwt})).into_response()
+            }
+        }
+        None => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"success": false, "error": "Invalid or already-used authorization code"})),
+        )
+            .into_response(),
+    }
 }
 
 /// Extract GitHub auth from server-side state or a JWT Bearer token.
@@ -1896,7 +1999,7 @@ async fn deploy_github_project_streaming(
     url: &str,
     branch: &str,
     root_directory: Option<&str>,
-    session: &BuildSession,
+    session: &Arc<BuildSession>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo_info =
         parse_github_url(url).ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
@@ -1954,12 +2057,9 @@ async fn deploy_github_project_streaming(
 
     // Run build in blocking thread, streaming logs to session
     let build_root_clone = build_root.clone();
-    let session_ptr = session as *const BuildSession;
-    // SAFETY: session lives for the duration of this function, and spawn_blocking completes before we return
-    let session_addr = session_ptr as usize;
+    let session_clone = Arc::clone(session);
     let build_outcome = tokio::task::spawn_blocking(move || {
-        let session = unsafe { &*(session_addr as *const BuildSession) };
-        prepare_deploy_dir_streaming(&build_root_clone, session)
+        prepare_deploy_dir_streaming(&build_root_clone, &session_clone)
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Build task failed: {}", e)))?
@@ -2328,7 +2428,7 @@ fn run_cmd_streaming(
     dir: &Path,
     env: &[(String, String)],
     timeout_secs: u64,
-    session: &BuildSession,
+    session: &Arc<BuildSession>,
 ) -> Result<(bool, String), String> {
     use std::io::BufRead;
     use std::process::Stdio;
@@ -2343,34 +2443,32 @@ fn run_cmd_streaming(
         .spawn()
         .map_err(|e| format!("Failed to spawn {}: {}", cmd, e))?;
 
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = child.stdout.take()
+        .ok_or_else(|| format!("Failed to capture stdout from {}", cmd))?;
+    let stderr = child.stderr.take()
+        .ok_or_else(|| format!("Failed to capture stderr from {}", cmd))?;
 
     // Collect output for build logs while also streaming to session
-    let session_ptr = session as *const BuildSession;
-    let session_addr = session_ptr as usize;
-
+    let session_out = Arc::clone(session);
     let out_handle = std::thread::spawn(move || {
-        let session = unsafe { &*(session_addr as *const BuildSession) };
         let reader = std::io::BufReader::new(stdout);
         let mut lines = Vec::new();
         for line in reader.lines() {
             if let Ok(line) = line {
-                session.push_log(&line);
+                session_out.push_log(&line);
                 lines.push(line);
             }
         }
         lines.join("\n")
     });
 
-    let session_addr2 = session_ptr as usize;
+    let session_err = Arc::clone(session);
     let err_handle = std::thread::spawn(move || {
-        let session = unsafe { &*(session_addr2 as *const BuildSession) };
         let reader = std::io::BufReader::new(stderr);
         let mut lines = Vec::new();
         for line in reader.lines() {
             if let Ok(line) = line {
-                session.push_log(&line);
+                session_err.push_log(&line);
                 lines.push(line);
             }
         }
@@ -2406,7 +2504,7 @@ fn run_cmd_streaming(
 }
 
 /// Streaming variant of prepare_deploy_dir that pushes log lines to a BuildSession.
-fn prepare_deploy_dir_streaming(root: &Path, session: &BuildSession) -> Result<BuildOutcome, String> {
+fn prepare_deploy_dir_streaming(root: &Path, session: &Arc<BuildSession>) -> Result<BuildOutcome, String> {
     let framework = detect_framework(root);
     let package_json = root.join("package.json");
 
