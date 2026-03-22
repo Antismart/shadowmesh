@@ -71,7 +71,11 @@ tracing-wasm = "0.2"
 # Crypto (for content hashing/verification)
 blake3 = "1.8"
 
-# Secure random (fallback when Web Crypto API unavailable)
+# Authenticated encryption for DataChannel messages
+chacha20poly1305 = "0.10"
+
+# Secure random — the `js` feature delegates to crypto.getRandomValues()
+# in browser and Web Worker contexts (no insecure fallback)
 getrandom = { version = "0.2", features = ["js"] }
 
 # Encoding (for fragment data in JSON messages)

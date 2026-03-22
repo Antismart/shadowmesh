@@ -25,6 +25,7 @@
 use wasm_bindgen::prelude::*;
 
 mod client;
+pub mod crypto;
 mod error;
 pub mod naming;
 mod signaling;

@@ -1,5 +1,16 @@
 //! WebRTC peer connection management
+//!
+//! Every DataChannel message is encrypted with ChaCha20-Poly1305 using a
+//! symmetric key derived from both peer IDs (see [`crate::crypto`]).
+//!
+//! When a DataChannel opens the two sides exchange encrypted handshake
+//! frames that contain their peer IDs. Each side verifies the ID matches
+//! the one learned from signaling; if verification fails the connection
+//! is closed immediately.
 
+use crate::crypto::{
+    build_handshake, decrypt_data, encrypt_data, verify_handshake, DataChannelCipher,
+};
 use crate::error::{codes, SdkError};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -17,6 +28,7 @@ pub enum WebRtcState {
     New,
     Connecting,
     Connected,
+    Authenticated,
     Disconnected,
     Failed,
 }
@@ -24,41 +36,56 @@ pub enum WebRtcState {
 /// Type alias for ICE candidate callback
 type IceCandidateCallback = Rc<RefCell<Option<Box<dyn Fn(String, Option<String>, Option<u16>)>>>>;
 
-/// Type alias for message callback
+/// Type alias for message callback (receives *decrypted* application data)
 type MessageCallback = Rc<RefCell<Option<Box<dyn Fn(Vec<u8>)>>>>;
 
-/// WebRTC peer connection wrapper
+/// WebRTC peer connection wrapper with ChaCha20-Poly1305 encryption.
 pub struct WebRtcConnection {
     pc: RtcPeerConnection,
     data_channel: Rc<RefCell<Option<RtcDataChannel>>>,
     state: Rc<RefCell<WebRtcState>>,
     on_ice_candidate: IceCandidateCallback,
     on_message: MessageCallback,
+
+    // ── Encryption state ────────────────────────────────────────────────
+    /// ChaCha20-Poly1305 cipher derived from the two peer IDs.
+    cipher: Rc<DataChannelCipher>,
+    /// The local peer ID (used in the handshake frame).
+    local_peer_id: String,
+    /// The expected remote peer ID (from signaling).
+    expected_remote_id: Rc<RefCell<String>>,
+    /// Whether the remote peer has been authenticated via handshake.
+    peer_authenticated: Rc<RefCell<bool>>,
 }
 
 impl WebRtcConnection {
-    /// Create a new WebRTC connection
-    pub fn new(stun_servers: &[String]) -> Result<Self, SdkError> {
+    /// Create a new WebRTC connection.
+    ///
+    /// `local_peer_id`  – our own peer ID.
+    /// `remote_peer_id` – the peer ID we expect on the other end (from signaling).
+    /// `stun_servers`    – list of STUN server URIs for ICE.
+    pub fn new(
+        local_peer_id: &str,
+        remote_peer_id: &str,
+        stun_servers: &[String],
+    ) -> Result<Self, SdkError> {
         // Create RTC configuration with STUN servers
         let config = RtcConfiguration::new();
 
-        // Create ICE servers array
         let ice_servers = js_sys::Array::new();
         for server in stun_servers {
             let ice_server = js_sys::Object::new();
-            js_sys::Reflect::set(&ice_server, &"urls".into(), &JsValue::from_str(server)).map_err(
-                |e| {
+            js_sys::Reflect::set(&ice_server, &"urls".into(), &JsValue::from_str(server))
+                .map_err(|e| {
                     SdkError::new(
                         codes::WEBRTC_ERROR,
                         &format!("Failed to set ICE server: {:?}", e),
                     )
-                },
-            )?;
+                })?;
             ice_servers.push(&ice_server);
         }
         config.set_ice_servers(&ice_servers);
 
-        // Create peer connection
         let pc = RtcPeerConnection::new_with_configuration(&config).map_err(|e| {
             SdkError::new(
                 codes::WEBRTC_ERROR,
@@ -67,11 +94,21 @@ impl WebRtcConnection {
         })?;
 
         let state = Rc::new(RefCell::new(WebRtcState::New));
-        let data_channel = Rc::new(RefCell::new(None));
+        let data_channel: Rc<RefCell<Option<RtcDataChannel>>> = Rc::new(RefCell::new(None));
         let on_ice_candidate: IceCandidateCallback = Rc::new(RefCell::new(None));
         let on_message: MessageCallback = Rc::new(RefCell::new(None));
 
-        // Set up ICE candidate handler
+        // Derive encryption key from sorted peer IDs.
+        let cipher = Rc::new(DataChannelCipher::from_peer_ids(
+            local_peer_id,
+            remote_peer_id,
+        ));
+        let peer_authenticated = Rc::new(RefCell::new(false));
+        let expected_remote_id = Rc::new(RefCell::new(remote_peer_id.to_string()));
+
+        // -----------------------------------------------------------------
+        // ICE candidate handler
+        // -----------------------------------------------------------------
         let on_ice = on_ice_candidate.clone();
         let onicecandidate = Closure::wrap(Box::new(move |e: RtcPeerConnectionIceEvent| {
             if let Some(candidate) = e.candidate() {
@@ -87,13 +124,28 @@ impl WebRtcConnection {
         pc.set_onicecandidate(Some(onicecandidate.as_ref().unchecked_ref()));
         onicecandidate.forget();
 
-        // Set up data channel handler (for answering peer)
+        // -----------------------------------------------------------------
+        // ondatachannel handler (answering / receiving side)
+        // -----------------------------------------------------------------
         let dc_ref = data_channel.clone();
         let state_dc = state.clone();
         let on_msg = on_message.clone();
+        let cipher_dc = cipher.clone();
+        let local_id_dc = local_peer_id.to_string();
+        let expected_dc = expected_remote_id.clone();
+        let auth_dc = peer_authenticated.clone();
+
         let ondatachannel = Closure::wrap(Box::new(move |e: RtcDataChannelEvent| {
             let channel = e.channel();
-            Self::setup_data_channel_handlers(&channel, state_dc.clone(), on_msg.clone());
+            Self::setup_data_channel_handlers(
+                &channel,
+                state_dc.clone(),
+                on_msg.clone(),
+                cipher_dc.clone(),
+                local_id_dc.clone(),
+                expected_dc.clone(),
+                auth_dc.clone(),
+            );
             *dc_ref.borrow_mut() = Some(channel);
         }) as Box<dyn FnMut(_)>);
         pc.set_ondatachannel(Some(ondatachannel.as_ref().unchecked_ref()));
@@ -105,23 +157,53 @@ impl WebRtcConnection {
             state,
             on_ice_candidate,
             on_message,
+            cipher,
+            local_peer_id: local_peer_id.to_string(),
+            expected_remote_id,
+            peer_authenticated,
         })
     }
 
-    /// Set up data channel event handlers
+    // -----------------------------------------------------------------
+    // Data-channel event wiring (shared by initiator & answerer)
+    // -----------------------------------------------------------------
     fn setup_data_channel_handlers(
         channel: &RtcDataChannel,
         state: Rc<RefCell<WebRtcState>>,
         on_message: MessageCallback,
+        cipher: Rc<DataChannelCipher>,
+        local_peer_id: String,
+        expected_remote_id: Rc<RefCell<String>>,
+        peer_authenticated: Rc<RefCell<bool>>,
     ) {
+        // ── onopen: send handshake ──────────────────────────────────────
         let state_open = state.clone();
+        let cipher_open = cipher.clone();
+        let local_id_open = local_peer_id.clone();
+        // We need a handle to the channel inside the closure to send the
+        // handshake.  Clone the JS reference via `.clone()`.
+        let channel_for_open = channel.clone();
+
         let onopen = Closure::wrap(Box::new(move |_: web_sys::Event| {
             *state_open.borrow_mut() = WebRtcState::Connected;
-            tracing::info!("DataChannel opened");
+            tracing::info!("DataChannel opened – sending encrypted handshake");
+
+            // Build and send the handshake frame.
+            match build_handshake(&cipher_open, &local_id_open) {
+                Ok(hs_frame) => {
+                    if let Err(e) = channel_for_open.send_with_u8_array(&hs_frame) {
+                        tracing::error!("Failed to send handshake: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to build handshake: {}", e);
+                }
+            }
         }) as Box<dyn FnMut(_)>);
         channel.set_onopen(Some(onopen.as_ref().unchecked_ref()));
         onopen.forget();
 
+        // ── onclose ─────────────────────────────────────────────────────
         let state_close = state.clone();
         let onclose = Closure::wrap(Box::new(move |_: web_sys::Event| {
             *state_close.borrow_mut() = WebRtcState::Disconnected;
@@ -130,6 +212,7 @@ impl WebRtcConnection {
         channel.set_onclose(Some(onclose.as_ref().unchecked_ref()));
         onclose.forget();
 
+        // ── onerror ─────────────────────────────────────────────────────
         let state_error = state.clone();
         let onerror = Closure::wrap(Box::new(move |_: web_sys::Event| {
             *state_error.borrow_mut() = WebRtcState::Failed;
@@ -138,13 +221,63 @@ impl WebRtcConnection {
         channel.set_onerror(Some(onerror.as_ref().unchecked_ref()));
         onerror.forget();
 
+        // ── onmessage: decrypt & demux ──────────────────────────────────
+        let cipher_msg = cipher.clone();
+        let expected_msg = expected_remote_id.clone();
+        let auth_msg = peer_authenticated.clone();
+        let state_msg = state.clone();
+        // Need a handle to close the channel on auth failure.
+        let channel_for_msg = channel.clone();
+
         let onmessage = Closure::wrap(Box::new(move |e: web_sys::MessageEvent| {
-            // Handle binary data
-            if let Ok(array_buffer) = e.data().dyn_into::<js_sys::ArrayBuffer>() {
-                let array = js_sys::Uint8Array::new(&array_buffer);
-                let data = array.to_vec();
-                if let Some(ref callback) = *on_message.borrow() {
-                    callback(data);
+            // Extract raw bytes from the JS MessageEvent.
+            let raw = if let Ok(buf) = e.data().dyn_into::<js_sys::ArrayBuffer>() {
+                js_sys::Uint8Array::new(&buf).to_vec()
+            } else {
+                return;
+            };
+
+            // If the peer is not yet authenticated, the first message MUST
+            // be a valid handshake frame.
+            if !*auth_msg.borrow() {
+                match verify_handshake(&cipher_msg, &raw) {
+                    Ok(remote_id) => {
+                        let expected = expected_msg.borrow();
+                        if remote_id != *expected {
+                            tracing::error!(
+                                "Peer authentication failed: expected '{}', got '{}'",
+                                *expected,
+                                remote_id
+                            );
+                            channel_for_msg.close();
+                            *state_msg.borrow_mut() = WebRtcState::Failed;
+                            return;
+                        }
+                        tracing::info!(
+                            "Peer '{}' authenticated via encrypted handshake",
+                            remote_id
+                        );
+                        *auth_msg.borrow_mut() = true;
+                        *state_msg.borrow_mut() = WebRtcState::Authenticated;
+                    }
+                    Err(e) => {
+                        tracing::error!("Handshake verification failed: {}", e);
+                        channel_for_msg.close();
+                        *state_msg.borrow_mut() = WebRtcState::Failed;
+                    }
+                }
+                return;
+            }
+
+            // Normal data frame – decrypt and deliver to application.
+            match decrypt_data(&cipher_msg, &raw) {
+                Ok(plaintext) => {
+                    if let Some(ref callback) = *on_message.borrow() {
+                        callback(plaintext);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to decrypt DataChannel message: {}", e);
                 }
             }
         }) as Box<dyn FnMut(_)>);
@@ -152,7 +285,11 @@ impl WebRtcConnection {
         onmessage.forget();
     }
 
-    /// Set ICE candidate callback
+    // -----------------------------------------------------------------
+    // Public API
+    // -----------------------------------------------------------------
+
+    /// Set ICE candidate callback.
     pub fn on_ice_candidate<F>(&self, callback: F)
     where
         F: Fn(String, Option<String>, Option<u16>) + 'static,
@@ -160,7 +297,7 @@ impl WebRtcConnection {
         *self.on_ice_candidate.borrow_mut() = Some(Box::new(callback));
     }
 
-    /// Set message received callback
+    /// Set message received callback (receives *decrypted* application data).
     pub fn on_message<F>(&self, callback: F)
     where
         F: Fn(Vec<u8>) + 'static,
@@ -168,16 +305,24 @@ impl WebRtcConnection {
         *self.on_message.borrow_mut() = Some(Box::new(callback));
     }
 
-    /// Create an offer (initiator)
+    /// Create an offer (initiator).
     pub async fn create_offer(&self) -> Result<String, SdkError> {
         *self.state.borrow_mut() = WebRtcState::Connecting;
 
-        // Create data channel
+        // Create data channel.
         let channel = self.pc.create_data_channel("shadowmesh");
-        Self::setup_data_channel_handlers(&channel, self.state.clone(), self.on_message.clone());
+        Self::setup_data_channel_handlers(
+            &channel,
+            self.state.clone(),
+            self.on_message.clone(),
+            self.cipher.clone(),
+            self.local_peer_id.clone(),
+            self.expected_remote_id.clone(),
+            self.peer_authenticated.clone(),
+        );
         *self.data_channel.borrow_mut() = Some(channel);
 
-        // Create offer
+        // Create offer.
         let offer = wasm_bindgen_futures::JsFuture::from(self.pc.create_offer())
             .await
             .map_err(|e| {
@@ -187,7 +332,6 @@ impl WebRtcConnection {
                 )
             })?;
 
-        // Set local description
         let offer_obj = offer.unchecked_into::<RtcSessionDescriptionInit>();
         wasm_bindgen_futures::JsFuture::from(self.pc.set_local_description(&offer_obj))
             .await
@@ -198,7 +342,6 @@ impl WebRtcConnection {
                 )
             })?;
 
-        // Get SDP string
         let local_desc = self
             .pc
             .local_description()
@@ -207,11 +350,10 @@ impl WebRtcConnection {
         Ok(local_desc.sdp())
     }
 
-    /// Create an answer (responder)
+    /// Create an answer (responder).
     pub async fn create_answer(&self, offer_sdp: &str) -> Result<String, SdkError> {
         *self.state.borrow_mut() = WebRtcState::Connecting;
 
-        // Set remote description (the offer)
         let remote_desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         remote_desc.set_sdp(offer_sdp);
         wasm_bindgen_futures::JsFuture::from(self.pc.set_remote_description(&remote_desc))
@@ -223,7 +365,6 @@ impl WebRtcConnection {
                 )
             })?;
 
-        // Create answer
         let answer = wasm_bindgen_futures::JsFuture::from(self.pc.create_answer())
             .await
             .map_err(|e| {
@@ -233,7 +374,6 @@ impl WebRtcConnection {
                 )
             })?;
 
-        // Set local description
         let answer_obj = answer.unchecked_into::<RtcSessionDescriptionInit>();
         wasm_bindgen_futures::JsFuture::from(self.pc.set_local_description(&answer_obj))
             .await
@@ -244,7 +384,6 @@ impl WebRtcConnection {
                 )
             })?;
 
-        // Get SDP string
         let local_desc = self
             .pc
             .local_description()
@@ -253,7 +392,7 @@ impl WebRtcConnection {
         Ok(local_desc.sdp())
     }
 
-    /// Set remote answer (for initiator)
+    /// Set remote answer (for initiator).
     pub async fn set_remote_answer(&self, answer_sdp: &str) -> Result<(), SdkError> {
         let remote_desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         remote_desc.set_sdp(answer_sdp);
@@ -268,7 +407,7 @@ impl WebRtcConnection {
         Ok(())
     }
 
-    /// Add ICE candidate
+    /// Add ICE candidate.
     pub async fn add_ice_candidate(
         &self,
         candidate: &str,
@@ -305,7 +444,10 @@ impl WebRtcConnection {
         Ok(())
     }
 
-    /// Send data over the data channel
+    /// Send application data over the encrypted DataChannel.
+    ///
+    /// The payload is wrapped in a `DATA_TAG` frame and encrypted with
+    /// ChaCha20-Poly1305 before transmission.
     pub fn send(&self, data: &[u8]) -> Result<(), SdkError> {
         let channel = self.data_channel.borrow();
         let channel = channel
@@ -316,24 +458,33 @@ impl WebRtcConnection {
             return Err(SdkError::new(codes::NOT_CONNECTED, "Data channel not open"));
         }
 
-        channel
-            .send_with_u8_array(data)
-            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Send failed: {:?}", e)))?;
+        // Encrypt the application payload.
+        let encrypted = encrypt_data(&self.cipher, data)?;
+
+        channel.send_with_u8_array(&encrypted).map_err(|e| {
+            SdkError::new(codes::WEBRTC_ERROR, &format!("Send failed: {:?}", e))
+        })?;
 
         Ok(())
     }
 
-    /// Get connection state
+    /// Get connection state.
     pub fn state(&self) -> WebRtcState {
         *self.state.borrow()
     }
 
-    /// Check if connected
+    /// Check if connected (DataChannel open, regardless of handshake).
     pub fn is_connected(&self) -> bool {
-        *self.state.borrow() == WebRtcState::Connected
+        let s = *self.state.borrow();
+        s == WebRtcState::Connected || s == WebRtcState::Authenticated
     }
 
-    /// Close the connection
+    /// Check if the remote peer has been authenticated via handshake.
+    pub fn is_authenticated(&self) -> bool {
+        *self.peer_authenticated.borrow()
+    }
+
+    /// Close the connection.
     pub fn close(&self) {
         if let Some(channel) = self.data_channel.borrow().as_ref() {
             channel.close();

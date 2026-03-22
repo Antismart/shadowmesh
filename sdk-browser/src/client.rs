@@ -230,8 +230,8 @@ impl ShadowMeshClient {
             return Ok(());
         }
 
-        // Create WebRTC connection
-        let conn = WebRtcConnection::new(&self.config.stun_servers)
+        // Create WebRTC connection with encryption derived from peer IDs
+        let conn = WebRtcConnection::new(&self.peer_id, peer_id, &self.config.stun_servers)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         // Set up ICE candidate handler
@@ -647,6 +647,7 @@ impl ShadowMeshClient {
         let stun_servers = self.config.stun_servers.clone();
         let pending = self.pending_fetches.clone();
         let cache = self.content_cache.clone();
+        let local_peer_id = self.peer_id.clone();
 
         // Take the message receiver from signaling (can only be called once)
         let rx = {
@@ -671,7 +672,7 @@ impl ShadowMeshClient {
                     }
                     SignalingMessage::Offer(offer) => {
                         tracing::info!("Received offer from peer {}", offer.from);
-                        let conn = match WebRtcConnection::new(&stun_servers) {
+                        let conn = match WebRtcConnection::new(&local_peer_id, &offer.from, &stun_servers) {
                             Ok(c) => c,
                             Err(e) => {
                                 tracing::error!("Failed to create WebRTC connection: {}", e);

@@ -68,4 +68,6 @@ pub mod codes {
     pub const INVALID_CONFIG: &str = "INVALID_CONFIG";
     pub const NOT_CONNECTED: &str = "NOT_CONNECTED";
     pub const INTEGRITY_ERROR: &str = "INTEGRITY_ERROR";
+    pub const CRYPTO_ERROR: &str = "CRYPTO_ERROR";
+    pub const AUTH_FAILED: &str = "AUTH_FAILED";
 }
