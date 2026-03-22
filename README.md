@@ -386,6 +386,12 @@ cargo bench -p benchmarks
 - [ ] Browser extension
 - [ ] IPFS pinning service integration
 
+### V2 Roadmap
+- [ ] WASM Edge Functions — deploy serverless functions alongside static content, sandboxed execution on gateway/node-runner nodes
+- [ ] API rewrites/proxy — route `/api/*` to external backends via deployment config
+- [ ] Build pipelines — custom multi-step build workflows
+- [ ] Team management & RBAC
+
 ## 🤝 Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
