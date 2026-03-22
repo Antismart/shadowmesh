@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { deployments as deploymentsApi } from '../api/deployments';
+import { names as namesApi } from '../api/names';
 import type { Deployment } from '../api/types';
 import StatusBadge from '../components/StatusBadge';
 import CopyButton from '../components/CopyButton';
 import BuildLogViewer from '../components/BuildLogViewer';
 import ConfirmDialog from '../components/ConfirmDialog';
 import LoadingSkeleton from '../components/LoadingSkeleton';
+import Modal from '../components/Modal';
 import { useToast } from '../context/ToastContext';
 
 function formatSize(bytes: number): string {
@@ -26,6 +28,11 @@ export default function DeploymentDetailPage() {
   const [showRedeploy, setShowRedeploy] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [redeploying, setRedeploying] = useState(false);
+
+  // Quick-assign domain state
+  const [showAssignDomain, setShowAssignDomain] = useState(false);
+  const [domainName, setDomainName] = useState('');
+  const [assigningDomain, setAssigningDomain] = useState(false);
 
   useEffect(() => {
     if (!cid) return;
@@ -66,6 +73,27 @@ export default function DeploymentDetailPage() {
       addToast('error', 'Failed to redeploy');
     } finally {
       setRedeploying(false);
+    }
+  };
+
+  const handleAssignDomain = async () => {
+    if (!cid || !domainName) return;
+    setAssigningDomain(true);
+    try {
+      const name = domainName.toLowerCase().replace(/[^a-z0-9-]/g, '').replace(/\.shadow$/, '');
+      await namesApi.assign(name, cid);
+      addToast('success', `${name}.shadow assigned to this deployment`);
+      setShowAssignDomain(false);
+      setDomainName('');
+      // Refresh deployment to pick up the new domain
+      const all = await deploymentsApi.list();
+      const updated = all.find((d) => d.cid === cid) ?? null;
+      if (updated) setDeployment(updated);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to assign domain';
+      addToast('error', msg);
+    } finally {
+      setAssigningDomain(false);
     }
   };
 
@@ -136,6 +164,15 @@ export default function DeploymentDetailPage() {
           <a href={previewUrl} target="_blank" rel="noopener noreferrer" className="btn-primary">
             Visit
           </a>
+          <button
+            onClick={() => setShowAssignDomain(true)}
+            className="btn-secondary inline-flex items-center gap-1.5"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418" />
+            </svg>
+            {deployment.domain ? 'Change Domain' : 'Assign Domain'}
+          </button>
           {deployment.source === 'github' && (
             <button onClick={() => setShowRedeploy(true)} disabled={redeploying} className="btn-secondary">
               Redeploy
@@ -166,16 +203,26 @@ export default function DeploymentDetailPage() {
               <CopyButton text={`${window.location.origin}${previewUrl}`} />
             </div>
           </div>
-          {deployment.domain && (
-            <div>
-              <p className="text-xs text-mesh-muted mb-1">Domain</p>
+          <div>
+            <p className="text-xs text-mesh-muted mb-1">Domain</p>
+            {deployment.domain ? (
               <div className="flex items-center gap-2">
                 <span className="text-sm font-mono text-mesh-accent">{deployment.domain}</span>
                 <CopyButton text={deployment.domain} />
-                <Link to="/domains" className="text-xs text-mesh-muted hover:text-mesh-text">Edit</Link>
+                <Link to="/domains" className="text-xs text-mesh-muted hover:text-mesh-text">Manage</Link>
               </div>
-            </div>
-          )}
+            ) : (
+              <button
+                onClick={() => setShowAssignDomain(true)}
+                className="text-sm text-mesh-accent hover:underline inline-flex items-center gap-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                </svg>
+                Assign a .shadow domain
+              </button>
+            )}
+          </div>
         </div>
         <div className="border border-mesh-border rounded-lg p-4 space-y-3">
           <div className="flex justify-between">
@@ -223,6 +270,89 @@ export default function DeploymentDetailPage() {
         confirmVariant="primary"
         loading={redeploying}
       />
+
+      {/* Quick Assign Domain Modal */}
+      <Modal
+        open={showAssignDomain}
+        onClose={() => { setShowAssignDomain(false); setDomainName(''); }}
+        title="Assign .shadow Domain"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-mesh-muted">
+            Give this deployment a memorable .shadow domain name. It will be accessible via the ShadowMesh network.
+          </p>
+
+          <div className="border border-mesh-border rounded-md p-3 bg-mesh-bg">
+            <div className="flex items-center gap-2 text-xs text-mesh-muted mb-1">
+              <span>Deployment:</span>
+              <span className="font-medium text-mesh-text">{deployment.name}</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-mesh-muted">
+              <span>CID:</span>
+              <code className="font-mono text-mesh-muted">{deployment.cid.slice(0, 24)}...</code>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs text-mesh-muted mb-1.5">Domain Name</label>
+            <div className="relative">
+              <input
+                type="text"
+                value={domainName}
+                onChange={(e) => setDomainName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+                placeholder={deployment.name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-')}
+                className="input w-full pr-16"
+                maxLength={63}
+                onKeyDown={(e) => e.key === 'Enter' && handleAssignDomain()}
+                autoFocus
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-mesh-muted font-mono">.shadow</span>
+            </div>
+            {domainName && (
+              <p className="text-xs text-mesh-muted mt-1.5">
+                Your site will be available at <span className="font-mono text-mesh-accent">{domainName}.shadow</span>
+              </p>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={() => { setShowAssignDomain(false); setDomainName(''); }}
+              className="btn-secondary"
+              disabled={assigningDomain}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleAssignDomain}
+              disabled={assigningDomain || !domainName}
+              className="btn-primary"
+            >
+              {assigningDomain ? (
+                <span className="flex items-center gap-2">
+                  <span className="w-3.5 h-3.5 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                  Assigning...
+                </span>
+              ) : (
+                'Assign Domain'
+              )}
+            </button>
+          </div>
+
+          <div className="pt-2 border-t border-mesh-border">
+            <Link
+              to="/domains"
+              className="text-xs text-mesh-muted hover:text-mesh-text transition-colors inline-flex items-center gap-1"
+              onClick={() => setShowAssignDomain(false)}
+            >
+              Manage all domains
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+              </svg>
+            </Link>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
