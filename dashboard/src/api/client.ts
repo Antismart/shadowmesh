@@ -65,6 +65,27 @@ export async function gatewayUrl(path: string): Promise<string> {
 
 const TOKEN_KEY = 'shadowmesh_auth_token';
 
+/** Listeners notified when the token is cleared due to expiry or a 401. */
+type AuthExpiredListener = () => void;
+const authExpiredListeners: AuthExpiredListener[] = [];
+
+/** Register a callback invoked when the auth token expires or is rejected. */
+export function onAuthExpired(listener: AuthExpiredListener): () => void {
+  authExpiredListeners.push(listener);
+  return () => {
+    const idx = authExpiredListeners.indexOf(listener);
+    if (idx >= 0) authExpiredListeners.splice(idx, 1);
+  };
+}
+
+/** Clear the token and notify all listeners (logout on expiry / 401). */
+function handleAuthExpired(): void {
+  localStorage.removeItem(TOKEN_KEY);
+  for (const listener of authExpiredListeners) {
+    try { listener(); } catch { /* swallow */ }
+  }
+}
+
 /** Store (or clear) the JWT auth token. */
 export function setAuthToken(token: string | null): void {
   if (token) {
@@ -79,10 +100,46 @@ export function getAuthToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
 
+/**
+ * Parse the payload of a JWT without verifying the signature.
+ * Returns null if the token is malformed.
+ */
+export function parseJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    // Base64url → base64 → decode
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = atob(b64);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return true if the stored JWT has expired (or will expire within the
+ * given grace period in seconds).  Returns false when there is no token.
+ */
+export function isTokenExpired(gracePeriodSeconds = 60): boolean {
+  const token = getAuthToken();
+  if (!token) return false;
+  const payload = parseJwtPayload(token);
+  if (!payload || typeof payload.exp !== 'number') return false;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  return payload.exp - gracePeriodSeconds <= nowSeconds;
+}
+
 /** Build the auth headers object (empty if no token). */
 function authHeaders(): Record<string, string> {
   const token = getAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  if (!token) return {};
+  // Proactively detect expired tokens before sending the request
+  if (isTokenExpired()) {
+    handleAuthExpired();
+    return {};
+  }
+  return { Authorization: `Bearer ${token}` };
 }
 
 // ── Error type ──────────────────────────────────────────────────────────
@@ -133,6 +190,12 @@ export async function apiFetch<T>(
           // try next
         }
       }
+    }
+
+    // On 401 Unauthorized, clear token and notify listeners so the UI
+    // can redirect to login.
+    if (res.status === 401) {
+      handleAuthExpired();
     }
 
     const body = await res.json().catch(() => ({ error: res.statusText }));
