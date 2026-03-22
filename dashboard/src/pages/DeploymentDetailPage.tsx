@@ -8,6 +8,7 @@ import CopyButton from '../components/CopyButton';
 import BuildLogViewer from '../components/BuildLogViewer';
 import ConfirmDialog from '../components/ConfirmDialog';
 import LoadingSkeleton from '../components/LoadingSkeleton';
+import MetricCard from '../components/MetricCard';
 import Modal from '../components/Modal';
 import { useToast } from '../context/ToastContext';
 
@@ -15,6 +16,13 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatBandwidth(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 export default function DeploymentDetailPage() {
@@ -29,6 +37,9 @@ export default function DeploymentDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [redeploying, setRedeploying] = useState(false);
 
+  // Analytics state
+  const [analytics, setAnalytics] = useState<{ requests: number; bytes_served: number } | null>(null);
+
   // Quick-assign domain state
   const [showAssignDomain, setShowAssignDomain] = useState(false);
   const [domainName, setDomainName] = useState('');
@@ -39,9 +50,11 @@ export default function DeploymentDetailPage() {
     Promise.all([
       deploymentsApi.list().then((all) => all.find((d) => d.cid === cid) ?? null),
       deploymentsApi.logs(cid).catch(() => ({ logs: '' })),
-    ]).then(([dep, logRes]) => {
+      deploymentsApi.analytics(cid).catch(() => null),
+    ]).then(([dep, logRes, analyticsRes]) => {
       setDeployment(dep);
       setLogs(logRes.logs ?? '');
+      setAnalytics(analyticsRes);
       setLoading(false);
     });
   }, [cid]);
@@ -245,6 +258,23 @@ export default function DeploymentDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Analytics */}
+      {analytics && (
+        <div className="mb-8">
+          <h2 className="text-sm font-medium text-mesh-muted mb-3">Analytics</h2>
+          <div className="grid grid-cols-2 gap-4">
+            <MetricCard
+              label="Total Requests"
+              value={analytics.requests.toLocaleString()}
+            />
+            <MetricCard
+              label="Bandwidth Served"
+              value={formatBandwidth(analytics.bytes_served)}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Build logs */}
       <BuildLogViewer logs={logs} status={deployment.build_status} />

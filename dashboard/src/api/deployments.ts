@@ -46,4 +46,7 @@ export const deployments = {
 
   logs: (cid: string) =>
     apiFetch<DeployLogsResponse>(`/api/deployments/${cid}/logs`),
+
+  analytics: (cid: string) =>
+    apiFetch<{ requests: number; bytes_served: number }>(`/api/deployments/${cid}/analytics`),
 };

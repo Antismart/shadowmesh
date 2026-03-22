@@ -88,6 +88,8 @@ fn gateway_app(node_runner_url: &str) -> Router {
         http_client: reqwest::Client::new(),
         build_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         auth_codes: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        per_cid_requests: Arc::new(dashmap::DashMap::new()),
+        per_cid_bytes: Arc::new(dashmap::DashMap::new()),
     };
 
     gateway::content_router(state)
@@ -194,6 +196,8 @@ async fn test_e2e_cache_hit() {
         http_client: reqwest::Client::new(),
         build_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         auth_codes: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        per_cid_requests: Arc::new(dashmap::DashMap::new()),
+        per_cid_bytes: Arc::new(dashmap::DashMap::new()),
     };
 
     let app1 = gateway::content_router(state.clone());
@@ -360,6 +364,8 @@ async fn test_e2e_failover_to_second_node() {
         http_client: reqwest::Client::new(),
         build_sessions: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         auth_codes: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        per_cid_requests: Arc::new(dashmap::DashMap::new()),
+        per_cid_bytes: Arc::new(dashmap::DashMap::new()),
     };
 
     let app = gateway::content_router(state);

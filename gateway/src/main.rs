@@ -365,6 +365,8 @@ async fn main() {
         http_client,
         build_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         auth_codes: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        per_cid_requests: Arc::new(DashMap::new()),
+        per_cid_bytes: Arc::new(DashMap::new()),
     };
 
     // Clone audit logger before state is moved into the router
@@ -558,6 +560,10 @@ async fn main() {
             "/api/deployments/:cid/logs",
             get(dashboard::deployment_logs),
         )
+        .route(
+            "/api/deployments/:cid/analytics",
+            get(deployment_analytics_handler),
+        )
         .route("/api/github/login", get(dashboard::github_login))
         .route("/api/github/callback", get(dashboard::github_callback))
         .route("/api/github/exchange", post(dashboard::exchange_auth_code))
@@ -750,6 +756,29 @@ async fn shutdown_signal() {
     println!("\n🛑 Shutting down gracefully...");
 }
 
+
+/// Returns per-deployment analytics (request count and bytes served) for a given CID.
+async fn deployment_analytics_handler(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+) -> Json<serde_json::Value> {
+    let requests = state
+        .per_cid_requests
+        .get(&cid)
+        .map(|v| v.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(0);
+    let bytes_served = state
+        .per_cid_bytes
+        .get(&cid)
+        .map(|v| v.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(0);
+
+    Json(serde_json::json!({
+        "cid": cid,
+        "requests": requests,
+        "bytes_served": bytes_served,
+    }))
+}
 
 /// Handles `/:cid` — if the path looks like a CID, serve IPFS content;
 /// if it ends with `.shadow`, resolve the name; otherwise delegate to SPA.
