@@ -13,6 +13,7 @@ use libp2p::{
     PeerId,
 };
 use protocol::{
+    adaptive_routing::{AdaptiveRouter, CensorshipStatus, FailureType},
     content_protocol::{ContentRequest, ContentResponse},
     DHTManager, NamingManager, ShadowNode, NAMING_GOSSIP_TOPIC,
 };
@@ -53,10 +54,12 @@ impl P2pState {
 /// Tracks a pending outbound request so the response can be routed back.
 enum PendingReply {
     Fragment {
+        target_peer: PeerId,
         fragment_hash: String,
         reply: oneshot::Sender<Result<Vec<u8>, FetchError>>,
     },
     Manifest {
+        target_peer: PeerId,
         reply: oneshot::Sender<Result<ManifestResult, FetchError>>,
     },
 }
@@ -66,7 +69,15 @@ impl PendingReply {
     fn is_closed(&self) -> bool {
         match self {
             PendingReply::Fragment { reply, .. } => reply.is_closed(),
-            PendingReply::Manifest { reply } => reply.is_closed(),
+            PendingReply::Manifest { reply, .. } => reply.is_closed(),
+        }
+    }
+
+    /// Returns the peer this request was sent to.
+    fn target_peer(&self) -> PeerId {
+        match self {
+            PendingReply::Fragment { target_peer, .. } => *target_peer,
+            PendingReply::Manifest { target_peer, .. } => *target_peer,
         }
     }
 }
@@ -85,6 +96,10 @@ pub async fn run_event_loop(
     rendezvous_peers: HashSet<PeerId>,
 ) {
     tracing::info!("Gateway P2P event loop started");
+
+    // Censorship-aware adaptive router — tracks path health and blocked paths
+    let adaptive_router = AdaptiveRouter::new();
+    let local_peer_id = *node.peer_id();
 
     let mut pending_requests: HashMap<OutboundRequestId, PendingReply> = HashMap::new();
     let mut pending_dht_queries: HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>> =
@@ -110,6 +125,8 @@ pub async fn run_event_loop(
                     &mut pending_dht_queries,
                     &mut pending_name_queries,
                     &rendezvous_peers,
+                    &adaptive_router,
+                    local_peer_id,
                 ).await;
             }
             Some(cmd) = command_rx.recv() => {
@@ -119,6 +136,8 @@ pub async fn run_event_loop(
                     &mut pending_requests,
                     &mut pending_dht_queries,
                     &mut pending_name_queries,
+                    &adaptive_router,
+                    local_peer_id,
                 );
             }
             _ = cleanup_interval.tick() => {
@@ -129,6 +148,24 @@ pub async fn run_event_loop(
                 let after = pending_requests.len() + pending_dht_queries.len() + pending_name_queries.len();
                 if before > after {
                     tracing::debug!(removed = before - after, "Cleaned up stale pending queries");
+                }
+
+                // Log censorship status periodically
+                let censored = adaptive_router.get_censored_paths();
+                if !censored.is_empty() {
+                    tracing::warn!(
+                        blocked_paths = adaptive_router.blocked_paths().len(),
+                        censored_paths = censored.len(),
+                        "Censorship detection: blocked/suspected paths active"
+                    );
+                    for (from, to, status) in &censored {
+                        tracing::warn!(
+                            from = %from,
+                            to = %to,
+                            status = ?status,
+                            "Censored path detected"
+                        );
+                    }
                 }
             }
             _ = shutdown_rx.recv() => {
@@ -153,6 +190,8 @@ async fn handle_swarm_event(
         oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
     >,
     rendezvous_peers: &HashSet<PeerId>,
+    adaptive_router: &AdaptiveRouter,
+    local_peer_id: PeerId,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -217,12 +256,35 @@ async fn handle_swarm_event(
                 pending_requests,
                 pending_dht_queries,
                 pending_name_queries,
+                adaptive_router,
+                local_peer_id,
             )
             .await;
         }
 
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             tracing::debug!(?peer_id, %error, "Outgoing connection failed");
+
+            // Feed connection-level failures into censorship detection
+            if let Some(failed_peer) = peer_id {
+                let error_str = format!("{}", error);
+                let failure_type = if error_str.contains("Timeout") || error_str.contains("timeout") {
+                    FailureType::Timeout
+                } else if error_str.contains("refused") || error_str.contains("Refused") {
+                    FailureType::ConnectionRefused
+                } else if error_str.contains("reset") || error_str.contains("Reset") {
+                    FailureType::ConnectionReset
+                } else {
+                    FailureType::NetworkError
+                };
+
+                record_censorship_failure(
+                    adaptive_router,
+                    local_peer_id,
+                    failed_peer,
+                    failure_type,
+                );
+            }
         }
 
         SwarmEvent::IncomingConnectionError { error, .. } => {
@@ -245,6 +307,8 @@ async fn handle_behaviour_event(
         String,
         oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
     >,
+    adaptive_router: &AdaptiveRouter,
+    local_peer_id: PeerId,
 ) {
     use protocol::node::ShadowBehaviourEvent;
 
@@ -356,7 +420,7 @@ async fn handle_behaviour_event(
                 request_id,
                 response,
             } => {
-                handle_content_response(request_id, response, pending_requests);
+                handle_content_response(request_id, response, pending_requests, adaptive_router, local_peer_id);
             }
         },
 
@@ -367,6 +431,26 @@ async fn handle_behaviour_event(
             ..
         }) => {
             tracing::warn!(%peer, ?request_id, ?error, "Outbound content request failed");
+
+            // Classify the failure for censorship detection
+            let error_str = format!("{:?}", error);
+            let failure_type = if error_str.contains("Timeout") || error_str.contains("timeout") {
+                FailureType::Timeout
+            } else if error_str.contains("ConnectionClosed") || error_str.contains("reset") {
+                FailureType::ConnectionReset
+            } else if error_str.contains("DialFailure") || error_str.contains("refused") {
+                FailureType::ConnectionRefused
+            } else {
+                FailureType::NetworkError
+            };
+
+            record_censorship_failure(
+                adaptive_router,
+                local_peer_id,
+                peer,
+                failure_type,
+            );
+
             if let Some(pending) = pending_requests.remove(&request_id) {
                 let err = FetchError::ConnectionFailed(format!("{:?}", error));
                 resolve_pending(pending, Err(err));
@@ -610,11 +694,15 @@ fn handle_content_response(
     request_id: OutboundRequestId,
     response: ContentResponse,
     pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
+    adaptive_router: &AdaptiveRouter,
+    local_peer_id: PeerId,
 ) {
     let Some(pending) = pending_requests.remove(&request_id) else {
         tracing::warn!(?request_id, "Received response for unknown request");
         return;
     };
+
+    let target_peer = pending.target_peer();
 
     match (pending, response) {
         // Fragment response — verify BLAKE3 hash
@@ -622,13 +710,23 @@ fn handle_content_response(
             PendingReply::Fragment {
                 fragment_hash,
                 reply,
+                ..
             },
             ContentResponse::Fragment { data, .. },
         ) => {
             let computed = blake3::hash(&data).to_hex().to_string();
             if computed == fragment_hash {
+                // Record successful path for censorship detection
+                record_censorship_success(adaptive_router, local_peer_id, target_peer, data.len() as u64);
                 let _ = reply.send(Ok(data));
             } else {
+                // Content tampering — strong censorship indicator
+                record_censorship_failure(
+                    adaptive_router,
+                    local_peer_id,
+                    target_peer,
+                    FailureType::ContentTampering,
+                );
                 let _ = reply.send(Err(FetchError::PeerError(format!(
                     "Hash mismatch: expected {}, got {}",
                     fragment_hash, computed
@@ -638,7 +736,7 @@ fn handle_content_response(
 
         // Manifest response
         (
-            PendingReply::Manifest { reply },
+            PendingReply::Manifest { reply, .. },
             ContentResponse::Manifest {
                 content_hash,
                 fragment_hashes,
@@ -646,6 +744,7 @@ fn handle_content_response(
                 mime_type,
             },
         ) => {
+            record_censorship_success(adaptive_router, local_peer_id, target_peer, total_size);
             let _ = reply.send(Ok(ManifestResult {
                 content_hash,
                 fragment_hashes,
@@ -654,13 +753,19 @@ fn handle_content_response(
             }));
         }
 
-        // NotFound
+        // NotFound — not a censorship signal
         (pending, ContentResponse::NotFound { .. }) => {
             resolve_pending(pending, Err(FetchError::NotFound));
         }
 
         // Error
         (pending, ContentResponse::Error { message }) => {
+            record_censorship_failure(
+                adaptive_router,
+                local_peer_id,
+                target_peer,
+                FailureType::PeerUnreachable,
+            );
             resolve_pending(pending, Err(FetchError::PeerError(message)));
         }
 
@@ -789,6 +894,8 @@ fn handle_command(
         String,
         oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
     >,
+    adaptive_router: &AdaptiveRouter,
+    local_peer_id: PeerId,
 ) {
     match cmd {
         P2pCommand::FetchFragment {
@@ -796,6 +903,20 @@ fn handle_command(
             fragment_hash,
             reply,
         } => {
+            // Check if the path to this peer is blocked by censorship detection
+            if let Some((_, status)) = adaptive_router.get_path_health(local_peer_id, peer_id) {
+                if matches!(status, CensorshipStatus::Confirmed) {
+                    tracing::warn!(
+                        %peer_id,
+                        "Refusing fetch: path is blocked by censorship detection"
+                    );
+                    let _ = reply.send(Err(FetchError::ConnectionFailed(
+                        "Path blocked by censorship detection".to_string(),
+                    )));
+                    return;
+                }
+            }
+
             let request = ContentRequest::GetFragment {
                 fragment_hash: fragment_hash.clone(),
             };
@@ -807,6 +928,7 @@ fn handle_command(
             pending_requests.insert(
                 req_id,
                 PendingReply::Fragment {
+                    target_peer: peer_id,
                     fragment_hash,
                     reply,
                 },
@@ -818,6 +940,20 @@ fn handle_command(
             content_hash,
             reply,
         } => {
+            // Check if the path to this peer is blocked by censorship detection
+            if let Some((_, status)) = adaptive_router.get_path_health(local_peer_id, peer_id) {
+                if matches!(status, CensorshipStatus::Confirmed) {
+                    tracing::warn!(
+                        %peer_id,
+                        "Refusing fetch: path is blocked by censorship detection"
+                    );
+                    let _ = reply.send(Err(FetchError::ConnectionFailed(
+                        "Path blocked by censorship detection".to_string(),
+                    )));
+                    return;
+                }
+            }
+
             let request = ContentRequest::GetManifest {
                 content_hash: content_hash.clone(),
             };
@@ -826,7 +962,7 @@ fn handle_command(
                 .behaviour_mut()
                 .content_req_resp
                 .send_request(&peer_id, request);
-            pending_requests.insert(req_id, PendingReply::Manifest { reply });
+            pending_requests.insert(req_id, PendingReply::Manifest { target_peer: peer_id, reply });
         }
 
         P2pCommand::AnnounceContent {
@@ -895,6 +1031,18 @@ fn handle_command(
                 .get_record(key);
             pending_name_queries.insert(name, reply);
         }
+
+        P2pCommand::ReportCensorship {
+            peer_id,
+            failure_type,
+        } => {
+            tracing::info!(
+                %peer_id,
+                failure = ?failure_type,
+                "Received external censorship report"
+            );
+            record_censorship_failure(adaptive_router, local_peer_id, peer_id, failure_type);
+        }
     }
 }
 
@@ -960,4 +1108,109 @@ fn announce_to_dht(
         Ok(_) => tracing::info!(%content_hash, "Announced content to DHT"),
         Err(e) => tracing::warn!(%content_hash, ?e, "Failed to announce content to DHT"),
     }
+}
+
+// ── Censorship detection helpers ──────────────────────────────────
+
+/// Record a path failure in the adaptive router and log if censorship is detected.
+///
+/// Called from `OutboundFailure` events, `OutgoingConnectionError`, and
+/// content-level failures (hash mismatch / tampering). The `AdaptiveRouter`
+/// internally tracks per-path health and marks paths as `Suspected` or
+/// `Confirmed` when enough censorship-indicative signals accumulate.
+fn record_censorship_failure(
+    router: &AdaptiveRouter,
+    local_peer: PeerId,
+    remote_peer: PeerId,
+    failure_type: FailureType,
+) {
+    use protocol::adaptive_routing::RelayInfo;
+
+    // Compute a synthetic route ID for this direct peer pair
+    let mut route_id = [0u8; 16];
+    {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(local_peer.to_bytes().as_slice());
+        hasher.update(remote_peer.to_bytes().as_slice());
+        let hash = hasher.finalize();
+        route_id.copy_from_slice(&hash.as_bytes()[..16]);
+    }
+
+    // Ensure both peers are registered as relays so the router can track them
+    if router.get_relay(&local_peer).is_none() {
+        router.register_relay(RelayInfo::new(local_peer));
+    }
+    if router.get_relay(&remote_peer).is_none() {
+        router.register_relay(RelayInfo::new(remote_peer));
+    }
+
+    // Try to record the failure via the router's route tracking
+    let failover = router.record_failure(&route_id, 0, failure_type);
+
+    if failover.is_some() {
+        tracing::warn!(
+            from = %local_peer,
+            to = %remote_peer,
+            failure = ?failure_type,
+            "Path failure triggered route failover"
+        );
+    }
+
+    // Check if this specific link is now confirmed censored
+    if let Some((health_score, status)) = router.get_path_health(local_peer, remote_peer) {
+        match status {
+            CensorshipStatus::Confirmed => {
+                router.block_path(local_peer, remote_peer);
+                tracing::error!(
+                    from = %local_peer,
+                    to = %remote_peer,
+                    health = health_score,
+                    "CENSORSHIP CONFIRMED: path blocked, will use alternative routes"
+                );
+            }
+            CensorshipStatus::Suspected => {
+                tracing::warn!(
+                    from = %local_peer,
+                    to = %remote_peer,
+                    health = health_score,
+                    failure = ?failure_type,
+                    "Censorship suspected on path — monitoring"
+                );
+            }
+            _ => {
+                tracing::debug!(
+                    from = %local_peer,
+                    to = %remote_peer,
+                    failure = ?failure_type,
+                    "Path failure recorded for censorship analysis"
+                );
+            }
+        }
+    } else {
+        tracing::debug!(
+            from = %local_peer,
+            to = %remote_peer,
+            failure = ?failure_type,
+            "Path failure recorded for censorship analysis"
+        );
+    }
+}
+
+/// Record a successful path interaction — clears consecutive failure counters.
+fn record_censorship_success(
+    router: &AdaptiveRouter,
+    local_peer: PeerId,
+    remote_peer: PeerId,
+    bytes: u64,
+) {
+    let mut route_id = [0u8; 16];
+    {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(local_peer.to_bytes().as_slice());
+        hasher.update(remote_peer.to_bytes().as_slice());
+        let hash = hasher.finalize();
+        route_id.copy_from_slice(&hash.as_bytes()[..16]);
+    }
+
+    router.record_success(&route_id, 0, bytes);
 }

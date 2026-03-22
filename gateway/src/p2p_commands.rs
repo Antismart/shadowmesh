@@ -1,6 +1,7 @@
 //! Commands sent from HTTP handlers to the gateway P2P event loop.
 
 use libp2p::PeerId;
+use protocol::adaptive_routing::FailureType;
 use tokio::sync::oneshot;
 
 /// Commands that HTTP handlers can send to the P2P event loop.
@@ -47,6 +48,17 @@ pub enum P2pCommand {
         name: String,
         /// Returns raw DHT record bytes, or None if not found
         reply: oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
+    },
+
+    /// Report a censorship event from an external source (e.g. HTTP handler).
+    ///
+    /// Feeds the failure into the adaptive router's censorship detection so that
+    /// the path to the given peer can be marked as suspected/confirmed blocked.
+    ReportCensorship {
+        /// The peer whose path is experiencing censorship-like failures.
+        peer_id: PeerId,
+        /// The type of failure observed.
+        failure_type: FailureType,
     },
 }
 
