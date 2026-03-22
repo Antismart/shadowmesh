@@ -418,10 +418,23 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- [libp2p](https://libp2p.io/) - P2P networking stack
-- [IPFS](https://ipfs.io/) - Content addressing inspiration
+- [libp2p](https://libp2p.io/) - P2P networking stack (Kademlia DHT, GossipSub, Noise, Yamux, Relay, AutoNAT, DCUtR)
+- [IPFS / Kubo](https://ipfs.io/) - Content addressing and distributed storage
 - [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) - Fast cryptographic hashing
 - [ChaCha20-Poly1305](https://datatracker.ietf.org/doc/html/rfc8439) - AEAD encryption
+- [x25519-dalek](https://github.com/dalek-cryptography/x25519-dalek) - Elliptic curve Diffie-Hellman for per-hop onion routing
+- [Tokio](https://tokio.rs/) - Async runtime powering the gateway and node-runner
+- [Axum](https://github.com/tokio-rs/axum) - HTTP framework for the gateway API
+- [React](https://react.dev/) - Dashboard UI
+- [Tailwind CSS](https://tailwindcss.com/) - Dashboard styling
+- [Vite](https://vitejs.dev/) - Dashboard build tooling
+- [OpenTelemetry](https://opentelemetry.io/) - Distributed tracing and observability
+- [Prometheus](https://prometheus.io/) - Metrics collection
+- [Redis](https://redis.io/) - Optional persistent state and distributed rate limiting
+- [ENS / eth.limo](https://ens.domains/) - Ethereum Name Service resolution
+- [Criterion](https://github.com/bheisler/criterion.rs) - Performance benchmarking
+- [OpenZeppelin](https://www.openzeppelin.com/) - Smart contract standards (upcoming MESH token)
+- [Foundry](https://book.getfoundry.sh/) - Solidity development toolchain (upcoming incentive layer)
 
 ---
 
