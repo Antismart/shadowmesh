@@ -359,6 +359,7 @@ async fn main() {
         node_health_tracker: node_health_tracker.clone(),
         http_client,
         build_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        auth_codes: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     // Clone audit logger before state is moved into the router
@@ -408,6 +409,77 @@ async fn main() {
             tracing::error!("Signaling cleanup task failed: {}", e);
         }
     });
+
+    // Start background cleanup task for OAuth states, auth codes, and build sessions.
+    // OAuth states expire after 10 minutes, auth codes after 60 seconds, and
+    // build sessions after 1 hour.  This runs every 60 seconds to keep memory bounded
+    // even if no new requests arrive.
+    {
+        let auth_cleanup_states = state.github_oauth_states.clone();
+        let auth_cleanup_codes = state.auth_codes.clone();
+        let auth_cleanup_sessions = state.build_sessions.clone();
+        let auth_cleanup_token = shutdown_token.clone();
+        let auth_cleanup_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Evict OAuth states older than 10 minutes
+                        {
+                            let mut states = auth_cleanup_states.write().unwrap();
+                            let before = states.len();
+                            let cutoff = Duration::from_secs(600);
+                            states.retain(|_, (created, _)| created.elapsed() <= cutoff);
+                            let evicted = before - states.len();
+                            if evicted > 0 {
+                                tracing::debug!(evicted, remaining = states.len(),
+                                    "Evicted expired OAuth states");
+                            }
+                        }
+
+                        // Evict auth codes older than 60 seconds
+                        {
+                            let mut codes = auth_cleanup_codes.write().unwrap();
+                            let before = codes.len();
+                            let cutoff = Duration::from_secs(60);
+                            codes.retain(|_, (_, created)| created.elapsed() <= cutoff);
+                            let evicted = before - codes.len();
+                            if evicted > 0 {
+                                tracing::debug!(evicted, remaining = codes.len(),
+                                    "Evicted expired auth codes");
+                            }
+                        }
+
+                        // Evict build sessions older than 1 hour.  The per-session
+                        // 5-minute cleanup timer handles the happy path; this is
+                        // a safety net for abandoned or leaked sessions.
+                        {
+                            let mut sessions = auth_cleanup_sessions.write().unwrap();
+                            let before = sessions.len();
+                            let max_age = Duration::from_secs(3600);
+                            sessions.retain(|_, session| {
+                                session.created_at.elapsed() < max_age
+                            });
+                            let evicted = before - sessions.len();
+                            if evicted > 0 {
+                                tracing::debug!(evicted, remaining = sessions.len(),
+                                    "Evicted stale build sessions");
+                            }
+                        }
+                    }
+                    _ = auth_cleanup_token.cancelled() => {
+                        tracing::info!("Auth state cleanup task shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+        tokio::spawn(async move {
+            if let Err(e) = auth_cleanup_handle.await {
+                tracing::error!("Auth state cleanup task failed: {}", e);
+            }
+        });
+    }
 
     // Start background node-runner health probes
     if let Some(ref tracker) = node_health_tracker {
@@ -483,6 +555,7 @@ async fn main() {
         )
         .route("/api/github/login", get(dashboard::github_login))
         .route("/api/github/callback", get(dashboard::github_callback))
+        .route("/api/github/exchange", post(dashboard::exchange_auth_code))
         .route("/api/github/status", get(dashboard::github_status))
         .route("/api/github/repos", get(dashboard::github_repos))
         .route("/api/github/tree", get(dashboard::github_repo_tree))

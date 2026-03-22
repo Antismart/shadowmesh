@@ -124,6 +124,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Active build sessions for SSE log streaming
     pub build_sessions: Arc<RwLock<std::collections::HashMap<String, Arc<dashboard::BuildSession>>>>,
+    /// Short-lived authorization codes exchanged for JWTs after OAuth redirect.
+    /// Maps code -> (jwt_string, created_at).  Codes expire after 60 seconds
+    /// and are single-use (deleted on exchange).
+    pub auth_codes: Arc<RwLock<std::collections::HashMap<String, (String, Instant)>>>,
 }
 
 /// Build a Router with just the content-serving routes.
