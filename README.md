@@ -11,6 +11,25 @@
 
 ShadowMesh is a decentralized content delivery network that combines IPFS-style content addressing with onion routing for enhanced privacy. Content is fragmented, encrypted, and distributed across a peer-to-peer network, making it resilient and censorship-resistant.
 
+## 🖥️ Live Dashboard
+
+The public gateway and dashboard are running at **[http://62.171.189.140:8081/](http://62.171.189.140:8081/)**. The dashboard itself is also deployed as CID-served content on the ShadowMesh network, so it can be accessed through any connected node or resolved via `.shadow` naming.
+
+## 🔀 Decentralized Access
+
+Content deployed to ShadowMesh can be reached through multiple independent paths, so no single point of failure can take your site offline:
+
+| Access Method | URL / Path | Requires |
+|---|---|---|
+| **HTTP Gateway** | `http://62.171.189.140:8081/content/<cid>` | Nothing (public) |
+| **CID (any node)** | `http://<any-node>:8081/content/<cid>` | Any running gateway |
+| **.shadow name** | Resolve `myapp.shadow` via DHT | A connected node or SDK |
+| **ENS** | Set `contenthash` to `shadow://<cid>` on your `.eth` name, resolve via eth.limo | ENS name + eth.limo |
+| **Local node** | `http://127.0.0.1:3030` (node-runner dashboard) | Running `node-runner` locally |
+| **Browser SDK (WebRTC)** | P2P fetch from peers with HTTP gateway fallback | WASM SDK in browser |
+
+Because content is addressed by CID, it does not matter which path you use -- the hash guarantees integrity.
+
 ## ✨ Features
 
 - **🔐 Privacy-First**: Onion routing ensures no single node knows both the requester and the content
@@ -319,6 +338,7 @@ See the full [Hosting Guide](docs/hosting-guide.md) and [Node Runner Guide](docs
 - [WebRTC Setup Guide](docs/webrtc-setup.md)
 - [Deployment Guide](docs/deployment.md)
 - [Monitoring Runbook](docs/runbooks/monitoring-alerting.md)
+- [Competitor Comparison](docs/comparison.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## 🧪 Testing
@@ -359,6 +379,8 @@ cargo bench -p benchmarks
 - [x] TypeScript SDK
 - [x] Integration tests
 - [x] WebRTC transport support
+- [x] ENS integration (eth.limo gateway + `shadow://` contenthash)
+- [x] Censorship detection & adaptive routing
 - [ ] Mobile SDK (React Native)
 - [ ] Incentive layer with token rewards
 - [ ] Browser extension
