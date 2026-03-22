@@ -1,4 +1,4 @@
-# 🌐 ShadowMesh
+# ShadowMesh
 
 **A privacy-first decentralized CDN powered by libp2p**
 
@@ -11,11 +11,11 @@
 
 ShadowMesh is a decentralized content delivery network that combines IPFS-style content addressing with onion routing for enhanced privacy. Content is fragmented, encrypted, and distributed across a peer-to-peer network, making it resilient and censorship-resistant.
 
-## 🖥️ Live Dashboard
+## Live Dashboard
 
 The public gateway and dashboard are running at **[http://62.171.189.140:8081/](http://62.171.189.140:8081/)**. The dashboard itself is also deployed as CID-served content on the ShadowMesh network, so it can be accessed through any connected node or resolved via `.shadow` naming.
 
-## 🔀 Decentralized Access
+## Decentralized Access
 
 Content deployed to ShadowMesh can be reached through multiple independent paths, so no single point of failure can take your site offline:
 
@@ -30,18 +30,18 @@ Content deployed to ShadowMesh can be reached through multiple independent paths
 
 Because content is addressed by CID, it does not matter which path you use -- the hash guarantees integrity.
 
-## ✨ Features
+## Features
 
-- **🔐 Privacy-First**: Onion routing ensures no single node knows both the requester and the content
-- **📦 Content Fragmentation**: Large files are split into encrypted chunks for parallel delivery
-- **🌍 Decentralized**: No central servers - content is served by a network of peers
-- **⚡ High Performance**: BLAKE3 hashing, ChaCha20-Poly1305 encryption, and multi-path routing
-- **🔄 Automatic Replication**: Content is replicated across multiple nodes for reliability
-- **📊 Bandwidth Tracking**: Built-in metrics and rate limiting for fair resource usage
-- **🌐 WebRTC Support**: Browser-to-node P2P connections via WebRTC DataChannels
-- **📱 Browser SDK**: WASM-based client for direct browser integration
+- **Privacy-First**: Onion routing ensures no single node knows both the requester and the content
+- **Content Fragmentation**: Large files are split into encrypted chunks for parallel delivery
+- **Decentralized**: No central servers - content is served by a network of peers
+- **High Performance**: BLAKE3 hashing, ChaCha20-Poly1305 encryption, and multi-path routing
+- **Automatic Replication**: Content is replicated across multiple nodes for reliability
+- **Bandwidth Tracking**: Built-in metrics and rate limiting for fair resource usage
+- **WebRTC Support**: Browser-to-node P2P connections via WebRTC DataChannels
+- **Browser SDK**: WASM-based client for direct browser integration
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -69,7 +69,7 @@ Because content is addressed by CID, it does not matter which path you use -- th
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -198,7 +198,7 @@ smesh download <cid> -o ./output.txt
 smesh peers
 ```
 
-## 📦 Components
+## Components
 
 | Component | Description | Port |
 |-----------|-------------|------|
@@ -210,7 +210,7 @@ smesh peers
 | `sdk-browser` | WASM browser SDK with WebRTC | - |
 | `benchmarks` | Performance benchmarks | - |
 
-## 🔧 Configuration
+## Configuration
 
 ### Gateway Configuration
 
@@ -329,7 +329,7 @@ Before running ShadowMesh in production, verify these items:
 
 See the full [Hosting Guide](docs/hosting-guide.md) and [Node Runner Guide](docs/node-runner-guide.md) for detailed setup instructions.
 
-## 📚 Documentation
+## Documentation
 
 - [Protocol Specification](docs/protocol-spec.md)
 - [Architecture Guide](docs/architecture.md)
@@ -341,7 +341,7 @@ See the full [Hosting Guide](docs/hosting-guide.md) and [Node Runner Guide](docs
 - [Competitor Comparison](docs/comparison.md)
 - [Contributing](CONTRIBUTING.md)
 
-## 🧪 Testing
+## Testing
 
 ```bash
 # Run all tests
@@ -359,7 +359,7 @@ cargo test --workspace -- --nocapture
 cargo bench -p benchmarks
 ```
 
-## 📊 Benchmarks
+## Benchmarks
 
 | Operation | Throughput | Latency (p99) |
 |-----------|------------|---------------|
@@ -368,7 +368,7 @@ cargo bench -p benchmarks
 | Fragment (1MB) | 3.0 GB/s | < 1ms |
 | DHT Lookup | - | < 50ms |
 
-## 🛣️ Roadmap
+## Roadmap
 
 - [x] Core protocol implementation
 - [x] Content fragmentation & encryption
@@ -392,7 +392,7 @@ cargo bench -p benchmarks
 - [ ] Build pipelines — custom multi-step build workflows
 - [ ] Team management & RBAC
 
-## 🤝 Contributing
+## Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
@@ -412,11 +412,11 @@ git commit -m "feat: add amazing feature"
 git push origin feature/amazing-feature
 ```
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [libp2p](https://libp2p.io/) - P2P networking stack
 - [IPFS](https://ipfs.io/) - Content addressing inspiration
@@ -426,6 +426,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 <p align="center">
-  Built with ❤️ for a more private and decentralized web
+  Built for a more private and decentralized web
 </p>
 
