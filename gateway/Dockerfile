@@ -33,7 +33,7 @@ RUN cargo build --release -p gateway
 
 # Stage 3: Minimal runtime
 # Pinned 2025-12-17 – update periodically from https://hub.docker.com/_/debian
-FROM debian:bookworm-20250113-slim
+FROM debian:bookworm-20260316-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
