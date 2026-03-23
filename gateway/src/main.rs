@@ -590,6 +590,8 @@ async fn main() {
         .route("/api/pin/:cid", get(pin::pin_status))
         // Admin endpoints
         .route("/api/admin/reload", post(config_watcher::handler::reload_config_handler))
+        // Embedded SPA assets (must come before /:cid to avoid IPFS lookup)
+        .route("/assets/*path", get(|uri: Uri| async move { spa::spa_handler(uri).await }))
         // Content retrieval (CID paths only — SPA routes handled by fallback)
         .route("/:cid", get(content_or_spa_handler))
         .route("/:name/*path", get(shadow_or_content_subpath_handler))
