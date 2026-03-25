@@ -35,6 +35,13 @@ pub enum ContentRequest {
     /// Request a list of content CIDs stored by this peer.
     /// `limit` caps the number of items returned (0 = no limit).
     ListContent { limit: u32 },
+
+    /// A ZK relay cell routed through this peer.
+    ///
+    /// The payload is a serialized `RelayCell`. The receiving node processes it
+    /// through its `ZkRelayNode` and either forwards, responds, or handles the
+    /// exit action (fetching content locally and sending the response back).
+    RelayCell { cell_data: Vec<u8> },
 }
 
 // ─── Response types ──────────────────────────────────────────────
@@ -67,6 +74,12 @@ pub enum ContentResponse {
 
     /// List of stored content summaries.
     ContentList { items: Vec<ContentSummary> },
+
+    /// Response carrying a ZK relay cell back through the circuit.
+    ///
+    /// Sent when a relay node has a CREATED response, or when data is being
+    /// sent back along the reverse path of a circuit.
+    RelayCell { cell_data: Vec<u8> },
 }
 
 // ─── Catalog / announcement types ────────────────────────────────
