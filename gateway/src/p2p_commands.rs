@@ -2,6 +2,7 @@
 
 use libp2p::PeerId;
 use protocol::adaptive_routing::FailureType;
+use protocol::zk_relay::{CircuitId, RelayCell};
 use tokio::sync::oneshot;
 
 /// Commands that HTTP handlers can send to the P2P event loop.
@@ -60,6 +61,35 @@ pub enum P2pCommand {
         /// The type of failure observed.
         failure_type: FailureType,
     },
+
+    /// Build a ZK relay circuit through the specified peers.
+    BuildCircuit {
+        /// Ordered list of peers to form the circuit hops.
+        peers: Vec<PeerId>,
+        /// Reply channel returning the circuit ID on success.
+        reply: oneshot::Sender<Result<protocol::zk_relay::CircuitId, FetchError>>,
+    },
+
+    /// Send a relay cell to a target peer (for circuit forwarding).
+    SendRelayCell {
+        /// The relay cell to send.
+        cell: RelayCell,
+        /// The peer to send the cell to.
+        target: PeerId,
+    },
+
+    /// Fetch content (fragment) via an established ZK relay circuit.
+    ///
+    /// Wraps the content request in onion-encrypted relay cells, sends it
+    /// through the circuit, and returns the decrypted response.
+    FetchViaCircuit {
+        /// The circuit to use for the fetch.
+        circuit_id: CircuitId,
+        /// BLAKE3 hash of the content to fetch.
+        content_hash: String,
+        /// Channel to receive the content bytes (or error).
+        reply: oneshot::Sender<Result<Vec<u8>, FetchError>>,
+    },
 }
 
 /// Result of a manifest fetch.
@@ -83,6 +113,8 @@ pub enum FetchError {
     ChannelClosed,
     /// P2P resolution timed out.
     Timeout,
+    /// ZK relay circuit error (circuit building/wrapping failed).
+    RelayError(String),
 }
 
 impl std::fmt::Display for FetchError {
@@ -93,6 +125,7 @@ impl std::fmt::Display for FetchError {
             FetchError::PeerError(e) => write!(f, "Peer error: {}", e),
             FetchError::ChannelClosed => write!(f, "P2P event loop is shut down"),
             FetchError::Timeout => write!(f, "P2P resolution timed out"),
+            FetchError::RelayError(e) => write!(f, "ZK relay error: {}", e),
         }
     }
 }

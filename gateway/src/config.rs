@@ -302,6 +302,12 @@ pub struct P2pConfig {
     /// Node-runner health tracking and load balancing
     #[serde(default)]
     pub node_health: NodeHealthConfig,
+    /// Enable ZK relay for private circuit-based content resolution
+    #[serde(default)]
+    pub enable_zk_relay: bool,
+    /// Number of hops for ZK relay circuits (minimum 2)
+    #[serde(default = "default_zk_relay_hops")]
+    pub zk_relay_hops: usize,
 }
 
 /// Load balancing strategy for selecting node-runners
@@ -341,6 +347,7 @@ pub struct NodeHealthConfig {
     pub circuit_breaker_reset_seconds: u64,
 }
 
+fn default_zk_relay_hops() -> usize { 3 }
 fn default_health_interval() -> u64 { 30 }
 fn default_cb_threshold() -> u32 { 3 }
 fn default_cb_reset() -> u64 { 15 }
@@ -369,6 +376,8 @@ impl Default for P2pConfig {
             announce_content: true,
             node_runners: Vec::new(),
             node_health: NodeHealthConfig::default(),
+            enable_zk_relay: false,
+            zk_relay_hops: default_zk_relay_hops(),
         }
     }
 }
@@ -498,6 +507,12 @@ impl Config {
                 "   Node Runners: {} configured (strategy: {:?})",
                 self.p2p.node_runners.len(),
                 self.p2p.node_health.strategy
+            );
+        }
+        if self.p2p.enable_zk_relay {
+            println!(
+                "   ZK Relay: enabled ({} hops)",
+                self.p2p.zk_relay_hops
             );
         }
     }

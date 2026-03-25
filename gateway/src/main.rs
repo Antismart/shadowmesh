@@ -294,7 +294,7 @@ async fn main() {
                     let (command_tx, command_rx) =
                         tokio::sync::mpsc::channel::<p2p_commands::P2pCommand>(256);
 
-                    let p2p_st = Arc::new(p2p::P2pState::new(command_tx));
+                    let p2p_st = Arc::new(p2p::P2pState::with_p2p_config(command_tx, &config.p2p));
                     let shutdown_rx = p2p_shutdown_tx.subscribe();
 
                     let loop_state = p2p_st.clone();

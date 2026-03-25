@@ -15,6 +15,10 @@ use libp2p::{
 use protocol::{
     adaptive_routing::{AdaptiveRouter, CensorshipStatus, FailureType},
     content_protocol::{ContentRequest, ContentResponse},
+    zk_relay::{
+        CellType, CircuitId, CreatedHandshake, RelayAction, RelayCell, ZkRelayClient,
+        ZkRelayConfig, ZkRelayNode,
+    },
     DHTManager, NamingManager, ShadowNode, NAMING_GOSSIP_TOPIC,
 };
 use std::collections::{HashMap, HashSet};
@@ -22,6 +26,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 
 use crate::cache::ContentCache;
+use crate::config::P2pConfig;
 use crate::p2p_commands::{FetchError, ManifestResult, P2pCommand};
 
 /// Information about a connected peer
@@ -39,6 +44,10 @@ pub struct P2pState {
     pub listen_addrs: RwLock<Vec<String>>,
     /// Sender half of the command channel for HTTP → event loop communication
     pub command_tx: mpsc::Sender<P2pCommand>,
+    /// Whether ZK relay is enabled
+    pub zk_relay_enabled: bool,
+    /// Number of hops for ZK relay circuits
+    pub zk_relay_hops: usize,
 }
 
 impl P2pState {
@@ -47,6 +56,19 @@ impl P2pState {
             peers: RwLock::new(HashMap::new()),
             listen_addrs: RwLock::new(Vec::new()),
             command_tx,
+            zk_relay_enabled: false,
+            zk_relay_hops: 3,
+        }
+    }
+
+    /// Create with ZK relay configuration
+    pub fn with_p2p_config(command_tx: mpsc::Sender<P2pCommand>, p2p_config: &P2pConfig) -> Self {
+        Self {
+            peers: RwLock::new(HashMap::new()),
+            listen_addrs: RwLock::new(Vec::new()),
+            command_tx,
+            zk_relay_enabled: p2p_config.enable_zk_relay,
+            zk_relay_hops: p2p_config.zk_relay_hops.max(2),
         }
     }
 }
@@ -62,6 +84,10 @@ enum PendingReply {
         target_peer: PeerId,
         reply: oneshot::Sender<Result<ManifestResult, FetchError>>,
     },
+    RelayResponse {
+        target_peer: PeerId,
+        circuit_id: CircuitId,
+    },
 }
 
 impl PendingReply {
@@ -70,6 +96,7 @@ impl PendingReply {
         match self {
             PendingReply::Fragment { reply, .. } => reply.is_closed(),
             PendingReply::Manifest { reply, .. } => reply.is_closed(),
+            PendingReply::RelayResponse { .. } => false, // relay responses are always valid
         }
     }
 
@@ -78,8 +105,29 @@ impl PendingReply {
         match self {
             PendingReply::Fragment { target_peer, .. } => *target_peer,
             PendingReply::Manifest { target_peer, .. } => *target_peer,
+            PendingReply::RelayResponse { target_peer, .. } => *target_peer,
         }
     }
+}
+
+/// Tracks a pending circuit build (awaiting CREATED handshakes for each hop).
+struct PendingCircuitBuild {
+    /// The circuit ID being built (retained for diagnostics).
+    _circuit_id: CircuitId,
+    /// Index of the next hop that needs a CREATED response.
+    next_hop_index: usize,
+    /// Total number of hops.
+    total_hops: usize,
+    /// Reply channel for the caller.
+    reply: Option<oneshot::Sender<Result<CircuitId, FetchError>>>,
+}
+
+/// Tracks a pending relay-based content fetch (waiting for response cells).
+struct PendingRelayFetch {
+    /// The circuit used for this fetch (retained for diagnostics).
+    _circuit_id: CircuitId,
+    /// Reply channel for the caller.
+    reply: oneshot::Sender<Result<Vec<u8>, FetchError>>,
 }
 
 /// Run the P2P swarm event loop.
@@ -101,6 +149,23 @@ pub async fn run_event_loop(
     let adaptive_router = AdaptiveRouter::new();
     let local_peer_id = *node.peer_id();
 
+    // ZK relay state — client builds circuits for private fetches,
+    // relay node forwards cells for peers building circuits through us.
+    let zk_relay_enabled = p2p_state.zk_relay_enabled;
+    let zk_relay_hops = p2p_state.zk_relay_hops;
+    let client_secret: [u8; 32] = rand::random();
+    let relay_secret: [u8; 32] = rand::random();
+    let zk_config = ZkRelayConfig {
+        default_hops: zk_relay_hops,
+        ..ZkRelayConfig::default()
+    };
+    let mut zk_relay_client = ZkRelayClient::with_config(client_secret, zk_config.clone());
+    let zk_relay_node = ZkRelayNode::with_config(relay_secret, zk_config);
+
+    if zk_relay_enabled {
+        tracing::info!(hops = zk_relay_hops, "ZK relay enabled on gateway");
+    }
+
     let mut pending_requests: HashMap<OutboundRequestId, PendingReply> = HashMap::new();
     let mut pending_dht_queries: HashMap<String, oneshot::Sender<Result<Vec<PeerId>, FetchError>>> =
         HashMap::new();
@@ -108,6 +173,12 @@ pub async fn run_event_loop(
         String,
         oneshot::Sender<Result<Option<Vec<u8>>, FetchError>>,
     > = HashMap::new();
+
+    // Pending circuit builds (circuit_id -> build state)
+    let mut pending_circuit_builds: HashMap<CircuitId, PendingCircuitBuild> = HashMap::new();
+
+    // Pending relay-based content fetches (circuit_id -> fetch state)
+    let mut pending_relay_fetches: HashMap<CircuitId, PendingRelayFetch> = HashMap::new();
 
     let mut cleanup_interval = tokio::time::interval(std::time::Duration::from_secs(60));
     cleanup_interval.tick().await; // consume the immediate first tick
@@ -127,6 +198,11 @@ pub async fn run_event_loop(
                     &rendezvous_peers,
                     &adaptive_router,
                     local_peer_id,
+                    &zk_relay_node,
+                    &mut zk_relay_client,
+                    zk_relay_enabled,
+                    &mut pending_circuit_builds,
+                    &mut pending_relay_fetches,
                 ).await;
             }
             Some(cmd) = command_rx.recv() => {
@@ -138,6 +214,11 @@ pub async fn run_event_loop(
                     &mut pending_name_queries,
                     &adaptive_router,
                     local_peer_id,
+                    &mut zk_relay_client,
+                    &zk_relay_node,
+                    zk_relay_enabled,
+                    &mut pending_circuit_builds,
+                    &mut pending_relay_fetches,
                 );
             }
             _ = cleanup_interval.tick() => {
@@ -148,6 +229,19 @@ pub async fn run_event_loop(
                 let after = pending_requests.len() + pending_dht_queries.len() + pending_name_queries.len();
                 if before > after {
                     tracing::debug!(removed = before - after, "Cleaned up stale pending queries");
+                }
+
+                // Clean up expired ZK relay circuits
+                if zk_relay_enabled {
+                    let client_expired = zk_relay_client.cleanup_expired();
+                    let node_expired = zk_relay_node.cleanup_expired();
+                    if client_expired > 0 || node_expired > 0 {
+                        tracing::debug!(
+                            client_expired,
+                            node_expired,
+                            "Cleaned up expired ZK relay circuits"
+                        );
+                    }
                 }
 
                 // Log censorship status periodically
@@ -192,6 +286,11 @@ async fn handle_swarm_event(
     rendezvous_peers: &HashSet<PeerId>,
     adaptive_router: &AdaptiveRouter,
     local_peer_id: PeerId,
+    zk_relay_node: &ZkRelayNode,
+    zk_relay_client: &mut ZkRelayClient,
+    zk_relay_enabled: bool,
+    pending_circuit_builds: &mut HashMap<CircuitId, PendingCircuitBuild>,
+    pending_relay_fetches: &mut HashMap<CircuitId, PendingRelayFetch>,
 ) {
     match event {
         SwarmEvent::ConnectionEstablished {
@@ -258,6 +357,11 @@ async fn handle_swarm_event(
                 pending_name_queries,
                 adaptive_router,
                 local_peer_id,
+                zk_relay_node,
+                zk_relay_client,
+                zk_relay_enabled,
+                pending_circuit_builds,
+                pending_relay_fetches,
             )
             .await;
         }
@@ -309,6 +413,11 @@ async fn handle_behaviour_event(
     >,
     adaptive_router: &AdaptiveRouter,
     local_peer_id: PeerId,
+    zk_relay_node: &ZkRelayNode,
+    zk_relay_client: &mut ZkRelayClient,
+    zk_relay_enabled: bool,
+    pending_circuit_builds: &mut HashMap<CircuitId, PendingCircuitBuild>,
+    pending_relay_fetches: &mut HashMap<CircuitId, PendingRelayFetch>,
 ) {
     use protocol::node::ShadowBehaviourEvent;
 
@@ -414,13 +523,26 @@ async fn handle_behaviour_event(
             request_response::Message::Request {
                 request, channel, ..
             } => {
-                handle_content_request(peer, request, channel, node, cache);
+                handle_content_request(
+                    peer, request, channel, node, cache,
+                    zk_relay_node, zk_relay_enabled,
+                );
             }
             request_response::Message::Response {
                 request_id,
                 response,
             } => {
-                handle_content_response(request_id, response, pending_requests, adaptive_router, local_peer_id);
+                handle_content_response(
+                    request_id,
+                    response,
+                    pending_requests,
+                    adaptive_router,
+                    local_peer_id,
+                    zk_relay_client,
+                    pending_circuit_builds,
+                    pending_relay_fetches,
+                    node,
+                );
             }
         },
 
@@ -617,14 +739,26 @@ async fn handle_behaviour_event(
 ///
 /// The gateway stores whole files by CID in its cache, not individual fragments.
 /// If the requested hash matches a cached CID, serve it; otherwise NotFound.
+///
+/// If ZK relay is enabled and the request looks like a relay cell (prefixed with
+/// `__zk_relay_`), we process it through the relay node and forward as needed.
 fn handle_content_request(
     peer: PeerId,
     request: ContentRequest,
     channel: ResponseChannel<ContentResponse>,
     node: &mut ShadowNode,
     cache: &ContentCache,
+    zk_relay_node: &ZkRelayNode,
+    zk_relay_enabled: bool,
 ) {
     let response = match request {
+        ContentRequest::RelayCell { cell_data } => {
+            handle_relay_cell_request(
+                peer, &cell_data, node, cache,
+                zk_relay_node, zk_relay_enabled,
+            )
+        }
+
         ContentRequest::GetFragment { fragment_hash } => {
             match cache.get(&fragment_hash) {
                 Some((data, _content_type)) => {
@@ -687,6 +821,140 @@ fn handle_content_request(
     }
 }
 
+// ── ZK Relay cell handling ────────────────────────────────────────
+
+/// Process an incoming ZK relay cell from a peer.
+///
+/// Deserializes the cell, processes it through the `ZkRelayNode`, and returns
+/// the appropriate `ContentResponse`. If the action is `Forward`, the cell is
+/// sent to the next hop via the swarm; the response to the sender is always
+/// a `RelayCell` (carrying either a CREATED response or an empty ack).
+fn handle_relay_cell_request(
+    peer: PeerId,
+    cell_data: &[u8],
+    node: &mut ShadowNode,
+    cache: &ContentCache,
+    zk_relay_node: &ZkRelayNode,
+    zk_relay_enabled: bool,
+) -> ContentResponse {
+    if !zk_relay_enabled {
+        tracing::debug!(%peer, "Received relay cell but ZK relay is disabled, ignoring");
+        return ContentResponse::Error {
+            message: "ZK relay is not enabled on this gateway".to_string(),
+        };
+    }
+
+    let cell = match protocol::zk_relay::RelayCell::deserialize(cell_data) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(%peer, %e, "Failed to deserialize relay cell");
+            return ContentResponse::Error {
+                message: format!("Invalid relay cell: {}", e),
+            };
+        }
+    };
+
+    let circuit_id_hex = hex::encode(&cell.circuit_id[..8]);
+    tracing::debug!(
+        %peer,
+        circuit = %circuit_id_hex,
+        cell_type = ?cell.cell_type,
+        "Processing incoming relay cell"
+    );
+
+    match zk_relay_node.process_cell(cell, peer) {
+        Ok(RelayAction::Respond(response_cell)) => {
+            tracing::debug!(
+                %peer,
+                circuit = %circuit_id_hex,
+                "Relay: responding to sender"
+            );
+            ContentResponse::RelayCell {
+                cell_data: response_cell.serialize(),
+            }
+        }
+        Ok(RelayAction::Forward { cell: fwd_cell, to_peer }) => {
+            tracing::debug!(
+                %peer,
+                %to_peer,
+                circuit = %circuit_id_hex,
+                "Relay: forwarding cell to next hop"
+            );
+            // Forward the cell to the next peer via content request
+            let forward_request = ContentRequest::RelayCell {
+                cell_data: fwd_cell.serialize(),
+            };
+            let _req_id = node
+                .swarm_mut()
+                .behaviour_mut()
+                .content_req_resp
+                .send_request(&to_peer, forward_request);
+
+            // Acknowledge receipt to sender with an empty relay cell response
+            ContentResponse::RelayCell {
+                cell_data: Vec::new(),
+            }
+        }
+        Ok(RelayAction::Exit { data, circuit_id }) => {
+            tracing::info!(
+                %peer,
+                circuit = %hex::encode(&circuit_id[..8]),
+                bytes = data.len(),
+                "Relay: exit node processing — retrieving content"
+            );
+            // The exit data is a serialized BlindRequest; extract the content
+            // hash and try to serve from cache.
+            match bincode::deserialize::<protocol::zk_relay::BlindRequest>(&data) {
+                Ok(blind_req) => {
+                    match cache.get(&blind_req.content_hash) {
+                        Some((content_data, _mime)) => {
+                            // Wrap content in a BlindResponse and send back through circuit
+                            let blind_resp = protocol::zk_relay::BlindResponse {
+                                request_id: blind_req.request_id,
+                                encrypted_content: content_data,
+                                content_hash: blind_req.content_hash,
+                                success: true,
+                                error: None,
+                            };
+                            let resp_bytes = bincode::serialize(&blind_resp).unwrap_or_default();
+                            ContentResponse::RelayCell { cell_data: resp_bytes }
+                        }
+                        None => {
+                            let blind_resp = protocol::zk_relay::BlindResponse {
+                                request_id: blind_req.request_id,
+                                encrypted_content: Vec::new(),
+                                content_hash: blind_req.content_hash.clone(),
+                                success: false,
+                                error: Some("Content not found".to_string()),
+                            };
+                            let resp_bytes = bincode::serialize(&blind_resp).unwrap_or_default();
+                            ContentResponse::RelayCell { cell_data: resp_bytes }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(%peer, %e, "Failed to deserialize BlindRequest at exit node");
+                    ContentResponse::Error {
+                        message: format!("Invalid exit payload: {}", e),
+                    }
+                }
+            }
+        }
+        Ok(RelayAction::Drop) => {
+            tracing::trace!(%peer, circuit = %circuit_id_hex, "Relay: dropped cell (padding)");
+            ContentResponse::RelayCell {
+                cell_data: Vec::new(),
+            }
+        }
+        Err(e) => {
+            tracing::warn!(%peer, circuit = %circuit_id_hex, %e, "Relay: cell processing failed");
+            ContentResponse::Error {
+                message: format!("Relay error: {}", e),
+            }
+        }
+    }
+}
+
 // ── Outbound response handling ───────────────────────────────────
 
 /// Route a received response back to the waiting HTTP handler.
@@ -696,6 +964,10 @@ fn handle_content_response(
     pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
     adaptive_router: &AdaptiveRouter,
     local_peer_id: PeerId,
+    zk_relay_client: &mut ZkRelayClient,
+    pending_circuit_builds: &mut HashMap<CircuitId, PendingCircuitBuild>,
+    pending_relay_fetches: &mut HashMap<CircuitId, PendingRelayFetch>,
+    node: &mut ShadowNode,
 ) {
     let Some(pending) = pending_requests.remove(&request_id) else {
         tracing::warn!(?request_id, "Received response for unknown request");
@@ -705,6 +977,22 @@ fn handle_content_response(
     let target_peer = pending.target_peer();
 
     match (pending, response) {
+        // ── ZK Relay cell response ──────────────────────────────
+        // This handles responses to relay cells we sent (circuit building and data)
+        (
+            PendingReply::RelayResponse { circuit_id, .. },
+            ContentResponse::RelayCell { cell_data },
+        ) => {
+            handle_relay_cell_response(
+                circuit_id,
+                &cell_data,
+                zk_relay_client,
+                pending_circuit_builds,
+                pending_relay_fetches,
+                node,
+            );
+        }
+
         // Fragment response — verify BLAKE3 hash
         (
             PendingReply::Fragment {
@@ -780,6 +1068,196 @@ fn handle_content_response(
     }
 }
 
+/// Handle a relay cell response (for circuit building or data fetching).
+///
+/// Called when we receive a `ContentResponse::RelayCell` in response to a relay cell
+/// we previously sent. This is either a CREATED response during circuit building,
+/// or a RELAY response carrying content data back through the circuit.
+fn handle_relay_cell_response(
+    circuit_id: CircuitId,
+    cell_data: &[u8],
+    zk_relay_client: &mut ZkRelayClient,
+    pending_circuit_builds: &mut HashMap<CircuitId, PendingCircuitBuild>,
+    pending_relay_fetches: &mut HashMap<CircuitId, PendingRelayFetch>,
+    node: &mut ShadowNode,
+) {
+    let cell = match RelayCell::deserialize(cell_data) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                circuit = %hex::encode(&circuit_id[..8]),
+                ?e,
+                "Failed to deserialize relay cell response"
+            );
+            // Fail any pending circuit build
+            if let Some(mut build) = pending_circuit_builds.remove(&circuit_id) {
+                if let Some(reply) = build.reply.take() {
+                    let _ = reply.send(Err(FetchError::RelayError(
+                        "Invalid relay cell response".to_string(),
+                    )));
+                }
+            }
+            return;
+        }
+    };
+
+    match cell.cell_type {
+        CellType::Created => {
+            // Part of circuit building — process the CREATED handshake
+            if let Some(build) = pending_circuit_builds.get_mut(&circuit_id) {
+                let hop_index = build.next_hop_index;
+
+                match CreatedHandshake::deserialize(&cell.payload) {
+                    Ok(handshake) => {
+                        match zk_relay_client.process_created_response(&circuit_id, &handshake, hop_index) {
+                            Ok(Some(extend_cell)) => {
+                                // Need to extend to next hop — send EXTEND through entry node
+                                build.next_hop_index += 1;
+                                tracing::debug!(
+                                    circuit = %hex::encode(&circuit_id[..8]),
+                                    hop = hop_index,
+                                    "Circuit build: hop {} complete, extending",
+                                    hop_index
+                                );
+
+                                if let Some(entry_peer) = zk_relay_client.get_entry_node(&circuit_id) {
+                                    let request = ContentRequest::RelayCell {
+                                        cell_data: extend_cell.serialize(),
+                                    };
+                                    let _req_id = node
+                                        .swarm_mut()
+                                        .behaviour_mut()
+                                        .content_req_resp
+                                        .send_request(&entry_peer, request);
+                                    tracing::debug!(
+                                        circuit = %hex::encode(&circuit_id[..8]),
+                                        "Sent EXTEND cell for next hop"
+                                    );
+                                }
+                            }
+                            Ok(None) => {
+                                // All hops complete — circuit is ready
+                                tracing::info!(
+                                    circuit = %hex::encode(&circuit_id[..8]),
+                                    hops = build.total_hops,
+                                    "Circuit build complete"
+                                );
+                                if let Some(mut build) = pending_circuit_builds.remove(&circuit_id) {
+                                    if let Some(reply) = build.reply.take() {
+                                        let _ = reply.send(Ok(circuit_id));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    circuit = %hex::encode(&circuit_id[..8]),
+                                    hop = hop_index,
+                                    ?e,
+                                    "Circuit build: ECDH handshake failed"
+                                );
+                                if let Some(mut build) = pending_circuit_builds.remove(&circuit_id) {
+                                    if let Some(reply) = build.reply.take() {
+                                        let _ = reply.send(Err(FetchError::RelayError(
+                                            format!("Handshake failed at hop {}: {}", hop_index, e),
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            circuit = %hex::encode(&circuit_id[..8]),
+                            ?e,
+                            "Circuit build: failed to deserialize CREATED handshake"
+                        );
+                        if let Some(mut build) = pending_circuit_builds.remove(&circuit_id) {
+                            if let Some(reply) = build.reply.take() {
+                                let _ = reply.send(Err(FetchError::RelayError(
+                                    "Invalid CREATED handshake".to_string(),
+                                )));
+                            }
+                        }
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    circuit = %hex::encode(&circuit_id[..8]),
+                    "Received CREATED for unknown circuit build"
+                );
+            }
+        }
+
+        CellType::Relay => {
+            // Response data coming back through the circuit
+            if let Some(fetch) = pending_relay_fetches.remove(&circuit_id) {
+                match zk_relay_client.unwrap_response(&circuit_id, &cell) {
+                    Ok(plaintext) => {
+                        // Deserialize the BlindResponse
+                        match bincode::deserialize::<protocol::zk_relay::BlindResponse>(
+                            &plaintext,
+                        ) {
+                            Ok(blind_resp) => {
+                                if blind_resp.success {
+                                    tracing::debug!(
+                                        circuit = %hex::encode(&circuit_id[..8]),
+                                        content_hash = %blind_resp.content_hash,
+                                        bytes = blind_resp.encrypted_content.len(),
+                                        "Relay fetch: received content via circuit"
+                                    );
+                                    let _ = fetch.reply.send(Ok(blind_resp.encrypted_content));
+                                } else {
+                                    let msg = blind_resp
+                                        .error
+                                        .unwrap_or_else(|| "Unknown error".to_string());
+                                    let _ = fetch.reply.send(Err(FetchError::PeerError(msg)));
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    circuit = %hex::encode(&circuit_id[..8]),
+                                    ?e,
+                                    "Relay fetch: failed to deserialize BlindResponse"
+                                );
+                                let _ = fetch.reply.send(Err(FetchError::RelayError(
+                                    "Invalid response from exit node".to_string(),
+                                )));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            circuit = %hex::encode(&circuit_id[..8]),
+                            ?e,
+                            "Relay fetch: failed to unwrap response"
+                        );
+                        let _ = fetch
+                            .reply
+                            .send(Err(FetchError::RelayError(format!("Unwrap failed: {}", e))));
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    circuit = %hex::encode(&circuit_id[..8]),
+                    "Received relay response for unknown fetch"
+                );
+            }
+        }
+
+        CellType::Padding => {
+            // Acknowledgement / padding — silently ignore
+        }
+
+        other => {
+            tracing::debug!(
+                circuit = %hex::encode(&circuit_id[..8]),
+                cell_type = ?other,
+                "Received unexpected relay cell type in response"
+            );
+        }
+    }
+}
+
 /// Resolve a pending reply with an error.
 fn resolve_pending(pending: PendingReply, err: Result<(), FetchError>) {
     let Err(e) = err else { return };
@@ -794,7 +1272,13 @@ fn resolve_pending(pending: PendingReply, err: Result<(), FetchError>) {
                 FetchError::PeerError(s) => FetchError::PeerError(s),
                 FetchError::ChannelClosed => FetchError::ChannelClosed,
                 FetchError::Timeout => FetchError::Timeout,
+                FetchError::RelayError(s) => FetchError::RelayError(s),
             }));
+        }
+        PendingReply::RelayResponse { .. } => {
+            // Relay responses don't have a direct reply channel — errors are
+            // handled through the circuit build or relay fetch tracking maps.
+            tracing::debug!("Relay response error: {}", e);
         }
     }
 }
@@ -896,6 +1380,11 @@ fn handle_command(
     >,
     adaptive_router: &AdaptiveRouter,
     local_peer_id: PeerId,
+    zk_relay_client: &mut ZkRelayClient,
+    _zk_relay_node: &ZkRelayNode,
+    zk_relay_enabled: bool,
+    pending_circuit_builds: &mut HashMap<CircuitId, PendingCircuitBuild>,
+    pending_relay_fetches: &mut HashMap<CircuitId, PendingRelayFetch>,
 ) {
     match cmd {
         P2pCommand::FetchFragment {
@@ -1042,6 +1531,160 @@ fn handle_command(
                 "Received external censorship report"
             );
             record_censorship_failure(adaptive_router, local_peer_id, peer_id, failure_type);
+        }
+
+        P2pCommand::BuildCircuit { peers, reply } => {
+            if !zk_relay_enabled {
+                tracing::warn!("BuildCircuit command received but ZK relay is disabled");
+                let _ = reply.send(Err(FetchError::RelayError(
+                    "ZK relay is not enabled".to_string(),
+                )));
+                return;
+            }
+            if peers.len() < 2 {
+                let _ = reply.send(Err(FetchError::RelayError(
+                    "Need at least 2 relay hops".to_string(),
+                )));
+                return;
+            }
+
+            match zk_relay_client.build_circuit(&peers) {
+                Ok(circuit_id) => {
+                    tracing::info!(
+                        circuit = %hex::encode(&circuit_id[..8]),
+                        hops = peers.len(),
+                        "Building ZK relay circuit"
+                    );
+
+                    // Get the CREATE cell for the first hop
+                    match zk_relay_client.get_create_cell(&circuit_id) {
+                        Ok(create_cell) => {
+                            // Send CREATE to entry node
+                            let entry_peer = peers[0];
+                            let request = ContentRequest::RelayCell {
+                                cell_data: create_cell.serialize(),
+                            };
+                            let req_id = node
+                                .swarm_mut()
+                                .behaviour_mut()
+                                .content_req_resp
+                                .send_request(&entry_peer, request);
+
+                            // Track the pending circuit build
+                            pending_circuit_builds.insert(circuit_id, PendingCircuitBuild {
+                                _circuit_id: circuit_id,
+                                next_hop_index: 0,
+                                total_hops: peers.len(),
+                                reply: Some(reply),
+                            });
+
+                            // Track the pending response
+                            pending_requests.insert(req_id, PendingReply::RelayResponse {
+                                target_peer: entry_peer,
+                                circuit_id,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = reply.send(Err(FetchError::RelayError(
+                                format!("Failed to create CREATE cell: {}", e),
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = reply.send(Err(FetchError::RelayError(
+                        format!("Failed to build circuit: {}", e),
+                    )));
+                }
+            }
+        }
+
+        P2pCommand::SendRelayCell { cell, target } => {
+            if !zk_relay_enabled {
+                tracing::warn!("SendRelayCell command received but ZK relay is disabled");
+                return;
+            }
+            let circuit_id = cell.circuit_id;
+            let request = ContentRequest::RelayCell {
+                cell_data: cell.serialize(),
+            };
+            let req_id = node
+                .swarm_mut()
+                .behaviour_mut()
+                .content_req_resp
+                .send_request(&target, request);
+            pending_requests.insert(req_id, PendingReply::RelayResponse {
+                target_peer: target,
+                circuit_id,
+            });
+        }
+
+        P2pCommand::FetchViaCircuit {
+            circuit_id,
+            content_hash,
+            reply,
+        } => {
+            if !zk_relay_enabled {
+                tracing::warn!("FetchViaCircuit command received but ZK relay is disabled");
+                let _ = reply.send(Err(FetchError::RelayError(
+                    "ZK relay is not enabled".to_string(),
+                )));
+                return;
+            }
+
+            // Build a BlindRequest, wrap it in onion layers, send via circuit
+            let blind_req = protocol::zk_relay::BlindRequest::new(content_hash.clone());
+            let payload = match bincode::serialize(&blind_req) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = reply.send(Err(FetchError::RelayError(
+                        format!("Failed to serialize request: {}", e),
+                    )));
+                    return;
+                }
+            };
+
+            match zk_relay_client.wrap_request(&circuit_id, &payload) {
+                Ok(relay_cell) => {
+                    if let Some(entry_peer) = zk_relay_client.get_entry_node(&circuit_id) {
+                        tracing::debug!(
+                            circuit = %hex::encode(&circuit_id[..8]),
+                            %content_hash,
+                            "Fetching content via ZK relay circuit"
+                        );
+
+                        let request = ContentRequest::RelayCell {
+                            cell_data: relay_cell.serialize(),
+                        };
+                        let req_id = node
+                            .swarm_mut()
+                            .behaviour_mut()
+                            .content_req_resp
+                            .send_request(&entry_peer, request);
+
+                        // Track pending fetch
+                        pending_relay_fetches.insert(circuit_id, PendingRelayFetch {
+                            _circuit_id: circuit_id,
+                            reply,
+                        });
+
+                        // Track the response
+                        pending_requests.insert(req_id, PendingReply::RelayResponse {
+                            target_peer: entry_peer,
+                            circuit_id,
+                        });
+                    } else {
+                        let _ = reply.send(Err(FetchError::RelayError(
+                            "Circuit has no entry node".to_string(),
+                        )));
+                    }
+                }
+                Err(e) => {
+                    let _ = reply.send(Err(FetchError::RelayError(
+                        format!("Failed to wrap request: {}", e),
+                    )));
+                }
+            }
         }
     }
 }
