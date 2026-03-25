@@ -803,14 +803,12 @@ impl ZkRelayClient {
         }
     }
 
-    /// Build circuit synchronously for testing (uses mock keys)
+    /// Build a circuit with mock keys for unit testing.
     ///
-    /// This method simulates the full ECDH handshake by generating mock relay keys.
-    /// In production, use `build_circuit` + `process_created_response` for async handshakes.
-    ///
-    /// # Warning
-    /// This method is intended for testing only. The keys generated are not from real
-    /// relay nodes and won't work with actual relay infrastructure.
+    /// Production code must use `build_circuit()` + `get_create_cell()` +
+    /// `process_created_response()` which performs real ECDH handshakes
+    /// with relay nodes over the network.
+    #[cfg(any(test, feature = "test-helpers"))]
     pub fn build_circuit_sync(&mut self, peers: &[PeerId]) -> Result<CircuitId, RelayError> {
         if peers.len() < 2 {
             return Err(RelayError::CircuitBuildFailed(
@@ -824,7 +822,7 @@ impl ZkRelayClient {
         for (i, peer) in peers.iter().enumerate() {
             circuit.add_hop(*peer);
 
-            // Simulate completed handshake with deterministic key
+            // Mock handshake: generate random relay key (test only)
             let mut context = Vec::new();
             context.extend_from_slice(&circuit_id);
             context.extend_from_slice(&i.to_le_bytes());
