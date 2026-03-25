@@ -253,6 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let loop_metrics = metrics.clone();
                 let loop_storage = storage.clone();
                 let loop_dht_ttl = config.network.dht_ttl_secs;
+                let loop_enable_zk_relay = config.network.enable_zk_relay;
                 tokio::spawn(async move {
                     p2p::run_event_loop(
                         node,
@@ -264,6 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         loop_dht_ttl,
                         rendezvous_peer_ids,
                         bootstrap_peers,
+                        loop_enable_zk_relay,
                     )
                     .await;
                 });

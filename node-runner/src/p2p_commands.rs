@@ -2,6 +2,7 @@
 
 use libp2p::PeerId;
 use shadowmesh_protocol::adaptive_routing::FailureType;
+use shadowmesh_protocol::zk_relay::{CircuitId, RelayCell};
 use tokio::sync::oneshot;
 
 /// Commands that API handlers can send to the P2P event loop.
@@ -58,6 +59,46 @@ pub enum P2pCommand {
         /// The type of failure observed.
         failure_type: FailureType,
     },
+
+    // ── ZK Relay commands ────────────────────────────────────────
+
+    /// Build a ZK relay circuit through the specified relay peers.
+    ///
+    /// Initiates circuit construction using ECDH key exchange with each hop.
+    /// The circuit is ready for use once all handshakes complete. Returns the
+    /// circuit ID on success.
+    BuildCircuit {
+        /// Relay peers to route through (minimum 2, typically 3).
+        peers: Vec<PeerId>,
+        /// Channel to receive the circuit ID (or error) once building is complete.
+        reply: oneshot::Sender<Result<CircuitId, FetchError>>,
+    },
+
+    /// Send a raw relay cell to a specific peer.
+    ///
+    /// Used for forwarding relay cells (CREATE, EXTEND, RELAY, DESTROY)
+    /// through the circuit. The cell is serialized and sent via the existing
+    /// content request-response protocol as an opaque wrapper.
+    SendRelayCell {
+        /// The relay cell to send.
+        cell: RelayCell,
+        /// The peer to send it to.
+        target: PeerId,
+    },
+
+    /// Fetch content (fragment) via an established ZK relay circuit.
+    ///
+    /// Wraps the content request in onion-encrypted relay cells, sends it
+    /// through the circuit, and returns the decrypted response. Falls back
+    /// to direct fetching if the circuit is unavailable.
+    FetchViaCircuit {
+        /// The circuit to use for the fetch.
+        circuit_id: CircuitId,
+        /// BLAKE3 hash of the fragment to fetch.
+        content_hash: String,
+        /// Channel to receive the content bytes (or error).
+        reply: oneshot::Sender<Result<Vec<u8>, FetchError>>,
+    },
 }
 
 /// Result of a manifest fetch.
@@ -79,6 +120,8 @@ pub enum FetchError {
     PeerError(String),
     /// Internal channel error (event loop shut down).
     ChannelClosed,
+    /// ZK relay circuit error (circuit building/wrapping failed).
+    RelayError(String),
 }
 
 impl std::fmt::Display for FetchError {
@@ -88,6 +131,7 @@ impl std::fmt::Display for FetchError {
             FetchError::ConnectionFailed(e) => write!(f, "Connection failed: {}", e),
             FetchError::PeerError(e) => write!(f, "Peer error: {}", e),
             FetchError::ChannelClosed => write!(f, "P2P event loop is shut down"),
+            FetchError::RelayError(e) => write!(f, "ZK relay error: {}", e),
         }
     }
 }

@@ -196,6 +196,13 @@ pub struct NetworkConfig {
     /// Increases relay capacity and prints the full multiaddr on startup.
     #[serde(default)]
     pub relay_mode: bool,
+
+    /// Enable ZK relay circuit routing for plausible deniability.
+    /// When enabled, content fetches are routed through multi-hop onion circuits
+    /// instead of direct peer-to-peer requests. When disabled (default), the node
+    /// falls back to direct fetching.
+    #[serde(default)]
+    pub enable_zk_relay: bool,
 }
 
 fn default_listen_addresses() -> Vec<String> {
@@ -232,6 +239,7 @@ impl Default for NetworkConfig {
             replication_factor: default_replication_factor(),
             dht_ttl_secs: default_dht_ttl(),
             relay_mode: false,
+            enable_zk_relay: false,
         }
     }
 }
@@ -558,6 +566,9 @@ impl NodeConfig {
         println!("   Dashboard: http://{}", self.dashboard.bind_address());
         if self.network.relay_mode {
             println!("   Mode: RELAY BOOTSTRAP");
+        }
+        if self.network.enable_zk_relay {
+            println!("   ZK Relay: ENABLED (circuit-based routing)");
         }
         if let Some(region) = &self.identity.region {
             println!("   Region: {}", region);
