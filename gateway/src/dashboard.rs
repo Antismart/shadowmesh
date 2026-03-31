@@ -818,6 +818,11 @@ pub async fn deploy_from_github(
     let build_command = request.build_command.clone();
     let output_directory = request.output_directory.clone();
 
+    // Capture the GitHub username for per-user deployment tracking
+    let deployed_by = read_lock(&state.github_auth)
+        .as_ref()
+        .map(|auth| auth.user.login.clone());
+
     // Create a build session for SSE streaming
     let deploy_id = Uuid::new_v4().to_string();
     let (session, _rx) = BuildSession::new();
@@ -844,6 +849,7 @@ pub async fn deploy_from_github(
             build_command.as_deref(),
             output_directory.as_deref(),
             &session_clone,
+            deployed_by.as_deref(),
         )
         .await
         {
@@ -1169,8 +1175,21 @@ fn verify_webhook_signature(secret: &str, body: &[u8], signature: &str) -> bool 
     subtle::ConstantTimeEq::ct_eq(computed.as_bytes(), expected.as_bytes()).into()
 }
 
-pub async fn get_deployments(State(state): State<AppState>) -> impl IntoResponse {
-    let deployments: Vec<Deployment> = state.deployments.iter().map(|r| r.value().clone()).collect();
+pub async fn get_deployments(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let current_user = resolve_auth(&state, &headers).map(|auth| auth.user.login);
+    let deployments: Vec<Deployment> = state
+        .deployments
+        .iter()
+        .filter(|r| match (&current_user, &r.value().deployed_by) {
+            (Some(user), Some(owner)) => user == owner,
+            (Some(_), None) => true, // Show legacy deployments (no owner) to everyone
+            (None, _) => true,       // No auth = show all (public mode)
+        })
+        .map(|r| r.value().clone())
+        .collect();
     Json(deployments)
 }
 
@@ -2024,6 +2043,7 @@ async fn deploy_github_project_streaming(
     build_command: Option<&str>,
     output_directory: Option<&str>,
     session: &Arc<BuildSession>,
+    deployed_by: Option<&str>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo_info =
         parse_github_url(url).ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
@@ -2146,6 +2166,7 @@ async fn deploy_github_project_streaming(
     );
 
     deployment.domain = crate::auto_assign_domain(state, &repo_info.repo, &cid).await;
+    deployment.deployed_by = deployed_by.map(|s| s.to_string());
 
     if let Some(ref redis) = state.redis {
         if let Err(e) = deployment.save_to_redis(redis).await {
@@ -3015,6 +3036,9 @@ pub struct Deployment {
     /// Custom output directory override (e.g. "dist")
     #[serde(default)]
     pub output_directory: Option<String>,
+    /// GitHub username that created this deployment
+    #[serde(default)]
+    pub deployed_by: Option<String>,
 }
 
 impl Deployment {
@@ -3036,6 +3060,7 @@ impl Deployment {
             env_vars: None,
             build_command: None,
             output_directory: None,
+            deployed_by: None,
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -3070,6 +3095,7 @@ impl Deployment {
             env_vars,
             build_command,
             output_directory,
+            deployed_by: None,
         }
     }
 

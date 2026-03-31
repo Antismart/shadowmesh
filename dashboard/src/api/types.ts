@@ -11,6 +11,7 @@ export interface Deployment {
   build_logs: string | null;
   status: string;
   domain: string | null;
+  deployed_by: string | null;
   env_vars?: Record<string, string>;
   build_command?: string;
   output_directory?: string;
