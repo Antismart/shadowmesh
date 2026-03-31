@@ -84,6 +84,10 @@ filetime = "0.2"
 # Lock-free concurrent hash map
 dashmap = "6"
 
+# Process monitoring for dynamic deployments
+sysinfo = "0.32"
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 hyper = { workspace = true }

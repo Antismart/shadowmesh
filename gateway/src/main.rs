@@ -368,6 +368,12 @@ async fn main() {
         per_cid_requests: Arc::new(DashMap::new()),
         per_cid_bytes: Arc::new(DashMap::new()),
         build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+        process_manager: if config.dynamic.enabled {
+            let pm_config: process_manager::ProcessManagerConfig = config.dynamic.clone().into();
+            Some(Arc::new(process_manager::ProcessManager::new(pm_config)))
+        } else {
+            None
+        },
     };
 
     // Clone audit logger before state is moved into the router

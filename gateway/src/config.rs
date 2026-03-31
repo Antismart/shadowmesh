@@ -23,6 +23,8 @@ pub struct Config {
     pub naming: NamingConfig,
     #[serde(default)]
     pub p2p: P2pConfig,
+    #[serde(default)]
+    pub dynamic: DynamicDeployConfig,
 }
 
 /// Validation errors for configuration
@@ -382,6 +384,53 @@ impl Default for P2pConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct DynamicDeployConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_port_range_start")]
+    pub port_range_start: u16,
+    #[serde(default = "default_port_range_end")]
+    pub port_range_end: u16,
+    #[serde(default = "default_max_processes")]
+    pub max_processes: usize,
+    #[serde(default = "default_memory_limit_mb")]
+    pub memory_limit_mb: u64,
+    #[serde(default = "default_health_check_interval")]
+    pub health_check_interval_seconds: u64,
+    #[serde(default = "default_startup_timeout")]
+    pub startup_timeout_seconds: u64,
+    #[serde(default = "default_max_restart_count")]
+    pub max_restart_count: u32,
+    #[serde(default = "default_node_binary")]
+    pub node_binary: String,
+}
+
+fn default_port_range_start() -> u16 { 9000 }
+fn default_port_range_end() -> u16 { 9999 }
+fn default_max_processes() -> usize { 50 }
+fn default_memory_limit_mb() -> u64 { 512 }
+fn default_health_check_interval() -> u64 { 10 }
+fn default_startup_timeout() -> u64 { 30 }
+fn default_max_restart_count() -> u32 { 5 }
+fn default_node_binary() -> String { "node".to_string() }
+
+impl Default for DynamicDeployConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port_range_start: default_port_range_start(),
+            port_range_end: default_port_range_end(),
+            max_processes: default_max_processes(),
+            memory_limit_mb: default_memory_limit_mb(),
+            health_check_interval_seconds: default_health_check_interval(),
+            startup_timeout_seconds: default_startup_timeout(),
+            max_restart_count: default_max_restart_count(),
+            node_binary: default_node_binary(),
+        }
+    }
+}
+
 impl Config {
     /// Load configuration from file and environment variables
     ///
@@ -554,6 +603,7 @@ impl Config {
             redis: RedisConfig::default(),
             naming: NamingConfig::default(),
             p2p: P2pConfig::default(),
+            dynamic: DynamicDeployConfig::default(),
         }
     }
 }

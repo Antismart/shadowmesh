@@ -33,6 +33,9 @@ pub mod signaling;
 pub mod spa;
 pub mod telemetry;
 pub mod upload;
+pub mod framework_detect;
+pub mod process_manager;
+pub mod reverse_proxy;
 
 use axum::{
     body::Body,
@@ -136,6 +139,8 @@ pub struct AppState {
     pub per_cid_bytes: Arc<DashMap<String, std::sync::atomic::AtomicU64>>,
     /// Limits concurrent builds to prevent resource exhaustion
     pub build_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Process manager for dynamic (SSR) deployments
+    pub process_manager: Option<Arc<process_manager::ProcessManager>>,
 }
 
 /// Build a Router with just the content-serving routes.
