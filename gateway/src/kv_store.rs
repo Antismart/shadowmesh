@@ -26,11 +26,23 @@ pub struct KvStore {
 
 impl KvStore {
     pub fn new(config: KvConfig, redis: Option<Arc<crate::redis_client::RedisClient>>) -> Self {
-        Self {
+        let store = Self {
             namespaces: DashMap::new(),
             redis,
             config,
-        }
+        };
+        store
+    }
+
+    /// Start a background task that cleans up expired KV entries every 60 seconds.
+    pub fn start_cleanup_task(self: &Arc<Self>) {
+        let store = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                store.cleanup_expired();
+            }
+        });
     }
 
     pub fn get(&self, namespace: &str, key: &str) -> Option<Vec<u8>> {
@@ -64,11 +76,18 @@ impl KvStore {
             .entry(namespace.to_string())
             .or_insert_with(DashMap::new);
 
-        if !ns.contains_key(key) && ns.len() >= self.config.max_keys_per_namespace {
-            return Err(format!(
-                "Namespace '{}' key limit reached ({})",
-                namespace, self.config.max_keys_per_namespace
-            ));
+        // P12: Check limit only for new keys (updates are always allowed).
+        // DashMap operations are atomic per-key, so contains_key + len check
+        // is safe against races for the same key. For different keys, we accept
+        // a small over-count window (max overshoot = concurrent writer count).
+        if !ns.contains_key(key) {
+            let current_len = ns.len();
+            if current_len >= self.config.max_keys_per_namespace {
+                return Err(format!(
+                    "Namespace '{}' key limit reached ({}/{})",
+                    namespace, current_len, self.config.max_keys_per_namespace
+                ));
+            }
         }
 
         let expires_at = ttl_secs.map(|s| Instant::now() + Duration::from_secs(s));

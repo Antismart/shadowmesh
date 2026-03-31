@@ -1,6 +1,8 @@
 use protocol::StorageLayer;
 use std::sync::Arc;
 
+const MAX_BLOB_SIZE: usize = 100 * 1024 * 1024; // 100 MB
+
 pub struct BlobStorage {
     storage: Arc<StorageLayer>,
 }
@@ -10,8 +12,11 @@ impl BlobStorage {
         Self { storage }
     }
 
-    /// Store a blob, returns its CID.
+    /// Store a blob, returns its CID. Max 100MB.
     pub async fn put(&self, data: &[u8]) -> Result<String, String> {
+        if data.len() > MAX_BLOB_SIZE {
+            return Err(format!("Blob too large: {} bytes (max {}MB)", data.len(), MAX_BLOB_SIZE / (1024 * 1024)));
+        }
         let cid = self
             .storage
             .store_content(data.to_vec())

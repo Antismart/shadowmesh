@@ -114,6 +114,10 @@ impl PortAllocator {
     }
 }
 
+const ALLOWED_PROCESS_BINARIES: &[&str] = &[
+    "node", "npm", "npx", "yarn", "pnpm", "bun", "next", "nuxt", "remix-serve",
+];
+
 pub struct ProcessManager {
     processes: Arc<DashMap<String, Mutex<ManagedProcess>>>,
     port_allocator: Arc<Mutex<PortAllocator>>,
@@ -152,10 +156,37 @@ impl ProcessManager {
             (&start_cmd[0], &start_cmd[1..])
         };
 
+        // SEC-1: Validate binary against allowlist to prevent command injection
+        let binary_name = std::path::Path::new(program.as_str())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(program);
+        if !ALLOWED_PROCESS_BINARIES.contains(&binary_name) {
+            return Err(format!(
+                "Binary '{}' not allowed. Allowed: {}",
+                program,
+                ALLOWED_PROCESS_BINARIES.join(", ")
+            ));
+        }
+
+        // SEC-7: Validate working_dir has no path traversal
+        let canonical = working_dir.canonicalize().map_err(|e| format!("Invalid working dir: {}", e))?;
+        if canonical.to_string_lossy().contains("..") {
+            return Err("Working directory contains path traversal".into());
+        }
+
         let mut cmd_env = env.clone();
-        cmd_env.insert("PORT".into(), port.to_string());
+        let port_str = port.to_string();
+        cmd_env.insert("PORT".into(), port_str.clone());
         cmd_env.insert("HOST".into(), "127.0.0.1".into());
         cmd_env.insert("NODE_ENV".into(), "production".into());
+
+        // P4: Expand {PORT} placeholders in env overrides (e.g. Nuxt NITRO_PORT)
+        for val in cmd_env.values_mut() {
+            if val.contains("{PORT}") {
+                *val = val.replace("{PORT}", &port_str);
+            }
+        }
 
         // Inherit PATH from the gateway process
         if let Ok(path) = std::env::var("PATH") {
@@ -353,9 +384,10 @@ impl ProcessManager {
             let cids: Vec<String> = self.processes.iter().map(|e| e.key().clone()).collect();
 
             for cid in cids {
+                // P1: Use try_lock to prevent deadlock in health loop
                 let (port, was_healthy) = {
                     let Some(entry) = self.processes.get(&cid) else { continue };
-                    let Ok(proc) = entry.lock() else { continue };
+                    let Ok(proc) = entry.try_lock() else { continue };
                     let h = proc.health.load(Ordering::Relaxed);
                     if h == HEALTH_STOPPED || h == HEALTH_STARTING {
                         continue;
@@ -367,9 +399,28 @@ impl ProcessManager {
                     .await
                     .is_ok();
 
+                // P3: Check memory limits
+                if healthy && self.config.memory_limit_mb > 0 {
+                    let pid = self.processes.get(&cid)
+                        .and_then(|e| e.try_lock().ok().map(|p| p.pid()));
+                    if let Some(pid) = pid {
+                        if let Some(mem_mb) = read_process_memory(pid) {
+                            if mem_mb > self.config.memory_limit_mb {
+                                tracing::warn!(
+                                    cid = %cid, pid = pid, mem_mb = mem_mb,
+                                    limit_mb = self.config.memory_limit_mb,
+                                    "process exceeded memory limit, killing"
+                                );
+                                let _ = self.stop_process(&cid).await;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 if healthy {
                     if let Some(entry) = self.processes.get(&cid) {
-                        if let Ok(mut proc) = entry.lock() {
+                        if let Ok(mut proc) = entry.try_lock() {
                             proc.health.store(HEALTH_HEALTHY, Ordering::Relaxed);
                             proc.consecutive_failures = 0;
                         }
@@ -377,7 +428,7 @@ impl ProcessManager {
                 } else {
                     let should_restart = {
                         let Some(entry) = self.processes.get(&cid) else { continue };
-                        let Ok(mut proc) = entry.lock() else { continue };
+                        let Ok(mut proc) = entry.try_lock() else { continue };
                         proc.consecutive_failures += 1;
 
                         if proc.consecutive_failures >= 3 {

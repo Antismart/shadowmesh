@@ -27,9 +27,15 @@ impl SecretsManager {
                 let mut key = [0u8; 32];
                 use rand::RngCore;
                 rand::thread_rng().fill_bytes(&mut key);
-                tracing::warn!(
-                    "SHADOWMESH_SECRETS_KEY not set — using ephemeral key (secrets won't persist across restarts)"
-                );
+                if std::env::var("SHADOWMESH_PRODUCTION").is_ok() {
+                    tracing::error!(
+                        "SHADOWMESH_SECRETS_KEY not set in production mode! Secrets will be lost on restart. Set it with: openssl rand -hex 32"
+                    );
+                } else {
+                    tracing::warn!(
+                        "SHADOWMESH_SECRETS_KEY not set — using ephemeral key (secrets won't persist across restarts)"
+                    );
+                }
                 key
             }
         };

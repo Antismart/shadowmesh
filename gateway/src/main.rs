@@ -396,7 +396,9 @@ async fn main() {
             };
             println!("✓ KV store enabled (max {} keys/ns, {} KB/value)",
                 kv_config.max_keys_per_namespace, config.state.kv_max_value_size_kb);
-            Some(Arc::new(kv_store::KvStore::new(kv_config, redis.clone())))
+            let kv = Arc::new(kv_store::KvStore::new(kv_config, redis.clone()));
+            kv.start_cleanup_task();
+            Some(kv)
         } else {
             None
         },

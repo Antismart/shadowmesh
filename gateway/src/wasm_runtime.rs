@@ -139,14 +139,15 @@ mod inner {
             match start.call(&mut store, ()) {
                 Ok(()) => {}
                 Err(e) => {
-                    // Check if it was a fuel exhaustion
+                    // Check fuel exhaustion first
                     let fuel_left = store.get_fuel().unwrap_or(0);
                     if fuel_left == 0 {
                         return Err("WASM execution exceeded fuel limit (CPU timeout)".into());
                     }
-                    // WASI _start exits with code 0 via a trap — that's normal
-                    let trap_str = e.to_string();
-                    if !trap_str.contains("exit status") || !trap_str.contains("0") {
+                    // P6: Check for WASI process exit (code 0 is normal)
+                    let is_normal_exit = e.downcast_ref::<wasmtime_wasi::I32Exit>()
+                        .map_or(false, |exit| exit.0 == 0);
+                    if !is_normal_exit {
                         return Err(format!("WASM execution failed: {}", e));
                     }
                 }
