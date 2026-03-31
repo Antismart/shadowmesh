@@ -90,6 +90,7 @@ fn gateway_app(node_runner_url: &str) -> Router {
         auth_codes: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         per_cid_requests: Arc::new(dashmap::DashMap::new()),
         per_cid_bytes: Arc::new(dashmap::DashMap::new()),
+        build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
     };
 
     gateway::content_router(state)
@@ -198,6 +199,7 @@ async fn test_e2e_cache_hit() {
         auth_codes: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         per_cid_requests: Arc::new(dashmap::DashMap::new()),
         per_cid_bytes: Arc::new(dashmap::DashMap::new()),
+        build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
     };
 
     let app1 = gateway::content_router(state.clone());
@@ -366,6 +368,7 @@ async fn test_e2e_failover_to_second_node() {
         auth_codes: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         per_cid_requests: Arc::new(dashmap::DashMap::new()),
         per_cid_bytes: Arc::new(dashmap::DashMap::new()),
+        build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
     };
 
     let app = gateway::content_router(state);

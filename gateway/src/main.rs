@@ -367,6 +367,7 @@ async fn main() {
         auth_codes: Arc::new(RwLock::new(std::collections::HashMap::new())),
         per_cid_requests: Arc::new(DashMap::new()),
         per_cid_bytes: Arc::new(DashMap::new()),
+        build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
     };
 
     // Clone audit logger before state is moved into the router

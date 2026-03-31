@@ -134,6 +134,8 @@ pub struct AppState {
     pub per_cid_requests: Arc<DashMap<String, std::sync::atomic::AtomicU64>>,
     /// Per-CID bytes served counters for deployment analytics
     pub per_cid_bytes: Arc<DashMap<String, std::sync::atomic::AtomicU64>>,
+    /// Limits concurrent builds to prevent resource exhaustion
+    pub build_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// Build a Router with just the content-serving routes.
@@ -550,6 +552,42 @@ pub fn content_type_from_path(path: &str, data: &[u8]) -> String {
     }
     if lower.ends_with(".ico") {
         return "image/x-icon".to_string();
+    }
+    if lower.ends_with(".woff") {
+        return "font/woff".to_string();
+    }
+    if lower.ends_with(".woff2") {
+        return "font/woff2".to_string();
+    }
+    if lower.ends_with(".ttf") {
+        return "font/ttf".to_string();
+    }
+    if lower.ends_with(".otf") {
+        return "font/otf".to_string();
+    }
+    if lower.ends_with(".wasm") {
+        return "application/wasm".to_string();
+    }
+    if lower.ends_with(".xml") {
+        return "application/xml".to_string();
+    }
+    if lower.ends_with(".mp4") {
+        return "video/mp4".to_string();
+    }
+    if lower.ends_with(".webm") {
+        return "video/webm".to_string();
+    }
+    if lower.ends_with(".mp3") {
+        return "audio/mpeg".to_string();
+    }
+    if lower.ends_with(".pdf") {
+        return "application/pdf".to_string();
+    }
+    if lower.ends_with(".txt") {
+        return "text/plain".to_string();
+    }
+    if lower.ends_with(".avif") {
+        return "image/avif".to_string();
     }
 
     infer::get(data)

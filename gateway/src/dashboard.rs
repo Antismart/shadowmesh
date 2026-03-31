@@ -837,7 +837,15 @@ pub async fn deploy_from_github(
     let state_clone = state.clone();
     let deploy_id_clone = deploy_id.clone();
     let session_clone = session.clone();
+    let semaphore = state.build_semaphore.clone();
     tokio::spawn(async move {
+        let _permit = match semaphore.acquire().await {
+            Ok(p) => p,
+            Err(_) => {
+                session_clone.fail("Build semaphore closed");
+                return;
+            }
+        };
         session_clone.push_log(&format!("Starting deployment from {}", url));
 
         match deploy_github_project_streaming(
@@ -1044,7 +1052,18 @@ pub async fn github_webhook(
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
     // Validate signature if secret is configured
-    if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") {
+    let secret = match std::env::var("GITHUB_WEBHOOK_SECRET") {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::warn!("GitHub webhook rejected: GITHUB_WEBHOOK_SECRET is not set");
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"success": false, "error": "Webhook secret not configured"})),
+            )
+                .into_response();
+        }
+    };
+    {
         let signature = headers
             .get("x-hub-signature-256")
             .and_then(|v| v.to_str().ok())
@@ -2427,7 +2446,7 @@ fn detect_package_manager(root: &Path) -> (&'static str, &'static [&'static str]
     } else if root.join("yarn.lock").exists() {
         ("yarn", &["install", "--frozen-lockfile"], &["build"])
     } else {
-        ("npm", &["install"], &["run", "build"])
+        ("npm", &["ci"], &["run", "build"])
     }
 }
 
@@ -2515,6 +2534,12 @@ fn detect_framework(root: &Path) -> &'static str {
     }
     "Unknown"
 }
+
+/// Allowed binaries for custom build commands to prevent command injection.
+const ALLOWED_BUILD_BINARIES: &[&str] = &[
+    "npm", "npx", "yarn", "pnpm", "bun", "node",
+    "next", "nuxt", "vite", "astro", "gatsby", "hugo", "jekyll",
+];
 
 /// Known output directories to check after build, in priority order.
 const OUTPUT_DIRS: &[&str] = &[
@@ -2641,6 +2666,13 @@ fn prepare_deploy_dir(
             if parts.is_empty() {
                 return Err("Empty build command".to_string());
             }
+            if !ALLOWED_BUILD_BINARIES.contains(&parts[0]) {
+                return Err(format!(
+                    "Build binary '{}' is not allowed. Allowed: {}",
+                    parts[0],
+                    ALLOWED_BUILD_BINARIES.join(", ")
+                ));
+            }
             let output = run_cmd_with_timeout(
                 parts[0], &parts[1..], root, &safe_env, BUILD_TIMEOUT_SECS,
             )?;
@@ -2692,6 +2724,30 @@ fn prepare_deploy_dir(
                     build_status: format!("Built ({})", framework),
                     build_logs: trim_logs(&logs),
                 });
+            }
+        }
+
+        if framework == "Angular" {
+            if let Ok(entries) = std::fs::read_dir(root.join("dist")) {
+                for entry in entries.flatten() {
+                    let browser = entry.path().join("browser");
+                    if browser.is_dir() && browser.join("index.html").exists() {
+                        logs.push_str(&format!("\nOutput directory: {}\n", browser.display()));
+                        return Ok(BuildOutcome {
+                            deploy_root: browser,
+                            build_status: format!("Built ({})", framework),
+                            build_logs: trim_logs(&logs),
+                        });
+                    }
+                    if entry.path().join("index.html").exists() {
+                        logs.push_str(&format!("\nOutput directory: {}\n", entry.path().display()));
+                        return Ok(BuildOutcome {
+                            deploy_root: entry.path(),
+                            build_status: format!("Built ({})", framework),
+                            build_logs: trim_logs(&logs),
+                        });
+                    }
+                }
             }
         }
 
@@ -2925,6 +2981,13 @@ fn prepare_deploy_dir_streaming(
             if parts.is_empty() {
                 return Err("Empty build command".to_string());
             }
+            if !ALLOWED_BUILD_BINARIES.contains(&parts[0]) {
+                return Err(format!(
+                    "Build binary '{}' is not allowed. Allowed: {}",
+                    parts[0],
+                    ALLOWED_BUILD_BINARIES.join(", ")
+                ));
+            }
             let owned_args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
             let arg_refs: Vec<&str> = owned_args.iter().map(|s| s.as_str()).collect();
             let (success, output) = run_cmd_streaming(parts[0], &arg_refs, root, &safe_env, BUILD_TIMEOUT_SECS, session)?;
@@ -2973,6 +3036,30 @@ fn prepare_deploy_dir_streaming(
                     build_status: format!("Built ({})", framework),
                     build_logs: trim_logs(&logs),
                 });
+            }
+        }
+
+        if framework == "Angular" {
+            if let Ok(entries) = std::fs::read_dir(root.join("dist")) {
+                for entry in entries.flatten() {
+                    let browser = entry.path().join("browser");
+                    if browser.is_dir() && browser.join("index.html").exists() {
+                        session.push_log(&format!("Output directory: {}", browser.display()));
+                        return Ok(BuildOutcome {
+                            deploy_root: browser,
+                            build_status: format!("Built ({})", framework),
+                            build_logs: trim_logs(&logs),
+                        });
+                    }
+                    if entry.path().join("index.html").exists() {
+                        session.push_log(&format!("Output directory: {}", entry.path().display()));
+                        return Ok(BuildOutcome {
+                            deploy_root: entry.path(),
+                            build_status: format!("Built ({})", framework),
+                            build_logs: trim_logs(&logs),
+                        });
+                    }
+                }
             }
         }
 

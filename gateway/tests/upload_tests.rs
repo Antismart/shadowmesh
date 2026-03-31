@@ -56,6 +56,7 @@ fn test_state(cfg: config::Config, storage: Option<Arc<protocol::StorageLayer>>)
         auth_codes: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         per_cid_requests: Arc::new(dashmap::DashMap::new()),
         per_cid_bytes: Arc::new(dashmap::DashMap::new()),
+        build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
     }
 }
 
