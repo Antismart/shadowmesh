@@ -1,0 +1,25 @@
+{
+  "name": "@shadowmesh/adapter-nextjs",
+  "version": "0.1.0",
+  "description": "Next.js adapter for ShadowMesh edge deployment",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "shadowmesh-nextjs": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "glob": "^10.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "next": ">=14.0.0"
+  },
+  "license": "MIT"
+}

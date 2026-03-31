@@ -1,5 +1,5 @@
 [workspace]
-members = ["protocol", "gateway", "node-runner", "benchmarks", "sdk-browser", "cli"]
+members = ["protocol", "gateway", "node-runner", "benchmarks", "sdk-browser", "cli", "adapters/wasm-sdk"]
 resolver = "2"
 
 [workspace.dependencies]
