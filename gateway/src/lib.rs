@@ -626,13 +626,13 @@ pub fn rewrite_html_assets(data: &[u8], content_type: &str, base_prefix: Option<
                 let insert_pos = head_pos + end_pos + 1;
                 let base_tag = format!("\n    <base href=\"{}\">", base_prefix);
                 html.insert_str(insert_pos, &base_tag);
-                return html.into_bytes();
             }
         }
     }
 
-    // No <head> found or <base> already present — fall back to rewriting
-    // absolute paths manually.
+    // Rewrite absolute paths (href="/...", src="/...") to include the base prefix.
+    // The <base> tag only fixes relative paths — absolute paths like /_next/...
+    // still need rewriting to resolve under the CID prefix.
     let guard = "__IPFS_GUARD__";
     for attr in ["href", "src", "srcset"] {
         let guard_token = format!("{}=\"{}/", attr, guard);
