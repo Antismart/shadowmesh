@@ -2225,6 +2225,36 @@ async fn deploy_github_project_streaming(
         }
     }
 
+    // Check for WASM edge function manifest
+    if let Some(manifest) = crate::route_manifest::load_manifest_from_dir(&build_outcome.deploy_root) {
+        session.push_log(&format!("Found edge function manifest: {} routes", manifest.routes.len()));
+
+        // Load WASM modules
+        if let Some(ref wasm_rt) = state.wasm_runtime {
+            let sm_dir = build_outcome.deploy_root.join("_shadowmesh");
+            for route in &manifest.routes {
+                let module_path = sm_dir.join(&route.handler);
+                if module_path.exists() {
+                    match std::fs::read(&module_path) {
+                        Ok(bytes) => {
+                            let key = format!("{}:{}", cid, route.handler);
+                            match wasm_rt.load_module(&key, &bytes) {
+                                Ok(()) => session.push_log(&format!("Loaded WASM module: {}", route.handler)),
+                                Err(e) => session.push_log(&format!("Failed to load {}: {}", route.handler, e)),
+                            }
+                        }
+                        Err(e) => session.push_log(&format!("Failed to read {}: {}", route.handler, e)),
+                    }
+                } else {
+                    session.push_log(&format!("Warning: handler {} not found", route.handler));
+                }
+            }
+        }
+
+        deployment.deploy_mode = "edge".to_string();
+        state.route_manifests.insert(cid.clone(), manifest);
+    }
+
     if let Some(ref redis) = state.redis {
         if let Err(e) = deployment.save_to_redis(redis).await {
             tracing::warn!("Failed to save GitHub deployment to Redis: {}", e);

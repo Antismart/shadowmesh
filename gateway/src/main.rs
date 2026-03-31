@@ -616,6 +616,10 @@ async fn main() {
             "/api/deployments/:cid/process/restart",
             post(process_restart_handler),
         )
+        .route(
+            "/api/deployments/:cid/routes",
+            get(deployment_routes_handler),
+        )
         .route("/api/github/login", get(dashboard::github_login))
         .route("/api/github/callback", get(dashboard::github_callback))
         .route("/api/github/exchange", post(dashboard::exchange_auth_code))
@@ -872,6 +876,81 @@ async fn process_restart_handler(
     }
 }
 
+/// Try to execute a WASM edge function for a deployment.
+/// Returns Some(response) if a route matched, None if no manifest or no match.
+fn try_wasm_execute(state: &AppState, cid: &str, method: &str, path: &str) -> Option<Response> {
+    let manifest = state.route_manifests.get(cid)?;
+    let route = route_manifest::match_route(&manifest, method, path)?;
+    let handler_key = format!("{}:{}", cid, route.handler);
+
+    let wasm_rt = state.wasm_runtime.as_ref()?;
+    if !wasm_rt.has_module(&handler_key) {
+        tracing::warn!(cid = %cid, handler = %route.handler, "WASM module not loaded");
+        return None;
+    }
+
+    let request = wasm_runtime::WasmHttpRequest {
+        method: method.to_string(),
+        url: path.to_string(),
+        headers: vec![],
+        body: vec![],
+    };
+
+    match wasm_rt.execute(&handler_key, request) {
+        Ok(resp) => {
+            let status = axum::http::StatusCode::from_u16(resp.status)
+                .unwrap_or(axum::http::StatusCode::OK);
+            let mut builder = axum::http::Response::builder().status(status);
+            for (name, value) in &resp.headers {
+                if let (Ok(hn), Ok(hv)) = (
+                    axum::http::HeaderName::from_bytes(name.as_bytes()),
+                    axum::http::HeaderValue::from_str(value),
+                ) {
+                    builder = builder.header(hn, hv);
+                }
+            }
+            builder
+                .body(axum::body::Body::from(resp.body))
+                .ok()
+                .map(|r| r.into_response())
+        }
+        Err(e) => {
+            tracing::error!(cid = %cid, handler = %route.handler, error = %e, "WASM execution failed");
+            Some(
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("Edge function error: {}", e)})),
+                )
+                    .into_response(),
+            )
+        }
+    }
+}
+
+async fn deployment_routes_handler(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+) -> Response {
+    match state.route_manifests.get(&cid) {
+        Some(manifest) => Json(serde_json::json!({
+            "cid": cid,
+            "manifest": *manifest,
+            "wasm_loaded": state.wasm_runtime.as_ref().map(|rt| {
+                manifest.routes.iter()
+                    .map(|r| {
+                        let key = format!("{}:{}", cid, r.handler);
+                        serde_json::json!({"handler": r.handler, "loaded": rt.has_module(&key)})
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        })).into_response(),
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "No route manifest for this deployment"})),
+        ).into_response(),
+    }
+}
+
 /// Handles `/:cid` — if the path looks like a CID, serve IPFS content;
 /// if it ends with `.shadow`, resolve the name; otherwise delegate to SPA.
 async fn content_or_spa_handler(
@@ -906,6 +985,11 @@ async fn content_or_spa_handler(
             }
         }
 
+        // Check if this deployment has WASM edge functions
+        if let Some(response) = try_wasm_execute(&state, &cid, "GET", "/") {
+            return response;
+        }
+
         let base_prefix = format!("/{}/", cid);
         let result = fetch_content(&state, cid.clone(), Some(base_prefix.clone())).await;
         // If IPFS returned a directory (not HTML), try index.html
@@ -934,6 +1018,33 @@ async fn shadow_or_content_subpath_handler(
 ) -> Response {
     if name.ends_with(".shadow") && state.config.read().await.naming.enabled {
         return resolve_shadow_name_and_serve(&state, &name, &path).await;
+    }
+
+    // Check dynamic process for subpath requests
+    if cid_validation::validate_cid(&name) {
+        if let Some(ref pm) = state.process_manager {
+            if let Some(port) = pm.get_port(&name) {
+                let sub = format!("/{}", path);
+                let query = uri.query().map(|q| q.to_string());
+                return reverse_proxy::proxy_request(
+                    &state.http_client,
+                    port,
+                    "GET",
+                    &sub,
+                    query.as_deref(),
+                    &axum::http::HeaderMap::new(),
+                    axum::body::Bytes::new(),
+                    None,
+                )
+                .await;
+            }
+        }
+
+        // Check WASM edge functions for subpath
+        let sub = format!("/{}", path);
+        if let Some(response) = try_wasm_execute(&state, &name, "GET", &sub) {
+            return response;
+        }
     }
 
     // Validate the content identifier and subpath for traversal / control-character
