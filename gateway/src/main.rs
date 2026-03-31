@@ -524,6 +524,28 @@ async fn main() {
         println!("✓ Config hot-reload enabled (file watch + SIGHUP)");
     }
 
+    // Start process manager health loop
+    if let Some(ref pm) = state.process_manager {
+        let pm_clone = Arc::clone(pm);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        // Store shutdown_tx so we can signal it during graceful shutdown
+        let shutdown_tx = Arc::new(shutdown_tx);
+        let shutdown_tx_clone = shutdown_tx.clone();
+        tokio::spawn(async move {
+            pm_clone.run_health_loop(shutdown_rx).await;
+        });
+        // Register shutdown hook
+        let pm_shutdown = state.process_manager.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            let _ = shutdown_tx_clone.send(true);
+            if let Some(pm) = pm_shutdown {
+                pm.shutdown_all().await;
+            }
+        });
+        println!("✓ Dynamic deployment process manager started");
+    }
+
     // Create rate limiter (distributed when Redis available)
     let rate_limiter = if config.rate_limit.enabled {
         let rate_config = rate_limit::RateLimitConfig {
@@ -570,6 +592,14 @@ async fn main() {
         .route(
             "/api/deployments/:cid/analytics",
             get(deployment_analytics_handler),
+        )
+        .route(
+            "/api/deployments/:cid/process",
+            get(process_status_handler),
+        )
+        .route(
+            "/api/deployments/:cid/process/restart",
+            post(process_restart_handler),
         )
         .route("/api/github/login", get(dashboard::github_login))
         .route("/api/github/callback", get(dashboard::github_callback))
@@ -789,6 +819,44 @@ async fn deployment_analytics_handler(
     }))
 }
 
+async fn process_status_handler(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+) -> Response {
+    let Some(ref pm) = state.process_manager else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Dynamic deployments not enabled"})),
+        ).into_response();
+    };
+    match pm.get_status(&cid) {
+        Some(status) => Json(serde_json::json!(status)).into_response(),
+        None => (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "No active process for this deployment"})),
+        ).into_response(),
+    }
+}
+
+async fn process_restart_handler(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+) -> Response {
+    let Some(ref pm) = state.process_manager else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Dynamic deployments not enabled"})),
+        ).into_response();
+    };
+    match pm.restart_process(&cid).await {
+        Ok(port) => Json(serde_json::json!({"success": true, "port": port})).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Restart failed: {}", e)})),
+        ).into_response(),
+    }
+}
+
 /// Handles `/:cid` — if the path looks like a CID, serve IPFS content;
 /// if it ends with `.shadow`, resolve the name; otherwise delegate to SPA.
 async fn content_or_spa_handler(
@@ -804,6 +872,25 @@ async fn content_or_spa_handler(
     // Strict CID validation — only CIDv0 (Qm, 46 chars, base58) and
     // CIDv1 (bafy, 59 chars, base32lower) are accepted.
     if cid_validation::validate_cid(&cid) {
+        // Check if this is a dynamic deployment with an active process
+        if let Some(ref pm) = state.process_manager {
+            if let Some(port) = pm.get_port(&cid) {
+                let path = uri.path().to_string();
+                let query = uri.query().map(|q| q.to_string());
+                return reverse_proxy::proxy_request(
+                    &state.http_client,
+                    port,
+                    "GET",
+                    &path,
+                    query.as_deref(),
+                    &axum::http::HeaderMap::new(),
+                    axum::body::Bytes::new(),
+                    None,
+                )
+                .await;
+            }
+        }
+
         let base_prefix = format!("/{}/", cid);
         let result = fetch_content(&state, cid.clone(), Some(base_prefix.clone())).await;
         // If IPFS returned a directory (not HTML), try index.html

@@ -805,6 +805,9 @@ pub struct GithubDeployRequest {
     /// Override the auto-detected output directory (e.g. "dist", "build")
     #[serde(default)]
     pub output_directory: Option<String>,
+    /// Deploy mode: "static" (default) or "dynamic" (SSR)
+    #[serde(default)]
+    pub deploy_mode: Option<String>,
 }
 
 pub async fn deploy_from_github(
@@ -817,6 +820,7 @@ pub async fn deploy_from_github(
     let env_vars = request.env_vars.clone();
     let build_command = request.build_command.clone();
     let output_directory = request.output_directory.clone();
+    let is_dynamic = request.deploy_mode.as_deref() == Some("dynamic");
 
     // Capture the GitHub username for per-user deployment tracking
     let deployed_by = read_lock(&state.github_auth)
@@ -858,6 +862,7 @@ pub async fn deploy_from_github(
             output_directory.as_deref(),
             &session_clone,
             deployed_by.as_deref(),
+            is_dynamic,
         )
         .await
         {
@@ -2063,6 +2068,7 @@ async fn deploy_github_project_streaming(
     output_directory: Option<&str>,
     session: &Arc<BuildSession>,
     deployed_by: Option<&str>,
+    is_dynamic: bool,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo_info =
         parse_github_url(url).ok_or((StatusCode::BAD_REQUEST, "Invalid GitHub URL".to_string()))?;
@@ -2135,6 +2141,7 @@ async fn deploy_github_project_streaming(
             build_command_owned.as_deref(),
             output_directory_owned.as_deref(),
             &deploy_config,
+            is_dynamic,
         )
     })
     .await
@@ -2187,6 +2194,37 @@ async fn deploy_github_project_streaming(
     deployment.domain = crate::auto_assign_domain(state, &repo_info.repo, &cid).await;
     deployment.deployed_by = deployed_by.map(|s| s.to_string());
 
+    // Spawn Node.js process for dynamic deployments
+    if is_dynamic {
+        deployment.deploy_mode = "dynamic".to_string();
+        let deploy_mode = crate::framework_detect::detect_deploy_mode(&build_outcome.deploy_root, true);
+        if let crate::framework_detect::DeployMode::Dynamic(ref dyn_cfg) = deploy_mode {
+            deployment.start_command = Some(dyn_cfg.start_command.clone());
+
+            if let Some(ref pm) = state.process_manager {
+                session.push_log(&format!("Starting SSR server: {}", dyn_cfg.start_command.join(" ")));
+                let mut env = dyn_cfg.env_overrides.clone();
+                if let Some(user_env) = env_vars {
+                    for (k, v) in user_env {
+                        env.insert(k.clone(), v.clone());
+                    }
+                }
+                match pm.spawn_process(&cid, &build_outcome.deploy_root, &dyn_cfg.start_command, env).await {
+                    Ok(port) => {
+                        deployment.process_port = Some(port);
+                        session.push_log(&format!("SSR server running on port {}", port));
+                    }
+                    Err(e) => {
+                        session.push_log(&format!("Warning: failed to start SSR server: {}", e));
+                        tracing::error!(cid = %cid, error = %e, "failed to spawn dynamic process");
+                    }
+                }
+            } else {
+                session.push_log("Warning: dynamic deployments are disabled in gateway config");
+            }
+        }
+    }
+
     if let Some(ref redis) = state.redis {
         if let Err(e) = deployment.save_to_redis(redis).await {
             tracing::warn!("Failed to save GitHub deployment to Redis: {}", e);
@@ -2197,6 +2235,7 @@ async fn deploy_github_project_streaming(
     audit::log_deploy_success(&state.audit_logger, "github", &cid, total_size, None, None).await;
 
     let domain = deployment.domain.clone();
+    let deploy_mode_str = deployment.deploy_mode.clone();
     state.deployments.insert(deployment.cid.clone(), deployment);
 
     if let Some(ref d) = domain {
@@ -2208,6 +2247,7 @@ async fn deploy_github_project_streaming(
         "success": true,
         "cid": cid,
         "domain": domain,
+        "deploy_mode": deploy_mode_str,
         "repo": format!("{}/{}", repo_info.owner, repo_info.repo),
         "branch": branch,
         "url": format!("/{}", cid)
@@ -2555,6 +2595,36 @@ const OUTPUT_DIRS: &[&str] = &[
 /// For Next.js projects, ensure `output: 'export'` is in the config so that
 /// `next build` produces a static `out/` directory instead of `.next/` (server mode).
 /// Otter serves content from IPFS, so only static exports work.
+fn ensure_nextjs_standalone(root: &Path) {
+    let config_files = ["next.config.mjs", "next.config.js", "next.config.ts"];
+    for name in &config_files {
+        let path = root.join(name);
+        if !path.exists() {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        if content.contains("output") {
+            // Replace any existing output config with standalone
+            let patched = content
+                .replace("output: 'export'", "output: 'standalone'")
+                .replace("output: \"export\"", "output: 'standalone'");
+            let _ = std::fs::write(&path, &patched);
+            return;
+        }
+        if let Some(brace_pos) = content.rfind("= {").map(|p| p + 2) {
+            let mut patched = String::with_capacity(content.len() + 30);
+            patched.push_str(&content[..=brace_pos]);
+            patched.push_str("\n  output: 'standalone',");
+            patched.push_str(&content[brace_pos + 1..]);
+            let _ = std::fs::write(&path, &patched);
+        }
+        return;
+    }
+}
+
 fn ensure_nextjs_static_export(root: &Path) {
     let config_files = ["next.config.mjs", "next.config.js", "next.config.ts"];
     for name in &config_files {
@@ -2885,6 +2955,7 @@ fn prepare_deploy_dir_streaming(
     build_command: Option<&str>,
     output_directory: Option<&str>,
     deploy_config: &crate::config::DeployConfig,
+    is_dynamic: bool,
 ) -> Result<BuildOutcome, String> {
     let framework = detect_framework(root);
     let package_json = root.join("package.json");
@@ -2906,8 +2977,12 @@ fn prepare_deploy_dir_streaming(
     };
 
     if has_build_script || build_command.is_some() {
-        if package_json.exists() && framework == "Next.js" {
+        if !is_dynamic && package_json.exists() && framework == "Next.js" {
             ensure_nextjs_static_export(root);
+        }
+        if is_dynamic && framework == "Next.js" {
+            ensure_nextjs_standalone(root);
+            session.push_log("Configured Next.js for standalone output (SSR mode)");
         }
 
         let (pm, install_args, build_args) = detect_package_manager(root);
@@ -2917,7 +2992,7 @@ fn prepare_deploy_dir_streaming(
             .filter_map(|key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
             .collect();
 
-        if framework == "Nuxt" {
+        if framework == "Nuxt" && !is_dynamic {
             safe_env.push(("NITRO_PRESET".to_string(), "static".to_string()));
         }
 
@@ -3126,6 +3201,19 @@ pub struct Deployment {
     /// GitHub username that created this deployment
     #[serde(default)]
     pub deployed_by: Option<String>,
+    /// "static" or "dynamic"
+    #[serde(default = "default_deploy_mode")]
+    pub deploy_mode: String,
+    /// Port the Node.js process is listening on (dynamic only)
+    #[serde(default)]
+    pub process_port: Option<u16>,
+    /// Command used to start the server process (dynamic only)
+    #[serde(default)]
+    pub start_command: Option<Vec<String>>,
+}
+
+fn default_deploy_mode() -> String {
+    "static".to_string()
 }
 
 impl Deployment {
@@ -3148,6 +3236,9 @@ impl Deployment {
             build_command: None,
             output_directory: None,
             deployed_by: None,
+            deploy_mode: "static".to_string(),
+            process_port: None,
+            start_command: None,
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -3183,6 +3274,9 @@ impl Deployment {
             build_command,
             output_directory,
             deployed_by: None,
+            deploy_mode: "static".to_string(),
+            process_port: None,
+            start_command: None,
         }
     }
 
