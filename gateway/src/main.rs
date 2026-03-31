@@ -1271,7 +1271,20 @@ async fn resolve_shadow_name_and_serve(
                 format!("{}/{}", cid, sub_path)
             };
             let base_prefix = Some(format!("/{}/", name));
-            return fetch_content(state, fetch_path, base_prefix).await;
+            let result = fetch_content(state, fetch_path, base_prefix.clone()).await;
+            // If IPFS returned a directory (not HTML), try index.html
+            if sub_path.is_empty() {
+                let ct = result
+                    .headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                if !ct.contains("text/html") && !ct.contains("application/javascript") && !ct.contains("text/css") && !ct.contains("image/") {
+                    let index_path = format!("{}/index.html", cid);
+                    return fetch_content(state, index_path, base_prefix).await;
+                }
+            }
+            return result;
         }
 
         // Name exists but has no serveable records

@@ -61,13 +61,18 @@ impl BuildSession {
     }
 
     pub fn push_log(&self, line: &str) {
-        if let Ok(mut logs) = self.logs.lock() {
-            logs.push(line.to_string());
+        // SSE data fields cannot contain newlines — split multi-line output
+        // into separate events so the stream doesn't panic.
+        for sub in line.split('\n') {
+            let sanitized = sub.replace('\r', "");
+            if let Ok(mut logs) = self.logs.lock() {
+                logs.push(sanitized.clone());
+            }
+            let _ = self.notify.send(BuildEvent {
+                event_type: "log".to_string(),
+                data: sanitized,
+            });
         }
-        let _ = self.notify.send(BuildEvent {
-            event_type: "log".to_string(),
-            data: line.to_string(),
-        });
     }
 
     pub fn complete(&self, result: serde_json::Value) {
