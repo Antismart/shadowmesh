@@ -33,11 +33,13 @@ Because content is addressed by CID, it does not matter which path you use -- th
 ## Features
 
 - **Privacy-First**: Onion routing ensures no single node knows both the requester and the content
+- **Static & Dynamic Hosting**: Deploy static sites, Next.js SSR, or WASM edge functions
+- **WASM Edge Functions**: Wasmtime-sandboxed serverless functions with fuel-based CPU limits
+- **KV Store & Secrets**: Per-deployment state with Redis persistence and ChaCha20Poly1305 encrypted secrets
 - **Content Fragmentation**: Large files are split into encrypted chunks for parallel delivery
-- **Decentralized**: No central servers - content is served by a network of peers
+- **Decentralized**: No central servers — content is served by a network of peers
 - **High Performance**: BLAKE3 hashing, ChaCha20-Poly1305 encryption, and multi-path routing
-- **Automatic Replication**: Content is replicated across multiple nodes for reliability
-- **Bandwidth Tracking**: Built-in metrics and rate limiting for fair resource usage
+- **Framework Support**: Next.js, Nuxt, SvelteKit, Remix, Vite, Astro, Angular, Gatsby, Hugo
 - **WebRTC Support**: Browser-to-node P2P connections via WebRTC DataChannels
 - **Browser SDK**: WASM-based client for direct browser integration
 
@@ -174,6 +176,46 @@ client.disconnect();
 
 See [WebRTC Setup Guide](docs/webrtc-setup.md) for detailed configuration.
 
+### Edge Functions (Rust)
+
+Write serverless functions that run on the ShadowMesh edge:
+
+```rust
+use shadowmesh_edge::{Request, Response};
+
+fn main() {
+    shadowmesh_edge::run(|req| match req.path() {
+        "/api/hello" => Response::ok().json(&serde_json::json!({
+            "message": "Hello from the edge!",
+            "path": req.url,
+        })),
+        _ => Response::not_found().text("Not found"),
+    });
+}
+```
+
+Compile and deploy:
+
+```bash
+# Build for WASM
+cargo build --target wasm32-wasip1 --release
+
+# Create route manifest
+cat > _shadowmesh/routes.json << 'EOF'
+{
+  "version": 1,
+  "routes": [
+    {"path": "/api/*", "handler": "api.wasm", "methods": ["GET", "POST"]}
+  ]
+}
+EOF
+
+# Copy WASM module
+cp target/wasm32-wasip1/release/my_function.wasm _shadowmesh/api.wasm
+
+# Deploy — gateway auto-detects the manifest and loads WASM modules
+```
+
 ### CLI Usage
 
 The CLI is a Rust binary. Build it with `cargo build --release -p shadowmesh-cli`, then use the binary at `target/release/shadowmesh-cli` (or set up an alias):
@@ -198,16 +240,27 @@ smesh download <cid> -o ./output.txt
 smesh peers
 ```
 
+## Deployment Modes
+
+| Mode | Trigger | How it works |
+|------|---------|-------------|
+| **Static** | Default | Build to static HTML/CSS/JS, upload to IPFS, serve via gateway |
+| **Dynamic (SSR)** | `deploy_mode: "dynamic"` | Build in server mode, spawn Node.js process, reverse proxy requests |
+| **Edge Functions** | `_shadowmesh/routes.json` in build output | Load WASM modules into Wasmtime, execute on matching requests |
+
 ## Components
 
 | Component | Description | Port |
 |-----------|-------------|------|
 | `protocol` | Core P2P protocol library | - |
-| `gateway` | HTTP API server with signaling | 8081 |
+| `gateway` | HTTP API server with signaling, WASM runtime, process manager | 8081 |
 | `node-runner` | Full P2P node with dashboard | 3030 |
 | `cli` | Node management CLI (`shadowmesh-cli`) | - |
 | `sdk` | TypeScript client library | - |
 | `sdk-browser` | WASM browser SDK with WebRTC | - |
+| `adapters/wasm-sdk` | Rust SDK for writing edge functions (`shadowmesh-edge`) | - |
+| `adapters/adapter-nextjs` | Next.js adapter with route scanning and manifest generation | - |
+| `adapters/shared` | Shared adapter utilities (ManifestBuilder, framework detection) | - |
 | `benchmarks` | Performance benchmarks | - |
 
 ## Configuration
@@ -241,6 +294,24 @@ enabled = true
 tcp_port = 4001
 bootstrap_peers = []
 enable_mdns = true
+
+[dynamic]
+enabled = true         # Enable SSR deployments
+port_range_start = 9000
+port_range_end = 9999
+max_processes = 50
+memory_limit_mb = 512
+
+[wasm]
+enabled = true         # Enable WASM edge functions
+max_memory_mb = 128
+max_fuel = 10000000
+max_cached_modules = 100
+
+[state]
+kv_enabled = true      # KV store for edge functions
+secrets_enabled = true # Encrypted secrets per deployment
+blob_enabled = true    # IPFS-backed blob storage
 ```
 
 ### Node Runner Configuration
@@ -338,6 +409,7 @@ See the full [Hosting Guide](docs/hosting-guide.md) and [Node Runner Guide](docs
 - [WebRTC Setup Guide](docs/webrtc-setup.md)
 - [Deployment Guide](docs/deployment.md)
 - [Monitoring Runbook](docs/runbooks/monitoring-alerting.md)
+- [Dynamic Deployment Plan](docs/dynamic-deployment-plan.md)
 - [Competitor Comparison](docs/comparison.md)
 - [Contributing](CONTRIBUTING.md)
 
@@ -381,13 +453,18 @@ cargo bench -p benchmarks
 - [x] WebRTC transport support
 - [x] ENS integration (eth.limo gateway + `shadow://` contenthash)
 - [x] Censorship detection & adaptive routing
+- [x] Dynamic (SSR) deployments — Node.js process manager with health checks, auto-restart, memory limits
+- [x] WASM Edge Functions — Wasmtime sandbox with fuel metering, route manifests, JSON-over-stdio bridge
+- [x] Framework adapters — Next.js route scanner, manifest generator, Rust edge function SDK
+- [x] State layer — KV store (Redis-backed), encrypted secrets (ChaCha20Poly1305), blob storage (IPFS)
 - [ ] Mobile SDK (React Native)
 - [ ] Incentive layer with token rewards — [Tokenomics Spec](docs/tokenomics.md) (MESH token, Sepolia testnet, Phase 1 in progress)
 - [ ] Browser extension
 - [ ] IPFS pinning service integration
 
 ### V2 Roadmap
-- [ ] WASM Edge Functions — deploy serverless functions alongside static content, sandboxed execution on gateway/node-runner nodes
+- [ ] Nuxt / SvelteKit / Remix WASM adapters
+- [ ] Per-deployment SQLite databases (WASM-compiled)
 - [ ] API rewrites/proxy — route `/api/*` to external backends via deployment config
 - [ ] Build pipelines — custom multi-step build workflows
 - [ ] Team management & RBAC
@@ -431,6 +508,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [OpenTelemetry](https://opentelemetry.io/) - Distributed tracing and observability
 - [Prometheus](https://prometheus.io/) - Metrics collection
 - [Redis](https://redis.io/) - Optional persistent state and distributed rate limiting
+- [Wasmtime](https://wasmtime.dev/) - WASM runtime for edge functions with fuel metering
 - [ENS / eth.limo](https://ens.domains/) - Ethereum Name Service resolution
 - [Criterion](https://github.com/bheisler/criterion.rs) - Performance benchmarking
 - [OpenZeppelin](https://www.openzeppelin.com/) - Smart contract standards (upcoming MESH token)
