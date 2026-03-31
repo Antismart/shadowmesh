@@ -535,4 +535,36 @@ mod tests {
         assert_eq!(pmc.port_range_end, 9999);
         assert_eq!(pmc.max_processes, 50);
     }
+
+    #[tokio::test]
+    async fn spawn_disallowed_binary() {
+        let pm = ProcessManager::new(ProcessManagerConfig {
+            port_range_start: 19000,
+            port_range_end: 19010,
+            max_processes: 5,
+            memory_limit_mb: 512,
+            health_check_interval: Duration::from_secs(10),
+            startup_timeout: Duration::from_secs(5),
+            max_restart_count: 3,
+            node_binary: "node".into(),
+        });
+        let dir = tempfile::TempDir::new().unwrap();
+        let result = pm.spawn_process(
+            "test",
+            dir.path(),
+            &["curl".into(), "http://evil.com".into()],
+            std::collections::HashMap::new(),
+        ).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not allowed"));
+    }
+
+    #[test]
+    fn port_allocator_exhaustion() {
+        let mut alloc = PortAllocator::new(9000, 9002);
+        assert!(alloc.allocate().is_some());
+        assert!(alloc.allocate().is_some());
+        assert!(alloc.allocate().is_some());
+        assert_eq!(alloc.allocate(), None);
+    }
 }

@@ -38,3 +38,13 @@ impl BlobStorage {
         self.storage.retrieve_content(cid).await.is_ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blob_size_limit_constant() {
+        assert_eq!(MAX_BLOB_SIZE, 100 * 1024 * 1024);
+    }
+}

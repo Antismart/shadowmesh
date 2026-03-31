@@ -449,7 +449,11 @@ pub struct WasmConfig {
     pub timeout_seconds: u64,
     #[serde(default)]
     pub aot_cache_dir: Option<String>,
+    #[serde(default = "default_wasm_max_cached_modules")]
+    pub max_cached_modules: usize,
 }
+
+fn default_wasm_max_cached_modules() -> usize { 100 }
 
 fn default_wasm_max_memory_mb() -> u64 { 128 }
 fn default_wasm_max_fuel() -> u64 { 10_000_000 }
@@ -465,6 +469,7 @@ impl Default for WasmConfig {
             max_module_size_mb: default_wasm_max_module_size_mb(),
             timeout_seconds: default_wasm_timeout_seconds(),
             aot_cache_dir: None,
+            max_cached_modules: default_wasm_max_cached_modules(),
         }
     }
 }

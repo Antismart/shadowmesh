@@ -257,6 +257,33 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_expired_removes_entries() {
+        let store = test_store();
+        store.put("ns1", "a", b"1".to_vec(), Some(0)).unwrap();
+        store.put("ns1", "b", b"2".to_vec(), Some(0)).unwrap();
+        store.put("ns1", "c", b"3".to_vec(), Some(0)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        store.cleanup_expired();
+        assert_eq!(store.namespace_size("ns1"), 0);
+    }
+
+    #[test]
+    fn update_existing_key_bypasses_limit() {
+        let store = KvStore::new(
+            KvConfig {
+                max_keys_per_namespace: 2,
+                max_value_size_bytes: 1024,
+            },
+            None,
+        );
+        store.put("ns1", "a", b"1".to_vec(), None).unwrap();
+        store.put("ns1", "b", b"2".to_vec(), None).unwrap();
+        // Updating existing key should succeed even at limit
+        store.put("ns1", "a", b"updated".to_vec(), None).unwrap();
+        assert_eq!(store.get("ns1", "a"), Some(b"updated".to_vec()));
+    }
+
+    #[test]
     fn namespace_isolation() {
         let store = test_store();
         store.put("ns1", "key", b"a".to_vec(), None).unwrap();

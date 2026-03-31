@@ -248,6 +248,21 @@ mod tests {
     }
 
     #[test]
+    fn invalid_method_rejected() {
+        let data = br#"{"version": 1, "routes": [{"path": "/", "handler": "h.wasm", "methods": ["INVALID"]}]}"#;
+        assert!(parse_manifest(data).is_err());
+    }
+
+    #[test]
+    fn case_insensitive_method_match() {
+        let data = br#"{"version": 1, "routes": [{"path": "/test", "handler": "t.wasm", "methods": ["get"]}]}"#;
+        let m = parse_manifest(data).unwrap();
+        let r = match_route(&m, "GET", "/test");
+        assert!(r.is_some());
+        assert_eq!(r.unwrap().handler, "t.wasm");
+    }
+
+    #[test]
     fn load_from_dir_valid() {
         let dir = tempfile::TempDir::new().unwrap();
         let sm_dir = dir.path().join("_shadowmesh");

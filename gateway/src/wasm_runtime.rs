@@ -49,6 +49,7 @@ mod inner {
     pub struct WasmRuntime {
         engine: Engine,
         module_cache: Arc<DashMap<String, Module>>,
+        module_order: std::sync::Mutex<Vec<String>>,
         config: WasmConfig,
     }
 
@@ -67,6 +68,7 @@ mod inner {
             Ok(Self {
                 engine,
                 module_cache: Arc::new(DashMap::new()),
+                module_order: std::sync::Mutex::new(Vec::new()),
                 config,
             })
         }
@@ -83,6 +85,17 @@ mod inner {
 
             let module = Module::new(&self.engine, wasm_bytes)
                 .map_err(|e| format!("Failed to compile WASM module: {}", e))?;
+
+            // SEC-6: Evict oldest module if cache is at capacity
+            if let Ok(mut order) = self.module_order.lock() {
+                if self.module_cache.len() >= self.config.max_cached_modules && !order.is_empty() {
+                    let evicted = order.remove(0);
+                    self.module_cache.remove(&evicted);
+                    tracing::info!(evicted = %evicted, "WASM module evicted (cache full)");
+                }
+                order.retain(|k| k != key);
+                order.push(key.to_string());
+            }
 
             tracing::info!(key = %key, size = wasm_bytes.len(), "WASM module loaded");
             self.module_cache.insert(key.to_string(), module);
