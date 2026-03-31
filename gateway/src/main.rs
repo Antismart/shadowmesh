@@ -346,7 +346,7 @@ async fn main() {
 
     let http_client = reqwest::Client::new();
 
-    let state = AppState {
+    let mut state = AppState {
         storage,
         cache,
         config: config_lock.clone(),
@@ -389,7 +389,33 @@ async fn main() {
             None
         },
         route_manifests: Arc::new(DashMap::new()),
+        kv_store: if config.state.kv_enabled {
+            let kv_config = kv_store::KvConfig {
+                max_keys_per_namespace: config.state.kv_max_keys_per_namespace,
+                max_value_size_bytes: config.state.kv_max_value_size_kb * 1024,
+            };
+            println!("✓ KV store enabled (max {} keys/ns, {} KB/value)",
+                kv_config.max_keys_per_namespace, config.state.kv_max_value_size_kb);
+            Some(Arc::new(kv_store::KvStore::new(kv_config, redis.clone())))
+        } else {
+            None
+        },
+        secrets_manager: if config.state.secrets_enabled {
+            println!("✓ Secrets manager enabled");
+            Some(Arc::new(secrets::SecretsManager::new()))
+        } else {
+            None
+        },
+        blob_store: None,
     };
+
+    // Initialize blob store from state's IPFS storage
+    if config.state.blob_enabled {
+        if let Some(ref s) = state.storage {
+            state.blob_store = Some(Arc::new(blob_storage::BlobStorage::new(Arc::clone(s))));
+            println!("✓ Blob storage enabled (IPFS-backed)");
+        }
+    }
 
     // Clone audit logger before state is moved into the router
     let audit_for_auth = state.audit_logger.clone();
@@ -620,6 +646,13 @@ async fn main() {
             "/api/deployments/:cid/routes",
             get(deployment_routes_handler),
         )
+        .route("/api/deployments/:cid/kv/:key", get(kv_get_handler))
+        .route("/api/deployments/:cid/kv/:key", axum::routing::put(kv_put_handler))
+        .route("/api/deployments/:cid/kv/:key", delete(kv_delete_handler))
+        .route("/api/deployments/:cid/kv", get(kv_list_handler))
+        .route("/api/deployments/:cid/secrets", get(secrets_list_handler))
+        .route("/api/deployments/:cid/secrets", post(secrets_set_handler))
+        .route("/api/deployments/:cid/secrets/:name", delete(secrets_delete_handler))
         .route("/api/github/login", get(dashboard::github_login))
         .route("/api/github/callback", get(dashboard::github_callback))
         .route("/api/github/exchange", post(dashboard::exchange_auth_code))
@@ -926,6 +959,103 @@ fn try_wasm_execute(state: &AppState, cid: &str, method: &str, path: &str) -> Op
         }
     }
 }
+
+// ── KV Store Handlers ────────────────────────────────────────────────
+
+async fn kv_get_handler(
+    State(state): State<AppState>,
+    Path((cid, key)): Path<(String, String)>,
+) -> Response {
+    let Some(ref kv) = state.kv_store else {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "KV store disabled"}))).into_response();
+    };
+    match kv.get(&cid, &key) {
+        Some(val) => ([(axum::http::header::CONTENT_TYPE, "application/octet-stream".to_string())], val).into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Key not found"}))).into_response(),
+    }
+}
+
+async fn kv_put_handler(
+    State(state): State<AppState>,
+    Path((cid, key)): Path<(String, String)>,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(ref kv) = state.kv_store else {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "KV store disabled"}))).into_response();
+    };
+    match kv.put(&cid, &key, body.to_vec(), None) {
+        Ok(()) => Json(serde_json::json!({"success": true})).into_response(),
+        Err(e) => (axum::http::StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    }
+}
+
+async fn kv_delete_handler(
+    State(state): State<AppState>,
+    Path((cid, key)): Path<(String, String)>,
+) -> Response {
+    let Some(ref kv) = state.kv_store else {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "KV store disabled"}))).into_response();
+    };
+    let deleted = kv.delete(&cid, &key);
+    Json(serde_json::json!({"success": true, "deleted": deleted})).into_response()
+}
+
+async fn kv_list_handler(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+) -> Response {
+    let Some(ref kv) = state.kv_store else {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "KV store disabled"}))).into_response();
+    };
+    let keys = kv.list_keys(&cid, None);
+    Json(serde_json::json!({"keys": keys, "count": keys.len()})).into_response()
+}
+
+// ── Secrets Handlers ────────────────────────────────────────────────
+
+async fn secrets_list_handler(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+) -> Response {
+    let Some(ref sm) = state.secrets_manager else {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Secrets disabled"}))).into_response();
+    };
+    let names = sm.list_secrets(&cid);
+    Json(serde_json::json!({"secrets": names})).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct SetSecretRequest {
+    name: String,
+    value: String,
+}
+
+async fn secrets_set_handler(
+    State(state): State<AppState>,
+    Path(cid): Path<String>,
+    Json(body): Json<SetSecretRequest>,
+) -> Response {
+    let Some(ref sm) = state.secrets_manager else {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Secrets disabled"}))).into_response();
+    };
+    match sm.set_secret(&cid, &body.name, body.value.as_bytes()) {
+        Ok(()) => Json(serde_json::json!({"success": true, "name": body.name})).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
+    }
+}
+
+async fn secrets_delete_handler(
+    State(state): State<AppState>,
+    Path((cid, name)): Path<(String, String)>,
+) -> Response {
+    let Some(ref sm) = state.secrets_manager else {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Secrets disabled"}))).into_response();
+    };
+    let deleted = sm.delete_secret(&cid, &name);
+    Json(serde_json::json!({"success": true, "deleted": deleted})).into_response()
+}
+
+// ── Deployment Routes Handler ───────────────────────────────────────
 
 async fn deployment_routes_handler(
     State(state): State<AppState>,

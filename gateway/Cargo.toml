@@ -88,6 +88,9 @@ dashmap = "6"
 sysinfo = "0.32"
 libc = "0.2"
 
+# Encryption for secrets manager
+chacha20poly1305 = "0.10"
+
 # WASM edge function runtime (feature-gated)
 wasmtime = { version = "27", optional = true }
 wasmtime-wasi = { version = "27", optional = true }

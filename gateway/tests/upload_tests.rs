@@ -60,6 +60,9 @@ fn test_state(cfg: config::Config, storage: Option<Arc<protocol::StorageLayer>>)
         process_manager: None,
         wasm_runtime: None,
         route_manifests: Arc::new(dashmap::DashMap::new()),
+        kv_store: None,
+        secrets_manager: None,
+        blob_store: None,
     }
 }
 

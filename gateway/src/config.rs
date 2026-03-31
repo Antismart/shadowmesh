@@ -27,6 +27,8 @@ pub struct Config {
     pub dynamic: DynamicDeployConfig,
     #[serde(default)]
     pub wasm: WasmConfig,
+    #[serde(default)]
+    pub state: StateConfig,
 }
 
 /// Validation errors for configuration
@@ -467,6 +469,36 @@ impl Default for WasmConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct StateConfig {
+    #[serde(default = "default_true")]
+    pub kv_enabled: bool,
+    #[serde(default = "default_kv_max_keys")]
+    pub kv_max_keys_per_namespace: usize,
+    #[serde(default = "default_kv_max_value_kb")]
+    pub kv_max_value_size_kb: usize,
+    #[serde(default = "default_true")]
+    pub secrets_enabled: bool,
+    #[serde(default = "default_true")]
+    pub blob_enabled: bool,
+}
+
+fn default_true() -> bool { true }
+fn default_kv_max_keys() -> usize { 100_000 }
+fn default_kv_max_value_kb() -> usize { 512 }
+
+impl Default for StateConfig {
+    fn default() -> Self {
+        Self {
+            kv_enabled: true,
+            kv_max_keys_per_namespace: default_kv_max_keys(),
+            kv_max_value_size_kb: default_kv_max_value_kb(),
+            secrets_enabled: true,
+            blob_enabled: true,
+        }
+    }
+}
+
 impl Config {
     /// Load configuration from file and environment variables
     ///
@@ -641,6 +673,7 @@ impl Config {
             p2p: P2pConfig::default(),
             dynamic: DynamicDeployConfig::default(),
             wasm: WasmConfig::default(),
+            state: StateConfig::default(),
         }
     }
 }

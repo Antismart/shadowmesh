@@ -38,6 +38,9 @@ pub mod process_manager;
 pub mod reverse_proxy;
 pub mod route_manifest;
 pub mod wasm_runtime;
+pub mod kv_store;
+pub mod secrets;
+pub mod blob_storage;
 
 use axum::{
     body::Body,
@@ -147,6 +150,12 @@ pub struct AppState {
     pub wasm_runtime: Option<Arc<wasm_runtime::WasmRuntime>>,
     /// Route manifests for WASM deployments (CID -> manifest)
     pub route_manifests: Arc<DashMap<String, route_manifest::RouteManifest>>,
+    /// KV store for edge functions
+    pub kv_store: Option<Arc<kv_store::KvStore>>,
+    /// Secrets manager for edge function deployments
+    pub secrets_manager: Option<Arc<secrets::SecretsManager>>,
+    /// Blob storage backed by IPFS
+    pub blob_store: Option<Arc<blob_storage::BlobStorage>>,
 }
 
 /// Build a Router with just the content-serving routes.

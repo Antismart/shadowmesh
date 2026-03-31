@@ -94,6 +94,9 @@ fn gateway_app(node_runner_url: &str) -> Router {
         process_manager: None,
         wasm_runtime: None,
         route_manifests: Arc::new(dashmap::DashMap::new()),
+        kv_store: None,
+        secrets_manager: None,
+        blob_store: None,
     };
 
     gateway::content_router(state)
@@ -206,6 +209,9 @@ async fn test_e2e_cache_hit() {
         process_manager: None,
         wasm_runtime: None,
         route_manifests: Arc::new(dashmap::DashMap::new()),
+        kv_store: None,
+        secrets_manager: None,
+        blob_store: None,
     };
 
     let app1 = gateway::content_router(state.clone());
@@ -378,6 +384,9 @@ async fn test_e2e_failover_to_second_node() {
         process_manager: None,
         wasm_runtime: None,
         route_manifests: Arc::new(dashmap::DashMap::new()),
+        kv_store: None,
+        secrets_manager: None,
+        blob_store: None,
     };
 
     let app = gateway::content_router(state);
