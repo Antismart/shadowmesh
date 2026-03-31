@@ -120,7 +120,7 @@ export default function DeploymentDetailPage() {
     );
   }
 
-  const previewUrl = `/${deployment.cid}`;
+  const previewUrl = deployment.domain ? `/${deployment.domain}` : `/${deployment.cid}`;
 
   return (
     <div>

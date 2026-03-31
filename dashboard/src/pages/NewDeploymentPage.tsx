@@ -38,7 +38,7 @@ export default function NewDeploymentPage() {
   // SSE streaming state
   const [buildLogs, setBuildLogs] = useState<string[]>([]);
   const [buildStatus, setBuildStatus] = useState<BuildStatus>(null);
-  const [buildResult, setBuildResult] = useState<DeployResponse | null>(null);
+  const [buildResult, setBuildResult] = useState<(DeployResponse & { domain?: string | null }) | null>(null);
   const [buildError, setBuildError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -176,14 +176,14 @@ export default function NewDeploymentPage() {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-mesh-accent">Deployment Successful</p>
               <p className="text-xs text-mesh-muted mt-1 font-mono truncate">CID: {buildResult.cid}</p>
-              {buildResult.shadow_url && (
+              {(buildResult.domain || buildResult.shadow_url) && (
                 <a
-                  href={buildResult.shadow_url}
+                  href={`/${buildResult.domain || ''}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-xs text-mesh-accent hover:underline mt-1 inline-block"
                 >
-                  {buildResult.shadow_url}
+                  {buildResult.domain || buildResult.shadow_url}
                 </a>
               )}
               <div className="flex gap-3 mt-3">
@@ -193,9 +193,9 @@ export default function NewDeploymentPage() {
                 >
                   View Deployment
                 </button>
-                {buildResult.url && (
+                {(buildResult.domain || buildResult.url) && (
                   <a
-                    href={buildResult.url}
+                    href={buildResult.domain ? `/${buildResult.domain}` : buildResult.url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-xs px-3 py-1.5 border border-mesh-border rounded text-mesh-text hover:bg-mesh-surface transition-colors inline-flex items-center gap-1"
