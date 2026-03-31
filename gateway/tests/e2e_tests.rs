@@ -92,6 +92,8 @@ fn gateway_app(node_runner_url: &str) -> Router {
         per_cid_bytes: Arc::new(dashmap::DashMap::new()),
         build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
         process_manager: None,
+        wasm_runtime: None,
+        route_manifests: Arc::new(dashmap::DashMap::new()),
     };
 
     gateway::content_router(state)
@@ -202,6 +204,8 @@ async fn test_e2e_cache_hit() {
         per_cid_bytes: Arc::new(dashmap::DashMap::new()),
         build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
         process_manager: None,
+        wasm_runtime: None,
+        route_manifests: Arc::new(dashmap::DashMap::new()),
     };
 
     let app1 = gateway::content_router(state.clone());
@@ -372,6 +376,8 @@ async fn test_e2e_failover_to_second_node() {
         per_cid_bytes: Arc::new(dashmap::DashMap::new()),
         build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
         process_manager: None,
+        wasm_runtime: None,
+        route_manifests: Arc::new(dashmap::DashMap::new()),
     };
 
     let app = gateway::content_router(state);

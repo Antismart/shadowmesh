@@ -374,6 +374,21 @@ async fn main() {
         } else {
             None
         },
+        wasm_runtime: if config.wasm.enabled {
+            match wasm_runtime::WasmRuntime::new(config.wasm.clone()) {
+                Ok(rt) => {
+                    println!("✓ WASM edge function runtime initialized");
+                    Some(Arc::new(rt))
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize WASM runtime: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        },
+        route_manifests: Arc::new(DashMap::new()),
     };
 
     // Clone audit logger before state is moved into the router

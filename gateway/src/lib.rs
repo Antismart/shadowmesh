@@ -36,6 +36,8 @@ pub mod upload;
 pub mod framework_detect;
 pub mod process_manager;
 pub mod reverse_proxy;
+pub mod route_manifest;
+pub mod wasm_runtime;
 
 use axum::{
     body::Body,
@@ -141,6 +143,10 @@ pub struct AppState {
     pub build_semaphore: Arc<tokio::sync::Semaphore>,
     /// Process manager for dynamic (SSR) deployments
     pub process_manager: Option<Arc<process_manager::ProcessManager>>,
+    /// WASM edge function runtime
+    pub wasm_runtime: Option<Arc<wasm_runtime::WasmRuntime>>,
+    /// Route manifests for WASM deployments (CID -> manifest)
+    pub route_manifests: Arc<DashMap<String, route_manifest::RouteManifest>>,
 }
 
 /// Build a Router with just the content-serving routes.

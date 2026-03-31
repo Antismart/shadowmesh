@@ -25,6 +25,8 @@ pub struct Config {
     pub p2p: P2pConfig,
     #[serde(default)]
     pub dynamic: DynamicDeployConfig,
+    #[serde(default)]
+    pub wasm: WasmConfig,
 }
 
 /// Validation errors for configuration
@@ -431,6 +433,40 @@ impl Default for DynamicDeployConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct WasmConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_wasm_max_memory_mb")]
+    pub max_memory_mb: u64,
+    #[serde(default = "default_wasm_max_fuel")]
+    pub max_fuel: u64,
+    #[serde(default = "default_wasm_max_module_size_mb")]
+    pub max_module_size_mb: u64,
+    #[serde(default = "default_wasm_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default)]
+    pub aot_cache_dir: Option<String>,
+}
+
+fn default_wasm_max_memory_mb() -> u64 { 128 }
+fn default_wasm_max_fuel() -> u64 { 10_000_000 }
+fn default_wasm_max_module_size_mb() -> u64 { 50 }
+fn default_wasm_timeout_seconds() -> u64 { 30 }
+
+impl Default for WasmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_memory_mb: default_wasm_max_memory_mb(),
+            max_fuel: default_wasm_max_fuel(),
+            max_module_size_mb: default_wasm_max_module_size_mb(),
+            timeout_seconds: default_wasm_timeout_seconds(),
+            aot_cache_dir: None,
+        }
+    }
+}
+
 impl Config {
     /// Load configuration from file and environment variables
     ///
@@ -604,6 +640,7 @@ impl Config {
             naming: NamingConfig::default(),
             p2p: P2pConfig::default(),
             dynamic: DynamicDeployConfig::default(),
+            wasm: WasmConfig::default(),
         }
     }
 }

@@ -58,6 +58,8 @@ fn test_state(cfg: config::Config, storage: Option<Arc<protocol::StorageLayer>>)
         per_cid_bytes: Arc::new(dashmap::DashMap::new()),
         build_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
         process_manager: None,
+        wasm_runtime: None,
+        route_manifests: Arc::new(dashmap::DashMap::new()),
     }
 }
 

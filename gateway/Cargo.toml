@@ -88,6 +88,14 @@ dashmap = "6"
 sysinfo = "0.32"
 libc = "0.2"
 
+# WASM edge function runtime (feature-gated)
+wasmtime = { version = "27", optional = true }
+wasmtime-wasi = { version = "27", optional = true }
+
+[features]
+default = ["wasm"]
+wasm = ["wasmtime", "wasmtime-wasi"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 hyper = { workspace = true }
