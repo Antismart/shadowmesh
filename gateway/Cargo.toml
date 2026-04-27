@@ -85,7 +85,7 @@ filetime = "0.2"
 dashmap = "6"
 
 # Process monitoring for dynamic deployments
-sysinfo = "0.32"
+sysinfo = "0.38"
 libc = "0.2"
 
 # Encryption for secrets manager
