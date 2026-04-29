@@ -1,0 +1,33 @@
+{
+  "name": "@shadowmesh/adapter-nuxt",
+  "version": "0.1.0",
+  "description": "Nuxt 3 adapter for ShadowMesh edge deployment",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "shadowmesh-nuxt": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test dist/__tests__/*.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "nuxt": ">=3.0.0",
+    "@nuxt/kit": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@nuxt/kit": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}

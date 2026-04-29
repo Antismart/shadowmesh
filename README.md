@@ -455,7 +455,7 @@ cargo bench -p benchmarks
 - [x] Censorship detection & adaptive routing
 - [x] Dynamic (SSR) deployments — Node.js process manager with health checks, auto-restart, memory limits
 - [x] WASM Edge Functions — Wasmtime sandbox with fuel metering, route manifests, JSON-over-stdio bridge
-- [x] Framework adapters — Next.js route scanner, manifest generator, Rust edge function SDK
+- [x] Framework adapters — Next.js, Nuxt, SvelteKit, Remix route scanners + manifest generators; Rust edge function SDK
 - [x] State layer — KV store (Redis-backed), encrypted secrets (ChaCha20Poly1305), blob storage (IPFS)
 - [ ] Mobile SDK (React Native)
 - [ ] Incentive layer with token rewards — [Tokenomics Spec](docs/tokenomics.md) (MESH token, Sepolia testnet, Phase 1 in progress)
@@ -463,7 +463,7 @@ cargo bench -p benchmarks
 - [ ] IPFS pinning service integration
 
 ### V2 Roadmap
-- [ ] Nuxt / SvelteKit / Remix WASM adapters
+- [x] Nuxt / SvelteKit / Remix adapters — `@shadowmesh/adapter-{nuxt,sveltekit,remix}` (route scanner + manifest generator + CLI)
 - [ ] Per-deployment SQLite databases (WASM-compiled)
 - [ ] API rewrites/proxy — route `/api/*` to external backends via deployment config
 - [ ] Build pipelines — custom multi-step build workflows

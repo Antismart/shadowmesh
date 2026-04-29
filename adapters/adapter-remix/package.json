@@ -1,0 +1,29 @@
+{
+  "name": "@shadowmesh/adapter-remix",
+  "version": "0.1.0",
+  "description": "Remix adapter for ShadowMesh edge deployment",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "shadowmesh-remix": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test --import tsx ./src/__tests__/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0"
+  },
+  "peerDependencies": {
+    "@remix-run/dev": "*"
+  },
+  "peerDependenciesMeta": {
+    "@remix-run/dev": {
+      "optional": true
+    }
+  },
+  "license": "MIT"
+}
