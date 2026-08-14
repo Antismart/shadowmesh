@@ -470,6 +470,22 @@ async fn get_bandwidth(State(state): State<Arc<AppState>>) -> Json<BandwidthResp
 /// Maximum upload size: 100 MB
 const MAX_UPLOAD_SIZE: usize = 100 * 1024 * 1024;
 
+/// Maximum total size of content accepted from a remote peer, mirroring the
+/// local upload cap. Prevents a malicious peer from exhausting memory.
+const MAX_INBOUND_CONTENT_SIZE: u64 = 100 * 1024 * 1024;
+
+/// Maximum size of a single fragment accepted from a remote peer. Legitimate
+/// fragments are 256 KB chunks; this leaves generous headroom while still
+/// bounding per-fragment memory.
+const MAX_INBOUND_FRAGMENT_SIZE: usize = 4 * 1024 * 1024;
+
+/// Returns true if `cid` is a bare-hex BLAKE3 digest (64 lowercase hex chars),
+/// which is what the fragment protocol produces for uploaded content. Only for
+/// these CIDs can we recompute the content hash locally and verify integrity.
+fn is_blake3_hex_cid(cid: &str) -> bool {
+    cid.len() == 64 && cid.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Upload response
 #[derive(Debug, Serialize)]
 pub struct UploadResponse {
@@ -775,8 +791,42 @@ async fn fetch_remote_content(
         })?
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
 
-    // 5. Fetch each fragment from the provider
-    for (idx, frag_hash) in manifest.fragment_hashes.iter().enumerate() {
+    // 4b. Bind the manifest to the requested CID. For the hex-BLAKE3 fragment
+    // protocol (what uploads produce) the manifest's content_hash must equal the
+    // requested CID; otherwise the peer served us a manifest for other content.
+    let verify_hash = is_blake3_hex_cid(&cid);
+    if verify_hash && manifest.content_hash != cid {
+        tracing::warn!(
+            requested = %cid,
+            got = %manifest.content_hash,
+            "Manifest content_hash does not match requested CID — rejecting"
+        );
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "Manifest content hash does not match requested CID".to_string(),
+        ));
+    }
+
+    // 4c. Enforce an inbound size cap on the declared total to bound memory.
+    if manifest.total_size > MAX_INBOUND_CONTENT_SIZE {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "Remote content exceeds {} MB limit",
+                MAX_INBOUND_CONTENT_SIZE / (1024 * 1024)
+            ),
+        ));
+    }
+
+    // 5. Fetch each fragment from the provider, accumulating into memory so we
+    // can verify the reassembled whole against the requested CID BEFORE storing
+    // anything. A running BLAKE3 hasher over the ordered fragments reconstructs
+    // the content hash exactly (streaming hash == hash of concatenation).
+    let mut fetched: Vec<(String, Vec<u8>)> = Vec::with_capacity(manifest.fragment_hashes.len());
+    let mut hasher = blake3::Hasher::new();
+    let mut total_bytes: u64 = 0;
+
+    for frag_hash in manifest.fragment_hashes.iter() {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         p2p.command_tx
             .send(crate::p2p_commands::P2pCommand::FetchFragment {
@@ -802,9 +852,57 @@ async fn fetch_remote_content(
             })?
             .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
 
+        // Per-fragment and cumulative size caps to bound memory from a peer.
+        if data.len() > MAX_INBOUND_FRAGMENT_SIZE {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "Remote fragment exceeds {} MB limit",
+                    MAX_INBOUND_FRAGMENT_SIZE / (1024 * 1024)
+                ),
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(data.len() as u64);
+        if total_bytes > MAX_INBOUND_CONTENT_SIZE {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "Remote content exceeds {} MB limit",
+                    MAX_INBOUND_CONTENT_SIZE / (1024 * 1024)
+                ),
+            ));
+        }
+
+        hasher.update(&data);
+        fetched.push((frag_hash.clone(), data));
+    }
+
+    // 5b. Verify the reassembled whole hashes to the requested CID before storing.
+    if verify_hash {
+        let computed = hasher.finalize().to_hex().to_string();
+        if computed != cid {
+            tracing::warn!(
+                requested = %cid,
+                computed = %computed,
+                "Reassembled content hash mismatch — rejecting, not storing or announcing"
+            );
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                "Reassembled content does not hash to the requested CID".to_string(),
+            ));
+        }
+    } else {
+        tracing::warn!(
+            %cid,
+            "Requested CID is not a hex-BLAKE3 digest; cannot verify content integrity locally"
+        );
+    }
+
+    // 5c. Content verified — persist fragments.
+    for (idx, (frag_hash, data)) in fetched.iter().enumerate() {
         state
             .storage
-            .store_fragment(frag_hash, &cid, idx as u32, &data)
+            .store_fragment(frag_hash, &cid, idx as u32, data)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }

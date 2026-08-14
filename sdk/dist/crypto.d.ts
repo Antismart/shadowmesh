@@ -4,10 +4,24 @@
  * Client-side encryption, decryption, and hashing utilities.
  */
 /**
- * Hash content using Blake3
- * Falls back to SHA-256 if Blake3 is not available
+ * Hash content using BLAKE3, returning a bare lowercase hex string.
+ *
+ * This is the canonical content-hash format for the ShadowMesh fragment
+ * protocol (matches `blake3::hash(..).to_hex()` on the Rust side). There is
+ * intentionally NO SHA-256 fallback: silently substituting a different hash
+ * algorithm would produce identifiers that neither the network nor the WASM
+ * SDK could verify. If BLAKE3 is unavailable we fail loudly.
  */
 export declare function hashContent(data: Uint8Array): Promise<string>;
+/**
+ * True when `id` is a bare hex BLAKE3 content hash (64 hex chars).
+ *
+ * The ShadowMesh fragment protocol identifies content by bare-hex BLAKE3.
+ * IPFS-style CIDs (`Qm...` / `bafy...`) are a separate identifier class that
+ * cannot be recomputed from bytes with BLAKE3 and are validated structurally
+ * (see the `cid_validation` layer) instead of by content hash.
+ */
+export declare function isHexBlake3(id: string): boolean;
 /**
  * Hash a string
  */

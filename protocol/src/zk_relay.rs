@@ -1,29 +1,43 @@
-//! Zero-Knowledge Relay Protocol
+//! Authenticated Onion Routing
 //!
-//! Implements a relay system where nodes can serve content without knowing
-//! what they are serving. This provides plausible deniability for relay operators.
+//! Implements a Tor-like onion routing system where relay nodes forward
+//! layered-encrypted packets without being able to decrypt the payload they
+//! carry. This gives relay operators **plausible deniability** (they cannot
+//! see the content they relay) while still **authenticating** each hop.
+//!
+//! This is NOT a zero-knowledge protocol in the cryptographic sense — the name
+//! is historical. It is authenticated onion routing: the circuit handshake with
+//! each relay is authenticated against that relay's Ed25519 peer identity, so a
+//! man-in-the-middle cannot impersonate a hop or splice itself into a circuit.
 //!
 //! # Key Concepts
 //!
+//! - **Authenticated Handshake**: Each relay signs its CREATED response with its
+//!   Ed25519 identity key. The client verifies the signature against the
+//!   expected `PeerId` for that hop and rejects the circuit on mismatch.
 //! - **Blind Relay**: Nodes relay encrypted packets without decryption capability
 //! - **Circuit-Based Routing**: Requests travel through pre-established circuits
 //! - **Layered Encryption**: Each hop only decrypts its layer, revealing next hop
 //! - **Request Unlinkability**: Cannot link requests from same user
+//! - **Replay / DoS Hardening**: Stale or replayed handshakes are rejected, and
+//!   circuits are capped both globally and per originating peer.
 //!
 //! # Protocol Flow
 //!
-//! 1. Client builds a circuit through 3+ relay nodes
+//! 1. Client builds a circuit through 2+ relay nodes (identified by `PeerId`)
 //! 2. Client encrypts request in onion layers (outermost = first hop)
 //! 3. Each relay decrypts its layer, learns only the next hop
-//! 4. Exit relay retrieves content, wraps response in layers
-//! 5. Response travels back through circuit
-//! 6. Client decrypts all layers to get content
+//! 4. Each relay authenticates its handshake with its Ed25519 identity key
+//! 5. Exit relay retrieves content, wraps response in layers
+//! 6. Response travels back through circuit
+//! 7. Client decrypts all layers to get content
 
 use crate::crypto::{CryptoManager, KEY_SIZE};
 use crate::lock_utils::{read_lock, write_lock};
 use blake3::Hasher;
 use chacha20poly1305::aead::{AeadCore, OsRng};
 use chacha20poly1305::ChaCha20Poly1305;
+use libp2p::identity::ed25519;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -56,6 +70,15 @@ pub enum RelayError {
     ForwardFailed(String),
     MaxCircuitsExceeded,
     RateLimited,
+    /// Relay handshake signature was missing, malformed, or did not verify
+    /// against the expected relay identity.
+    HandshakeAuthFailed(String),
+    /// Cell timestamp is outside the accepted freshness window.
+    StaleCell,
+    /// Cell was already seen (replay protection).
+    ReplayedCell,
+    /// A circuit with this ID already exists (from a different originator).
+    CircuitIdCollision,
 }
 
 impl std::fmt::Display for RelayError {
@@ -71,6 +94,12 @@ impl std::fmt::Display for RelayError {
             RelayError::ForwardFailed(msg) => write!(f, "Forward failed: {}", msg),
             RelayError::MaxCircuitsExceeded => write!(f, "Maximum circuits exceeded"),
             RelayError::RateLimited => write!(f, "Rate limited"),
+            RelayError::HandshakeAuthFailed(msg) => {
+                write!(f, "Handshake authentication failed: {}", msg)
+            }
+            RelayError::StaleCell => write!(f, "Cell timestamp outside freshness window"),
+            RelayError::ReplayedCell => write!(f, "Replayed cell rejected"),
+            RelayError::CircuitIdCollision => write!(f, "Circuit ID collision"),
         }
     }
 }
@@ -206,6 +235,26 @@ impl CreateHandshake {
     }
 }
 
+/// Compute the canonical transcript bytes that a relay signs (and the client
+/// verifies) to authenticate a CREATED handshake.
+///
+/// Binding the relay's ephemeral key, the client's ephemeral key, and the
+/// circuit id together prevents an attacker from replaying a relay's signature
+/// on a different handshake or splicing a different ephemeral key into the
+/// circuit.
+fn handshake_transcript(
+    relay_ephemeral: &X25519PublicKey,
+    client_ephemeral: &X25519PublicKey,
+    circuit_id: &CircuitId,
+) -> Vec<u8> {
+    let mut transcript = Vec::with_capacity(32 + 32 + 32 + 32);
+    transcript.extend_from_slice(b"shadowmesh-created-auth-v1");
+    transcript.extend_from_slice(relay_ephemeral);
+    transcript.extend_from_slice(client_ephemeral);
+    transcript.extend_from_slice(circuit_id);
+    transcript
+}
+
 /// Response to CREATE handshake (CREATED cell payload)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatedHandshake {
@@ -215,11 +264,27 @@ pub struct CreatedHandshake {
     pub key_confirmation: [u8; 16],
     /// Timestamp
     pub timestamp: u64,
+    /// Relay's long-term Ed25519 identity public key (32 bytes). The client
+    /// checks that `PeerId::from(this) == expected hop peer id`.
+    pub relay_identity_key: X25519PublicKey,
+    /// Ed25519 signature (64 bytes) over the handshake transcript, produced with
+    /// the relay's identity key. Authenticates the handshake to this relay.
+    pub signature: Vec<u8>,
 }
 
 impl CreatedHandshake {
-    /// Create a new response with key confirmation
-    pub fn new(relay_public_key: X25519PublicKey, shared_key: &[u8; KEY_SIZE]) -> Self {
+    /// Create a new signed response with key confirmation.
+    ///
+    /// The relay signs `handshake_transcript(relay_ephemeral, client_ephemeral,
+    /// circuit_id)` with its Ed25519 identity key, binding this handshake to its
+    /// peer identity so it cannot be forged or spliced by a man-in-the-middle.
+    pub fn new_signed(
+        relay_public_key: X25519PublicKey,
+        client_public_key: &X25519PublicKey,
+        circuit_id: &CircuitId,
+        shared_key: &[u8; KEY_SIZE],
+        identity_keypair: &ed25519::Keypair,
+    ) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -233,10 +298,16 @@ impl CreatedHandshake {
         let mut key_confirmation = [0u8; 16];
         key_confirmation.copy_from_slice(&hash.as_bytes()[..16]);
 
+        let transcript = handshake_transcript(&relay_public_key, client_public_key, circuit_id);
+        let signature = identity_keypair.sign(&transcript);
+        let relay_identity_key = identity_keypair.public().to_bytes();
+
         Self {
             relay_public_key,
             key_confirmation,
             timestamp,
+            relay_identity_key,
+            signature,
         }
     }
 
@@ -251,6 +322,41 @@ impl CreatedHandshake {
         expected.copy_from_slice(&hash.as_bytes()[..16]);
 
         self.key_confirmation == expected
+    }
+
+    /// Verify the relay's identity signature over the handshake transcript and
+    /// confirm the signing identity matches the expected hop `PeerId`.
+    ///
+    /// Rejects the handshake if the embedded identity key is malformed, the
+    /// signature does not verify, or the identity does not correspond to the
+    /// `expected_peer` the circuit builder intended for this hop.
+    pub fn verify_identity(
+        &self,
+        client_public_key: &X25519PublicKey,
+        circuit_id: &CircuitId,
+        expected_peer: &PeerId,
+    ) -> Result<(), RelayError> {
+        let identity_pub = ed25519::PublicKey::try_from_bytes(&self.relay_identity_key)
+            .map_err(|e| RelayError::HandshakeAuthFailed(format!("bad identity key: {}", e)))?;
+
+        // The identity that signed must be the one we intended to talk to.
+        let derived_peer =
+            PeerId::from(libp2p::identity::PublicKey::from(identity_pub.clone()));
+        if &derived_peer != expected_peer {
+            return Err(RelayError::HandshakeAuthFailed(
+                "relay identity does not match expected hop peer".to_string(),
+            ));
+        }
+
+        let transcript =
+            handshake_transcript(&self.relay_public_key, client_public_key, circuit_id);
+        if !identity_pub.verify(&transcript, &self.signature) {
+            return Err(RelayError::HandshakeAuthFailed(
+                "signature verification failed".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Serialize for transmission
@@ -588,12 +694,17 @@ impl std::fmt::Debug for RelayCircuitState {
 }
 
 impl RelayCircuitState {
-    /// Create a new relay circuit state from ECDH handshake
+    /// Create a new relay circuit state from ECDH handshake.
+    ///
+    /// The returned CREATED response is signed with the relay's Ed25519
+    /// `identity_keypair`, authenticating the handshake to this relay's peer
+    /// identity so a man-in-the-middle cannot impersonate the hop.
     pub fn from_handshake(
         circuit_id: CircuitId,
         client_public_key: X25519PublicKey,
         from_peer: PeerId,
         lifetime: Duration,
+        identity_keypair: &ed25519::Keypair,
     ) -> (Self, CreatedHandshake) {
         // Generate ephemeral keypair for this circuit
         let ephemeral_keypair = EphemeralHopKeypair::generate();
@@ -618,8 +729,14 @@ impl RelayCircuitState {
             expires_at: now + lifetime,
         };
 
-        // Create response with key confirmation
-        let response = CreatedHandshake::new(ephemeral_keypair.public_key_bytes(), &hop_key);
+        // Create signed response with key confirmation
+        let response = CreatedHandshake::new_signed(
+            ephemeral_keypair.public_key_bytes(),
+            &client_public_key,
+            &circuit_id,
+            &hop_key,
+            identity_keypair,
+        );
 
         (state, response)
     }
@@ -637,8 +754,14 @@ pub struct ZkRelayConfig {
     pub default_hops: usize,
     /// Circuit lifetime
     pub circuit_lifetime: Duration,
-    /// Maximum circuits per relay
+    /// Maximum circuits per relay (global)
     pub max_circuits: usize,
+    /// Maximum concurrent circuits a single originating peer may reserve. This
+    /// bounds the damage a single abusive peer can do below the global cap.
+    pub max_circuits_per_peer: usize,
+    /// Maximum accepted age of a CREATE/RELAY cell timestamp. Cells older than
+    /// this (or too far in the future) are rejected as stale/replayed.
+    pub max_cell_age: Duration,
     /// Enable padding cells for traffic analysis resistance
     pub padding_enabled: bool,
     /// Padding interval
@@ -653,6 +776,8 @@ impl Default for ZkRelayConfig {
             default_hops: 3,
             circuit_lifetime: Duration::from_secs(600), // 10 minutes
             max_circuits: 10000,
+            max_circuits_per_peer: 256,
+            max_cell_age: Duration::from_secs(300), // 5 minutes clock skew tolerance
             padding_enabled: true,
             padding_interval: Duration::from_millis(100),
             cell_timeout: Duration::from_secs(30),
@@ -751,6 +876,20 @@ impl ZkRelayClient {
             .circuits
             .get_mut(circuit_id)
             .ok_or(RelayError::CircuitNotFound)?;
+
+        // Authenticate the relay BEFORE deriving/accepting any key material.
+        // The circuit builder knows which PeerId each hop must be; the relay's
+        // signed CREATED response must verify against that expected identity,
+        // otherwise a man-in-the-middle could impersonate the hop.
+        let expected_peer = circuit
+            .hops
+            .get(hop_index)
+            .ok_or(RelayError::InvalidHop)?
+            .peer_id;
+        let client_public_key = circuit.hops[hop_index]
+            .ephemeral_keypair
+            .public_key_bytes();
+        response.verify_identity(&client_public_key, circuit_id, &expected_peer)?;
 
         // Derive context for key derivation
         let mut context = Vec::new();
@@ -964,14 +1103,32 @@ impl ZkRelayClient {
     }
 }
 
-/// Zero-Knowledge Relay Node
+/// Derive the relay's long-term Ed25519 identity keypair from its 32-byte
+/// node secret. When the node secret is the node's libp2p identity Ed25519
+/// seed, the resulting public key's `PeerId` equals the node's `PeerId`, which
+/// is what lets circuit builders authenticate this hop against its `PeerId`.
+fn identity_keypair_from_secret(node_secret: &[u8; KEY_SIZE]) -> ed25519::Keypair {
+    // `try_from_bytes` zeroizes its input, so operate on a copy.
+    let mut seed = *node_secret;
+    let secret = ed25519::SecretKey::try_from_bytes(&mut seed)
+        .expect("32-byte node secret is always a valid Ed25519 seed");
+    ed25519::Keypair::from(secret)
+}
+
+/// Authenticated onion-routing relay node.
 ///
-/// Used by relay nodes to forward cells without knowing content.
+/// Used by relay nodes to forward cells without being able to see the content
+/// they carry. Each CREATED handshake it emits is signed with its Ed25519
+/// identity key so circuit builders can authenticate it (see module docs).
 pub struct ZkRelayNode {
-    /// Node's keypair seed
-    _node_secret: [u8; KEY_SIZE],
+    /// Node's long-term Ed25519 identity keypair, derived from the node secret.
+    /// Used to sign CREATED handshakes so clients can authenticate this hop.
+    identity_keypair: ed25519::Keypair,
     /// Circuit states (minimal info needed for forwarding)
     circuit_states: Arc<RwLock<HashMap<CircuitId, RelayCircuitState>>>,
+    /// Recently-seen CREATE cell digests → first-seen time, for replay
+    /// rejection. Bounded and pruned against `config.max_cell_age`.
+    replay_cache: Arc<RwLock<HashMap<[u8; 32], Instant>>>,
     /// Configuration
     config: ZkRelayConfig,
     /// Statistics
@@ -996,11 +1153,17 @@ pub struct RelayStats {
 }
 
 impl ZkRelayNode {
-    /// Create a new relay node
+    /// Create a new relay node.
+    ///
+    /// `node_secret` is used as the seed for the relay's Ed25519 signing
+    /// identity. Pass the node's libp2p identity Ed25519 seed so the signing
+    /// identity matches the node's `PeerId` and circuit builders can
+    /// authenticate this hop.
     pub fn new(node_secret: [u8; KEY_SIZE]) -> Self {
         Self {
-            _node_secret: node_secret,
+            identity_keypair: identity_keypair_from_secret(&node_secret),
             circuit_states: Arc::new(RwLock::new(HashMap::new())),
+            replay_cache: Arc::new(RwLock::new(HashMap::new())),
             config: ZkRelayConfig::default(),
             stats: Arc::new(RwLock::new(RelayStats::default())),
         }
@@ -1009,11 +1172,58 @@ impl ZkRelayNode {
     /// Create with custom config
     pub fn with_config(node_secret: [u8; KEY_SIZE], config: ZkRelayConfig) -> Self {
         Self {
-            _node_secret: node_secret,
+            identity_keypair: identity_keypair_from_secret(&node_secret),
             circuit_states: Arc::new(RwLock::new(HashMap::new())),
+            replay_cache: Arc::new(RwLock::new(HashMap::new())),
             config,
             stats: Arc::new(RwLock::new(RelayStats::default())),
         }
+    }
+
+    /// The relay's Ed25519 identity public key bytes. When constructed from the
+    /// node's libp2p identity seed, `PeerId::from(this)` equals the node's
+    /// `PeerId`.
+    pub fn identity_public_key(&self) -> X25519PublicKey {
+        self.identity_keypair.public().to_bytes()
+    }
+
+    /// Reject cells whose timestamp is outside the accepted freshness window
+    /// (too old, or too far in the future). This limits how long a captured
+    /// cell remains useful to a replaying attacker.
+    fn check_freshness(&self, timestamp: u64) -> Result<(), RelayError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let max_age = self.config.max_cell_age.as_secs();
+        if timestamp > now.saturating_add(max_age) || now.saturating_sub(timestamp) > max_age {
+            return Err(RelayError::StaleCell);
+        }
+        Ok(())
+    }
+
+    /// Check-and-record a cell digest in the replay cache. Returns
+    /// `ReplayedCell` if this digest has been seen within the freshness window.
+    /// The cache is pruned against `max_cell_age` and hard-capped to stay
+    /// bounded under a flood.
+    fn check_and_record_replay(&self, digest: [u8; 32]) -> Result<(), RelayError> {
+        let mut cache = write_lock(&self.replay_cache);
+
+        // Opportunistically prune entries older than the freshness window.
+        let max_age = self.config.max_cell_age;
+        cache.retain(|_, seen| seen.elapsed() <= max_age);
+
+        // Hard cap so a flood of unique CREATE cells cannot grow this unbounded.
+        let cap = self.config.max_circuits.saturating_mul(2).max(1024);
+        if cache.len() >= cap {
+            cache.clear();
+        }
+
+        if cache.contains_key(&digest) {
+            return Err(RelayError::ReplayedCell);
+        }
+        cache.insert(digest, Instant::now());
+        Ok(())
     }
 
     /// Process an incoming cell
@@ -1042,21 +1252,60 @@ impl ZkRelayNode {
 
     /// Handle circuit creation with ECDH key exchange
     fn handle_create(&self, cell: RelayCell, from_peer: PeerId) -> Result<RelayAction, RelayError> {
+        // Reject stale/future cells before doing any work.
+        self.check_freshness(cell.timestamp)?;
+
+        // Parse the CREATE handshake from client
+        let handshake = CreateHandshake::deserialize(&cell.payload)?;
+        // The inner handshake carries its own timestamp — bound it too.
+        self.check_freshness(handshake.timestamp)?;
+
+        // Replay protection: reject a CREATE handshake we've already processed
+        // within the freshness window.
+        let digest = {
+            let mut h = Hasher::new();
+            h.update(b"shadowmesh-create-replay-v1");
+            h.update(&cell.circuit_id);
+            h.update(&handshake.timestamp.to_le_bytes());
+            h.update(&handshake.client_public_key);
+            h.update(&handshake.padding);
+            let mut d = [0u8; 32];
+            d.copy_from_slice(h.finalize().as_bytes());
+            d
+        };
+        self.check_and_record_replay(digest)?;
+
         let mut states = write_lock(&self.circuit_states);
 
         if states.len() >= self.config.max_circuits {
             return Err(RelayError::MaxCircuitsExceeded);
         }
 
-        // Parse the CREATE handshake from client
-        let handshake = CreateHandshake::deserialize(&cell.payload)?;
+        // Reject client-chosen circuit_id collisions instead of silently
+        // overwriting existing state — an attacker must not be able to evict or
+        // hijack another peer's live circuit by reusing its id.
+        if states.contains_key(&cell.circuit_id) {
+            return Err(RelayError::CircuitIdCollision);
+        }
 
-        // Perform ECDH key exchange
+        // Per-peer circuit reservation cap: bound how many concurrent circuits a
+        // single originating peer can hold, below the global maximum.
+        let peer_circuits = states
+            .values()
+            .filter(|s| s.prev_hop == Some(from_peer))
+            .count();
+        if peer_circuits >= self.config.max_circuits_per_peer {
+            return Err(RelayError::RateLimited);
+        }
+
+        // Perform ECDH key exchange and sign the CREATED response with our
+        // Ed25519 identity so the client can authenticate this hop.
         let (state, created_response) = RelayCircuitState::from_handshake(
             cell.circuit_id,
             handshake.client_public_key,
             from_peer,
             self.config.circuit_lifetime,
+            &self.identity_keypair,
         );
 
         states.insert(cell.circuit_id, state);
@@ -1078,6 +1327,9 @@ impl ZkRelayNode {
 
     /// Handle circuit extension
     fn handle_extend(&self, cell: RelayCell, from_peer: PeerId) -> Result<RelayAction, RelayError> {
+        // Reject stale/future cells.
+        self.check_freshness(cell.timestamp)?;
+
         let mut states = write_lock(&self.circuit_states);
 
         let state = states
@@ -1118,6 +1370,9 @@ impl ZkRelayNode {
 
     /// Handle relay cell (the main forwarding path)
     fn handle_relay(&self, cell: RelayCell, from_peer: PeerId) -> Result<RelayAction, RelayError> {
+        // Reject stale/future cells.
+        self.check_freshness(cell.timestamp)?;
+
         let states = read_lock(&self.circuit_states);
 
         let state = states
@@ -1408,6 +1663,19 @@ mod tests {
         (0..n).map(|_| create_peer_id()).collect()
     }
 
+    /// Create a relay node whose Ed25519 signing identity matches the returned
+    /// `PeerId`. This mirrors production, where the relay signs CREATED
+    /// responses with its libp2p identity key and the client authenticates the
+    /// hop against that peer id.
+    fn create_relay_with_peer(config: ZkRelayConfig) -> (ZkRelayNode, PeerId) {
+        let ed_kp = identity::ed25519::Keypair::generate();
+        let mut seed = [0u8; KEY_SIZE];
+        seed.copy_from_slice(ed_kp.secret().as_ref());
+        let peer = PeerId::from(identity::PublicKey::from(ed_kp.public()));
+        let node = ZkRelayNode::with_config(seed, config);
+        (node, peer)
+    }
+
     #[test]
     fn test_circuit_creation() {
         let secret = [42u8; KEY_SIZE];
@@ -1629,9 +1897,18 @@ mod tests {
     #[test]
     fn test_created_handshake_key_verification() {
         let shared_key: [u8; KEY_SIZE] = rand::random();
-        let relay_keypair = X25519Keypair::generate();
+        let relay_ephemeral = X25519Keypair::generate();
+        let client_ephemeral = X25519Keypair::generate();
+        let circuit_id: CircuitId = rand::random();
+        let id_kp = identity::ed25519::Keypair::generate();
 
-        let response = CreatedHandshake::new(relay_keypair.public_key_bytes(), &shared_key);
+        let response = CreatedHandshake::new_signed(
+            relay_ephemeral.public_key_bytes(),
+            &client_ephemeral.public_key_bytes(),
+            &circuit_id,
+            &shared_key,
+            &id_kp,
+        );
 
         // Correct key should verify
         assert!(response.verify_key(&shared_key));
@@ -1639,14 +1916,30 @@ mod tests {
         // Wrong key should not verify
         let wrong_key: [u8; KEY_SIZE] = rand::random();
         assert!(!response.verify_key(&wrong_key));
+
+        // Identity signature should verify against the correct expected peer
+        let expected_peer = PeerId::from(identity::PublicKey::from(id_kp.public()));
+        assert!(response
+            .verify_identity(&client_ephemeral.public_key_bytes(), &circuit_id, &expected_peer)
+            .is_ok());
+
+        // ...but not against an unrelated peer id
+        let other_peer = create_peer_id();
+        assert!(response
+            .verify_identity(&client_ephemeral.public_key_bytes(), &circuit_id, &other_peer)
+            .is_err());
     }
 
     #[test]
     fn test_full_ecdh_circuit_flow() {
-        // Simulate full circuit creation with ECDH
+        // Simulate full circuit creation with ECDH + hop authentication.
         let secret = [42u8; KEY_SIZE];
         let mut client = ZkRelayClient::new(secret);
-        let peers = create_test_peers(3);
+
+        // The first hop's relay identity must match its peer id so the client
+        // can authenticate the handshake.
+        let (node, hop0_peer) = create_relay_with_peer(ZkRelayConfig::default());
+        let peers = vec![hop0_peer, create_peer_id(), create_peer_id()];
 
         // Step 1: Client initiates circuit
         let circuit_id = client.build_circuit(&peers).unwrap();
@@ -1658,10 +1951,7 @@ mod tests {
         let create_cell = client.get_create_cell(&circuit_id).unwrap();
         assert_eq!(create_cell.cell_type, CellType::Create);
 
-        // Step 3: Simulate relay processing CREATE
-        let node_secret = [99u8; KEY_SIZE];
-        let node = ZkRelayNode::new(node_secret);
-
+        // Step 3: Relay processes CREATE and signs its CREATED response
         let action = node.process_cell(create_cell, peers[0]).unwrap();
 
         // Node should respond with CREATED containing its public key
@@ -1669,7 +1959,7 @@ mod tests {
             RelayAction::Respond(cell) => {
                 assert_eq!(cell.cell_type, CellType::Created);
 
-                // Step 4: Client processes CREATED response
+                // Step 4: Client processes CREATED response (authenticates hop)
                 let response = CreatedHandshake::deserialize(&cell.payload).unwrap();
                 let next_cell = client
                     .process_created_response(&circuit_id, &response, 0)
@@ -1681,5 +1971,192 @@ mod tests {
             }
             _ => panic!("Expected Respond action"),
         }
+    }
+
+    #[test]
+    fn test_forged_relay_signature_is_rejected() {
+        // A handshake signed by a relay whose identity does NOT match the
+        // expected hop peer id must be rejected — this is the core #60 fix.
+        let secret = [7u8; KEY_SIZE];
+        let mut client = ZkRelayClient::new(secret);
+
+        // Build a circuit whose first hop we *expect* to be `expected_peer`.
+        let expected_peer = create_peer_id();
+        let peers = vec![expected_peer, create_peer_id()];
+        let circuit_id = client.build_circuit(&peers).unwrap();
+        let create_cell = client.get_create_cell(&circuit_id).unwrap();
+
+        // A DIFFERENT (attacker) relay answers the CREATE. Its identity key does
+        // not correspond to `expected_peer`, so its signature is a forgery from
+        // the client's perspective.
+        let (attacker, _attacker_peer) = create_relay_with_peer(ZkRelayConfig::default());
+        let action = attacker.process_cell(create_cell, peers[0]).unwrap();
+
+        let response = match action {
+            RelayAction::Respond(cell) => {
+                CreatedHandshake::deserialize(&cell.payload).unwrap()
+            }
+            _ => panic!("Expected Respond action"),
+        };
+
+        // The client must reject the handshake: the signing identity does not
+        // match the expected hop peer id.
+        let result = client.process_created_response(&circuit_id, &response, 0);
+        assert!(
+            matches!(result, Err(RelayError::HandshakeAuthFailed(_))),
+            "expected HandshakeAuthFailed, got {:?}",
+            result
+        );
+
+        // Tampering with the signature bytes of an otherwise-valid handshake
+        // must also be rejected.
+        let (good_node, good_peer) = create_relay_with_peer(ZkRelayConfig::default());
+        let mut client2 = ZkRelayClient::new(secret);
+        let peers2 = vec![good_peer, create_peer_id()];
+        let cid2 = client2.build_circuit(&peers2).unwrap();
+        let cc2 = client2.get_create_cell(&cid2).unwrap();
+        let mut response2 = match good_node.process_cell(cc2, peers2[0]).unwrap() {
+            RelayAction::Respond(cell) => CreatedHandshake::deserialize(&cell.payload).unwrap(),
+            _ => panic!("Expected Respond action"),
+        };
+        // Flip a byte in the signature.
+        response2.signature[0] ^= 0xFF;
+        let tampered = client2.process_created_response(&cid2, &response2, 0);
+        assert!(
+            matches!(tampered, Err(RelayError::HandshakeAuthFailed(_))),
+            "expected tampered signature to be rejected, got {:?}",
+            tampered
+        );
+    }
+
+    #[test]
+    fn test_duplicate_circuit_id_from_different_peer_not_clobbered() {
+        // A relay must not let a second peer overwrite (hijack) the circuit
+        // state of an existing circuit id.
+        let (node, _peer) = create_relay_with_peer(ZkRelayConfig::default());
+
+        let peer_a = create_peer_id();
+        let peer_b = create_peer_id();
+
+        // Peer A creates a circuit.
+        let circuit_id: CircuitId = rand::random();
+        let client_pub_a = X25519Keypair::generate().public_key_bytes();
+        let handshake_a = {
+            let mut h = CreateHandshake::new(client_pub_a, circuit_id);
+            h.timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            h
+        };
+        let cell_a = RelayCell::new(circuit_id, CellType::Create, handshake_a.serialize());
+        node.process_cell(cell_a, peer_a).expect("first create succeeds");
+        assert_eq!(node.active_circuits(), 1);
+
+        // Record the state established for peer A.
+        let state_before = {
+            let states = read_lock(&node.circuit_states);
+            states.get(&circuit_id).cloned().expect("state exists")
+        };
+        assert_eq!(state_before.prev_hop, Some(peer_a));
+
+        // Peer B tries to reuse the SAME circuit id with different key material.
+        let client_pub_b = X25519Keypair::generate().public_key_bytes();
+        let handshake_b = CreateHandshake::new(client_pub_b, circuit_id);
+        let cell_b = RelayCell::new(circuit_id, CellType::Create, handshake_b.serialize());
+        let result = node.process_cell(cell_b, peer_b);
+
+        // The collision must be rejected, and the original state preserved.
+        assert!(
+            matches!(result, Err(RelayError::CircuitIdCollision)),
+            "expected CircuitIdCollision, got {:?}",
+            result
+        );
+        assert_eq!(node.active_circuits(), 1);
+        let state_after = {
+            let states = read_lock(&node.circuit_states);
+            states.get(&circuit_id).cloned().expect("state still exists")
+        };
+        assert_eq!(
+            state_after.prev_hop,
+            Some(peer_a),
+            "existing circuit state must not be clobbered by a different peer"
+        );
+        assert_eq!(state_after.client_public_key, client_pub_a);
+    }
+
+    #[test]
+    fn test_per_peer_circuit_cap() {
+        // A single peer cannot exceed the per-peer circuit reservation cap.
+        let config = ZkRelayConfig {
+            max_circuits_per_peer: 2,
+            ..ZkRelayConfig::default()
+        };
+        let (node, _peer) = create_relay_with_peer(config);
+        let peer = create_peer_id();
+
+        for _ in 0..2 {
+            let circuit_id: CircuitId = rand::random();
+            let client_pub = X25519Keypair::generate().public_key_bytes();
+            let hs = CreateHandshake::new(client_pub, circuit_id);
+            let cell = RelayCell::new(circuit_id, CellType::Create, hs.serialize());
+            node.process_cell(cell, peer).expect("within cap");
+        }
+
+        // Third circuit from the same peer must be rate-limited.
+        let circuit_id: CircuitId = rand::random();
+        let client_pub = X25519Keypair::generate().public_key_bytes();
+        let hs = CreateHandshake::new(client_pub, circuit_id);
+        let cell = RelayCell::new(circuit_id, CellType::Create, hs.serialize());
+        let result = node.process_cell(cell, peer);
+        assert!(
+            matches!(result, Err(RelayError::RateLimited)),
+            "expected RateLimited, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_stale_create_cell_rejected() {
+        let (node, _peer) = create_relay_with_peer(ZkRelayConfig::default());
+        let peer = create_peer_id();
+
+        let circuit_id: CircuitId = rand::random();
+        let client_pub = X25519Keypair::generate().public_key_bytes();
+        let mut hs = CreateHandshake::new(client_pub, circuit_id);
+        // Backdate well beyond the freshness window.
+        hs.timestamp = hs.timestamp.saturating_sub(10_000);
+        let mut cell = RelayCell::new(circuit_id, CellType::Create, hs.serialize());
+        cell.timestamp = cell.timestamp.saturating_sub(10_000);
+
+        let result = node.process_cell(cell, peer);
+        assert!(
+            matches!(result, Err(RelayError::StaleCell)),
+            "expected StaleCell, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_replayed_create_cell_rejected() {
+        let (node, _peer) = create_relay_with_peer(ZkRelayConfig::default());
+        let peer = create_peer_id();
+
+        let circuit_id: CircuitId = rand::random();
+        let client_pub = X25519Keypair::generate().public_key_bytes();
+        let hs = CreateHandshake::new(client_pub, circuit_id);
+        let cell = RelayCell::new(circuit_id, CellType::Create, hs.serialize());
+
+        // First delivery is accepted.
+        node.process_cell(cell.clone(), peer).expect("first accepted");
+
+        // Exact replay of the same CREATE cell is rejected. (It also collides on
+        // circuit id, but the replay cache is consulted first.)
+        let result = node.process_cell(cell, peer);
+        assert!(
+            matches!(result, Err(RelayError::ReplayedCell)),
+            "expected ReplayedCell, got {:?}",
+            result
+        );
     }
 }

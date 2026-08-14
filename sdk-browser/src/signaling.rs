@@ -251,13 +251,22 @@ impl SignalingClient {
         Ok(())
     }
 
-    /// Announce presence to the signaling server
+    /// Announce presence to the signaling server.
+    ///
+    /// `peer_id` is the peer's **Ed25519 identity public key** (hex). Signaling
+    /// therefore already carries each peer's long-term identity; the ephemeral
+    /// X25519 public keys used for the ECDH channel key are exchanged in-band
+    /// over the authenticated DataChannel handshake (see [`crate::webrtc`] and
+    /// [`crate::crypto`]) rather than through signaling. The identity is also
+    /// echoed in `metadata` for explicitness.
     pub fn announce(&self) -> Result<(), SdkError> {
+        let mut metadata = HashMap::new();
+        metadata.insert("identity".to_string(), self.peer_id.clone());
         let msg = SignalingMessage::Announce(AnnounceMessage {
             peer_id: self.peer_id.clone(),
             multiaddrs: vec![],
             transports: vec!["webrtc".to_string()],
-            metadata: HashMap::new(),
+            metadata,
         });
         self.send(&msg)
     }

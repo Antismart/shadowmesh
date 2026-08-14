@@ -5,6 +5,7 @@
  */
 import { ErrorCode, } from './types.js';
 import { NameResolver, FALLBACK_GATEWAY_URLS } from './resolver.js';
+import { verifyHash, isHexBlake3 } from './crypto.js';
 /**
  * Fallback network endpoints — used ONLY when naming resolution fails.
  * @deprecated Prefer using the decentralized naming layer for gateway discovery.
@@ -183,9 +184,15 @@ export class GatewayClient {
     // Content APIs
     // =========================================================================
     /**
-     * Get content by CID
+     * Get content by CID.
+     *
+     * By default the fetched bytes are verified against `cid` before being
+     * returned (`options.verify` defaults to `true`). Verification applies to
+     * bare hex BLAKE3 content hashes — the fragment protocol's canonical
+     * identifier. IPFS-style CIDs (`Qm...` / `bafy...`) are content-addressed by
+     * multihash rather than bare BLAKE3, so they are not re-hashed here.
      */
-    async getContent(cid) {
+    async getContent(cid, options = {}) {
         const response = await fetch(`${this.baseUrl}/ipfs/${cid}`, {
             headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {},
         });
@@ -195,7 +202,15 @@ export class GatewayClient {
             }
             throw createError(ErrorCode.NETWORK_ERROR, `Failed to fetch content: ${response.status}`);
         }
-        return response.arrayBuffer();
+        const buffer = await response.arrayBuffer();
+        const verify = options.verify !== false;
+        if (verify && isHexBlake3(cid)) {
+            const ok = await verifyHash(new Uint8Array(buffer), cid);
+            if (!ok) {
+                throw createError(ErrorCode.HASH_MISMATCH, `Content hash mismatch: fetched bytes do not match CID ${cid}`);
+            }
+        }
+        return buffer;
     }
     /**
      * Get content manifest
@@ -291,16 +306,24 @@ export class NodeClient {
         if (this.debug) {
             console.log(`[ShadowMesh Node] ${method} ${url}`);
         }
-        const response = await fetch(url, {
-            method,
-            headers: { 'Content-Type': 'application/json' },
-            body: body ? JSON.stringify(body) : undefined,
-        });
-        if (!response.ok) {
-            throw createError(ErrorCode.NETWORK_ERROR, `Node request failed: ${response.status}`);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+        try {
+            const response = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: body ? JSON.stringify(body) : undefined,
+                signal: controller.signal,
+            });
+            if (!response.ok) {
+                throw createError(ErrorCode.NETWORK_ERROR, `Node request failed: ${response.status}`);
+            }
+            const text = await response.text();
+            return text ? JSON.parse(text) : {};
         }
-        const text = await response.text();
-        return text ? JSON.parse(text) : {};
+        finally {
+            clearTimeout(timeoutId);
+        }
     }
     /**
      * Get node status

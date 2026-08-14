@@ -137,9 +137,17 @@ export declare class ContentStorage {
     private updateLastAccessed;
 }
 /**
- * Reassemble content from fragments
+ * Reassemble content from fragments, verifying integrity.
+ *
+ * Every fragment is checked against its recorded BLAKE3 hash, and the fully
+ * reassembled content is checked against `manifest.contentHash`. Verification
+ * is enabled by default; pass `{ verify: false }` to skip it (e.g. when the
+ * caller has already verified the bytes). Throws `ErrorCode.HASH_MISMATCH` on
+ * any mismatch so corrupt or tampered bytes are never returned as valid.
  */
-export declare function reassembleContent(manifest: ContentManifest, fragments: Map<string, Uint8Array>): Uint8Array;
+export declare function reassembleContent(manifest: ContentManifest, fragments: Map<string, Uint8Array>, options?: {
+    verify?: boolean;
+}): Promise<Uint8Array>;
 /**
  * Split content into fragments
  */
@@ -161,9 +169,17 @@ export declare class IPFSClient {
     private timeout;
     constructor(config: IPFSConfig);
     /**
-     * Fetch content from IPFS gateway
+     * Fetch content from IPFS gateway.
+     *
+     * When `cid` is a bare hex BLAKE3 content hash (the fragment protocol's
+     * canonical identifier) the fetched bytes are verified against it unless
+     * `options.verify === false`. IPFS-style CIDs (`Qm...` / `bafy...`) are
+     * addressed by multihash rather than bare BLAKE3 and are not re-hashed here.
+     * Throws `ErrorCode.HASH_MISMATCH` on mismatch.
      */
-    get(cid: string): Promise<Uint8Array>;
+    get(cid: string, options?: {
+        verify?: boolean;
+    }): Promise<Uint8Array>;
     /**
      * Check if content exists on IPFS
      */

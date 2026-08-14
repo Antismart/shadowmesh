@@ -8,7 +8,7 @@ use axum::{
     middleware as axum_middleware,
     response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
-    Router,
+    Extension, Router,
 };
 use tokio_util::sync::CancellationToken;
 use protocol::{NamingManager, StorageConfig, StorageLayer};
@@ -393,6 +393,9 @@ async fn main() {
             let kv_config = kv_store::KvConfig {
                 max_keys_per_namespace: config.state.kv_max_keys_per_namespace,
                 max_value_size_bytes: config.state.kv_max_value_size_kb * 1024,
+                // Bound total namespaces to prevent unbounded DashMap growth
+                // from a single identity creating arbitrarily many namespaces.
+                max_namespaces: kv_store::DEFAULT_MAX_NAMESPACES,
             };
             println!("✓ KV store enabled (max {} keys/ns, {} KB/value)",
                 kv_config.max_keys_per_namespace, config.state.kv_max_value_size_kb);
@@ -853,8 +856,12 @@ async fn shutdown_signal() {
 /// Returns per-deployment analytics (request count and bytes served) for a given CID.
 async fn deployment_analytics_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path(cid): Path<String>,
-) -> Json<serde_json::Value> {
+) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let requests = state
         .per_cid_requests
         .get(&cid)
@@ -870,13 +877,17 @@ async fn deployment_analytics_handler(
         "cid": cid,
         "requests": requests,
         "bytes_served": bytes_served,
-    }))
+    })).into_response()
 }
 
 async fn process_status_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path(cid): Path<String>,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let Some(ref pm) = state.process_manager else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -894,8 +905,12 @@ async fn process_status_handler(
 
 async fn process_restart_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path(cid): Path<String>,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let Some(ref pm) = state.process_manager else {
         return (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -962,12 +977,50 @@ fn try_wasm_execute(state: &AppState, cid: &str, method: &str, path: &str) -> Op
     }
 }
 
+// ── Multi-tenant namespace authorization ─────────────────────────────
+
+/// Enforce that the authenticated caller is allowed to touch the given
+/// `:cid` namespace. Returns `Err(403 response)` when the caller identity is
+/// not authorized for that namespace.
+///
+/// When authentication is disabled (no identity attached to the request),
+/// access is permitted — this preserves the single-admin / dev / public-mode
+/// behavior. When enabled, admin identities may access any namespace while
+/// ordinary tenant keys are restricted to their bound namespaces.
+fn authorize_namespace(
+    identity: &Option<Extension<auth::ApiIdentity>>,
+    cid: &str,
+) -> Result<(), Response> {
+    match identity {
+        Some(Extension(id)) if !id.is_authorized_for(cid) => {
+            tracing::warn!(
+                identity = %id.id,
+                namespace = %cid,
+                "Denied cross-tenant namespace access"
+            );
+            Err((
+                axum::http::StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "Not authorized for this deployment namespace"
+                })),
+            )
+                .into_response())
+        }
+        // Authorized, or auth disabled (no identity attached).
+        _ => Ok(()),
+    }
+}
+
 // ── KV Store Handlers ────────────────────────────────────────────────
 
 async fn kv_get_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path((cid, key)): Path<(String, String)>,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let Some(ref kv) = state.kv_store else {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "KV store disabled"}))).into_response();
     };
@@ -979,9 +1032,13 @@ async fn kv_get_handler(
 
 async fn kv_put_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path((cid, key)): Path<(String, String)>,
     body: axum::body::Bytes,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let Some(ref kv) = state.kv_store else {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "KV store disabled"}))).into_response();
     };
@@ -993,8 +1050,12 @@ async fn kv_put_handler(
 
 async fn kv_delete_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path((cid, key)): Path<(String, String)>,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let Some(ref kv) = state.kv_store else {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "KV store disabled"}))).into_response();
     };
@@ -1004,8 +1065,12 @@ async fn kv_delete_handler(
 
 async fn kv_list_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path(cid): Path<String>,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let Some(ref kv) = state.kv_store else {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "KV store disabled"}))).into_response();
     };
@@ -1017,8 +1082,12 @@ async fn kv_list_handler(
 
 async fn secrets_list_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path(cid): Path<String>,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let Some(ref sm) = state.secrets_manager else {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Secrets disabled"}))).into_response();
     };
@@ -1034,9 +1103,13 @@ struct SetSecretRequest {
 
 async fn secrets_set_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path(cid): Path<String>,
     Json(body): Json<SetSecretRequest>,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let Some(ref sm) = state.secrets_manager else {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Secrets disabled"}))).into_response();
     };
@@ -1048,8 +1121,12 @@ async fn secrets_set_handler(
 
 async fn secrets_delete_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path((cid, name)): Path<(String, String)>,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     let Some(ref sm) = state.secrets_manager else {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Secrets disabled"}))).into_response();
     };
@@ -1061,8 +1138,12 @@ async fn secrets_delete_handler(
 
 async fn deployment_routes_handler(
     State(state): State<AppState>,
+    identity: Option<Extension<auth::ApiIdentity>>,
     Path(cid): Path<String>,
 ) -> Response {
+    if let Err(resp) = authorize_namespace(&identity, &cid) {
+        return resp;
+    }
     match state.route_manifests.get(&cid) {
         Some(manifest) => Json(serde_json::json!({
             "cid": cid,

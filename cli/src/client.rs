@@ -9,13 +9,30 @@ use std::path::Path;
 pub struct NodeClient {
     base_url: String,
     http: Client,
+    /// Optional bearer token sent as `Authorization: Bearer <key>` on every
+    /// request. Required to reach a node whose `NODE_API_KEY` is set.
+    api_key: Option<String>,
 }
 
 impl NodeClient {
+    /// Construct a client, picking up an API key from the `NODE_API_KEY`
+    /// environment variable if present. Callers that obtain a key from a CLI
+    /// flag should use [`NodeClient::with_api_key`] instead.
     pub fn new(base_url: &str) -> Self {
+        let api_key = std::env::var("NODE_API_KEY").ok().filter(|k| !k.is_empty());
+        Self::with_api_key(base_url, api_key)
+    }
+
+    /// Construct a client with an explicit optional API key. A `None` (or the
+    /// `NODE_API_KEY` env var) still applies; an explicit `Some` takes priority.
+    pub fn with_api_key(base_url: &str, api_key: Option<String>) -> Self {
+        let api_key = api_key
+            .filter(|k| !k.is_empty())
+            .or_else(|| std::env::var("NODE_API_KEY").ok().filter(|k| !k.is_empty()));
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http: Client::new(),
+            api_key,
         }
     }
 
@@ -25,10 +42,17 @@ impl NodeClient {
         format!("{}/api{}", self.base_url, path)
     }
 
+    /// Attach the `Authorization: Bearer <key>` header when an API key is set.
+    fn auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.api_key {
+            Some(key) => rb.bearer_auth(key),
+            None => rb,
+        }
+    }
+
     async fn get_json(&self, path: &str) -> Result<Value> {
         let resp = self
-            .http
-            .get(self.url(path))
+            .auth(self.http.get(self.url(path)))
             .send()
             .await
             .with_context(|| format!("Cannot connect to node at {}", self.base_url))?;
@@ -45,8 +69,7 @@ impl NodeClient {
 
     async fn post_empty(&self, path: &str) -> Result<Value> {
         let resp = self
-            .http
-            .post(self.url(path))
+            .auth(self.http.post(self.url(path)))
             .send()
             .await
             .with_context(|| format!("Cannot connect to node at {}", self.base_url))?;
@@ -67,8 +90,7 @@ impl NodeClient {
 
     async fn delete(&self, path: &str) -> Result<()> {
         let resp = self
-            .http
-            .delete(self.url(path))
+            .auth(self.http.delete(self.url(path)))
             .send()
             .await
             .with_context(|| format!("Cannot connect to node at {}", self.base_url))?;
@@ -108,8 +130,7 @@ impl NodeClient {
 
     pub async fn update_config(&self, body: Value) -> Result<Value> {
         let resp = self
-            .http
-            .put(self.url("/config"))
+            .auth(self.http.put(self.url("/config")))
             .json(&body)
             .send()
             .await
@@ -145,8 +166,7 @@ impl NodeClient {
 
     pub async fn pin(&self, cid: &str) -> Result<()> {
         let resp = self
-            .http
-            .post(self.url(&format!("/storage/pin/{cid}")))
+            .auth(self.http.post(self.url(&format!("/storage/pin/{cid}"))))
             .send()
             .await
             .with_context(|| format!("Cannot connect to node at {}", self.base_url))?;
@@ -161,8 +181,7 @@ impl NodeClient {
 
     pub async fn unpin(&self, cid: &str) -> Result<()> {
         let resp = self
-            .http
-            .post(self.url(&format!("/storage/unpin/{cid}")))
+            .auth(self.http.post(self.url(&format!("/storage/unpin/{cid}"))))
             .send()
             .await
             .with_context(|| format!("Cannot connect to node at {}", self.base_url))?;
@@ -189,8 +208,7 @@ impl NodeClient {
         let form = reqwest::multipart::Form::new().part("file", part);
 
         let resp = self
-            .http
-            .post(self.url("/storage/upload"))
+            .auth(self.http.post(self.url("/storage/upload")))
             .multipart(form)
             .send()
             .await
@@ -216,8 +234,7 @@ impl NodeClient {
         cid: &str,
     ) -> Result<(Vec<u8>, Option<String>, Option<String>)> {
         let resp = self
-            .http
-            .get(self.url(&format!("/storage/download/{cid}")))
+            .auth(self.http.get(self.url(&format!("/storage/download/{cid}"))))
             .send()
             .await
             .with_context(|| format!("Cannot connect to node at {}", self.base_url))?;
@@ -246,8 +263,7 @@ impl NodeClient {
 
     pub async fn run_gc(&self, target_gb: f64) -> Result<Value> {
         let resp = self
-            .http
-            .post(self.url("/storage/gc"))
+            .auth(self.http.post(self.url("/storage/gc")))
             .json(&serde_json::json!({ "target_free_gb": target_gb }))
             .send()
             .await

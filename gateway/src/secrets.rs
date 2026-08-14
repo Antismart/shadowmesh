@@ -3,6 +3,10 @@ use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use dashmap::DashMap;
 use std::collections::HashMap;
 
+/// Default cap on the number of distinct secret namespaces (bounds DashMap
+/// growth so a single identity cannot exhaust memory).
+pub const DEFAULT_MAX_NAMESPACES: usize = 10_000;
+
 struct EncryptedSecret {
     ciphertext: Vec<u8>,
     nonce: [u8; 12],
@@ -11,6 +15,7 @@ struct EncryptedSecret {
 pub struct SecretsManager {
     secrets: DashMap<String, DashMap<String, EncryptedSecret>>,
     master_key: [u8; 32],
+    max_namespaces: usize,
 }
 
 impl SecretsManager {
@@ -43,10 +48,20 @@ impl SecretsManager {
         Self {
             secrets: DashMap::new(),
             master_key,
+            max_namespaces: DEFAULT_MAX_NAMESPACES,
         }
     }
 
     pub fn set_secret(&self, namespace: &str, name: &str, value: &[u8]) -> Result<(), String> {
+        // Bound the number of distinct namespaces. Only reject when this call
+        // would create a brand-new namespace beyond the cap.
+        if !self.secrets.contains_key(namespace) && self.secrets.len() >= self.max_namespaces {
+            return Err(format!(
+                "Namespace limit reached ({} namespaces)",
+                self.max_namespaces
+            ));
+        }
+
         let cipher = ChaCha20Poly1305::new((&self.master_key).into());
 
         let mut nonce_bytes = [0u8; 12];
@@ -170,6 +185,18 @@ mod tests {
 
         assert_eq!(mgr.get_secret("app1", "KEY").unwrap(), b"one");
         assert_eq!(mgr.get_secret("app2", "KEY").unwrap(), b"two");
+    }
+
+    #[test]
+    fn namespace_limit_enforced() {
+        let mut mgr = SecretsManager::new();
+        mgr.max_namespaces = 2;
+        mgr.set_secret("app1", "KEY", b"one").unwrap();
+        mgr.set_secret("app2", "KEY", b"two").unwrap();
+        // Third distinct namespace should be rejected.
+        assert!(mgr.set_secret("app3", "KEY", b"three").is_err());
+        // Existing namespace still writable.
+        mgr.set_secret("app1", "KEY2", b"x").unwrap();
     }
 
     #[test]

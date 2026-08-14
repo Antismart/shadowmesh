@@ -11,6 +11,7 @@ use axum::{
     extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Json, Redirect},
+    Extension,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -989,8 +990,41 @@ pub async fn deploy_stream(
 
 pub async fn redeploy_github(
     State(state): State<AppState>,
+    identity: Option<Extension<crate::auth::ApiIdentity>>,
+    headers: axum::http::HeaderMap,
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
+    // Multi-tenant isolation: a scoped API key may only redeploy deployments in
+    // its own namespace(s); admin keys may redeploy any. When auth is disabled,
+    // no identity is attached and this check is skipped.
+    if let Some(Extension(id)) = &identity {
+        if !id.is_authorized_for(&cid) {
+            tracing::warn!(identity = %id.id, cid = %cid, "Denied cross-tenant redeploy");
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"success": false, "error": "Not authorized for this deployment"})),
+            )
+                .into_response();
+        }
+    }
+
+    // Ownership isolation: if a GitHub identity is resolvable and the
+    // deployment records an owner, the caller must be that owner.
+    if let Some(user) = resolve_auth(&state, &headers).map(|a| a.user.login) {
+        if let Some(dep) = state.deployments.get(&cid) {
+            if let Some(owner) = dep.deployed_by.clone() {
+                if user != owner {
+                    tracing::warn!(user = %user, owner = %owner, cid = %cid, "Denied redeploy: not owner");
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({"success": false, "error": "Not authorized for this deployment"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+
     let deployment = state.deployments.get(&cid).map(|r| r.value().clone());
 
     let Some(deployment) = deployment else {
@@ -1219,8 +1253,41 @@ pub async fn get_deployments(
 
 pub async fn delete_deployment(
     State(state): State<AppState>,
+    identity: Option<Extension<crate::auth::ApiIdentity>>,
+    headers: axum::http::HeaderMap,
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
+    // Multi-tenant isolation: a scoped API key may only delete deployments in
+    // its own namespace(s); admin keys may delete any. When auth is disabled,
+    // no identity is attached and this check is skipped.
+    if let Some(Extension(id)) = &identity {
+        if !id.is_authorized_for(&cid) {
+            tracing::warn!(identity = %id.id, cid = %cid, "Denied cross-tenant deployment delete");
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"success": false, "error": "Not authorized for this deployment"})),
+            )
+                .into_response();
+        }
+    }
+
+    // Ownership isolation: if a GitHub identity is resolvable and the
+    // deployment records an owner, the caller must be that owner.
+    if let Some(user) = resolve_auth(&state, &headers).map(|a| a.user.login) {
+        if let Some(dep) = state.deployments.get(&cid) {
+            if let Some(owner) = dep.deployed_by.clone() {
+                if user != owner {
+                    tracing::warn!(user = %user, owner = %owner, cid = %cid, "Denied deployment delete: not owner");
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({"success": false, "error": "Not authorized for this deployment"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+
     let found = state.deployments.remove(&cid).is_some();
 
     if !found {
@@ -1243,8 +1310,38 @@ pub async fn delete_deployment(
 
 pub async fn deployment_logs(
     State(state): State<AppState>,
+    identity: Option<Extension<crate::auth::ApiIdentity>>,
+    headers: axum::http::HeaderMap,
     AxumPath(cid): AxumPath<String>,
 ) -> impl IntoResponse {
+    // Build logs may contain env/secret output; enforce the same tenant and
+    // owner isolation used by delete/redeploy before disclosing them.
+    if let Some(Extension(id)) = &identity {
+        if !id.is_authorized_for(&cid) {
+            tracing::warn!(identity = %id.id, cid = %cid, "Denied cross-tenant log access");
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"success": false, "error": "Not authorized for this deployment"})),
+            )
+                .into_response();
+        }
+    }
+
+    if let Some(user) = resolve_auth(&state, &headers).map(|a| a.user.login) {
+        if let Some(dep) = state.deployments.get(&cid) {
+            if let Some(owner) = dep.deployed_by.clone() {
+                if user != owner {
+                    tracing::warn!(user = %user, owner = %owner, cid = %cid, "Denied log access: not owner");
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({"success": false, "error": "Not authorized for this deployment"})),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+
     if let Some(deployment) = state.deployments.get(&cid) {
         (StatusCode::OK, Json(json!({
             "success": true,

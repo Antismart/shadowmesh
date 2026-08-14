@@ -42,6 +42,7 @@ EventEmitter, } from './utils.js';
 import { create } from '@storacha/client';
 import fs from 'fs/promises';
 import path from 'path';
+import { hashContent } from './crypto.js';
 /**
  * @deprecated Use ShadowMeshClient instead
  */
@@ -98,17 +99,18 @@ export class ShadowMesh {
         catch {
             // Fallback to local fragmentation if network unavailable
         }
-        // Local fallback fragmentation
+        // Local fallback fragmentation.
+        // Hashes are real hex BLAKE3, matching the Rust fragment protocol
+        // (protocol/src/fragments.rs) so the network and WASM SDK can verify them.
         const CHUNK_SIZE = 256 * 1024; // 256KB
         const fragments = [];
         for (let i = 0; i < content.length; i += CHUNK_SIZE) {
-            const chunk = content.slice(i, i + CHUNK_SIZE);
-            // Simple hash placeholder - in production use blake3
-            const hash = Buffer.from(chunk).toString('base64').slice(0, 32);
+            const chunk = content.subarray(i, i + CHUNK_SIZE);
+            const hash = await hashContent(chunk);
             fragments.push(hash);
         }
         return {
-            content_hash: Buffer.from(content).toString('base64').slice(0, 64),
+            content_hash: await hashContent(content),
             fragments,
             metadata: {
                 name: path.basename(filePath),
@@ -127,10 +129,11 @@ export class ShadowMesh {
             return cid.toString();
         }
         catch (error) {
-            // Fallback CID generation for development
-            console.warn('⚠️  Web3.storage upload failed, using local CID');
-            const hash = Buffer.from(content).toString('base64').slice(0, 46);
-            return `baf${hash}`;
+            // FAIL LOUDLY. Fabricating a `baf<base64prefix>` CID and reporting
+            // success would announce content under an identifier that does not
+            // resolve to the real bytes on any node — corrupting the network's
+            // content-addressing. A failed upload must surface as an error.
+            throw new Error(`Storage upload failed: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
     async announceToNetwork(manifest, options) {
@@ -150,10 +153,8 @@ export class ShadowMesh {
             console.warn('⚠️  Network announcement failed, content available via IPFS only');
         }
     }
-    async registerENS(ensName, cid) {
-        // TODO: Implement ENS registration
-        console.log(`📝 ENS registration for ${ensName} (coming soon)`);
-        return `https://${ensName}.limo`;
+    async registerENS(_ensName, _cid) {
+        throw new Error('ENS registration is not yet implemented. Remove the --ens flag and register manually at https://app.ens.domains');
     }
     /**
      * Check the status of a deployment

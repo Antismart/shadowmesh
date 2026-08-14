@@ -1,15 +1,20 @@
-//! WebRTC peer connection management
+//! WebRTC peer connection management.
 //!
-//! Every DataChannel message is encrypted with ChaCha20-Poly1305 using a
-//! symmetric key derived from both peer IDs (see [`crate::crypto`]).
+//! Every DataChannel data message is encrypted with ChaCha20-Poly1305 using a
+//! key established by an **authenticated ephemeral X25519 ECDH handshake** (see
+//! [`crate::crypto`]). The key is derived from ephemeral private keys that never
+//! leave either peer, so an observer of the signaling path cannot recover it.
 //!
-//! When a DataChannel opens the two sides exchange encrypted handshake
-//! frames that contain their peer IDs. Each side verifies the ID matches
-//! the one learned from signaling; if verification fails the connection
-//! is closed immediately.
+//! When a DataChannel opens each side sends a handshake frame containing its
+//! Ed25519 identity public key, a fresh ephemeral X25519 public key, and a
+//! signature binding the two. Each side verifies the signature, checks the
+//! identity matches the `peer_id` learned from signaling, and only then derives
+//! the channel key and marks the peer authenticated. If verification fails or
+//! the identity does not match, the connection is closed immediately.
 
 use crate::crypto::{
-    build_handshake, decrypt_data, encrypt_data, verify_handshake, DataChannelCipher,
+    build_handshake, decrypt_data, derive_channel_key, encrypt_data, verify_handshake,
+    DataChannelCipher, EphemeralKeypair, Identity,
 };
 use crate::error::{codes, SdkError};
 use std::cell::RefCell;
@@ -39,7 +44,10 @@ type IceCandidateCallback = Rc<RefCell<Option<Box<dyn Fn(String, Option<String>,
 /// Type alias for message callback (receives *decrypted* application data)
 type MessageCallback = Rc<RefCell<Option<Box<dyn Fn(Vec<u8>)>>>>;
 
-/// WebRTC peer connection wrapper with ChaCha20-Poly1305 encryption.
+/// The channel cipher, established once the handshake completes.
+type ChannelCipher = Rc<RefCell<Option<DataChannelCipher>>>;
+
+/// WebRTC peer connection wrapper with authenticated, encrypted DataChannels.
 pub struct WebRtcConnection {
     pc: RtcPeerConnection,
     data_channel: Rc<RefCell<Option<RtcDataChannel>>>,
@@ -47,25 +55,30 @@ pub struct WebRtcConnection {
     on_ice_candidate: IceCandidateCallback,
     on_message: MessageCallback,
 
-    // ── Encryption state ────────────────────────────────────────────────
-    /// ChaCha20-Poly1305 cipher derived from the two peer IDs.
-    cipher: Rc<DataChannelCipher>,
-    /// The local peer ID (used in the handshake frame).
-    local_peer_id: String,
-    /// The expected remote peer ID (from signaling).
+    // ── Key-agreement state ─────────────────────────────────────────────
+    /// Our long-term identity keypair (shared across connections).
+    identity: Rc<Identity>,
+    /// Per-connection ephemeral X25519 keypair.
+    ephemeral: Rc<EphemeralKeypair>,
+    /// ChaCha20-Poly1305 cipher derived from the ECDH handshake (None until
+    /// the peer's handshake has been received and verified).
+    cipher: ChannelCipher,
+    /// The expected remote peer ID (identity hex, from signaling).
     expected_remote_id: Rc<RefCell<String>>,
-    /// Whether the remote peer has been authenticated via handshake.
+    /// Whether the remote peer has been authenticated via the handshake.
     peer_authenticated: Rc<RefCell<bool>>,
 }
 
 impl WebRtcConnection {
     /// Create a new WebRTC connection.
     ///
-    /// `local_peer_id`  – our own peer ID.
-    /// `remote_peer_id` – the peer ID we expect on the other end (from signaling).
-    /// `stun_servers`    – list of STUN server URIs for ICE.
+    /// `identity`       – our long-term Ed25519 identity (its public key hex is
+    ///                    our own `peer_id`).
+    /// `remote_peer_id` – the identity (hex) we expect on the other end, as
+    ///                    learned from signaling.
+    /// `stun_servers`   – list of STUN server URIs for ICE.
     pub fn new(
-        local_peer_id: &str,
+        identity: Rc<Identity>,
         remote_peer_id: &str,
         stun_servers: &[String],
     ) -> Result<Self, SdkError> {
@@ -98,11 +111,10 @@ impl WebRtcConnection {
         let on_ice_candidate: IceCandidateCallback = Rc::new(RefCell::new(None));
         let on_message: MessageCallback = Rc::new(RefCell::new(None));
 
-        // Derive encryption key from sorted peer IDs.
-        let cipher = Rc::new(DataChannelCipher::from_peer_ids(
-            local_peer_id,
-            remote_peer_id,
-        ));
+        // Fresh ephemeral keypair for this connection; cipher is established
+        // only after the authenticated handshake completes.
+        let ephemeral = Rc::new(EphemeralKeypair::generate());
+        let cipher: ChannelCipher = Rc::new(RefCell::new(None));
         let peer_authenticated = Rc::new(RefCell::new(false));
         let expected_remote_id = Rc::new(RefCell::new(remote_peer_id.to_string()));
 
@@ -130,8 +142,9 @@ impl WebRtcConnection {
         let dc_ref = data_channel.clone();
         let state_dc = state.clone();
         let on_msg = on_message.clone();
+        let identity_dc = identity.clone();
+        let ephemeral_dc = ephemeral.clone();
         let cipher_dc = cipher.clone();
-        let local_id_dc = local_peer_id.to_string();
         let expected_dc = expected_remote_id.clone();
         let auth_dc = peer_authenticated.clone();
 
@@ -141,8 +154,9 @@ impl WebRtcConnection {
                 &channel,
                 state_dc.clone(),
                 on_msg.clone(),
+                identity_dc.clone(),
+                ephemeral_dc.clone(),
                 cipher_dc.clone(),
-                local_id_dc.clone(),
                 expected_dc.clone(),
                 auth_dc.clone(),
             );
@@ -157,8 +171,9 @@ impl WebRtcConnection {
             state,
             on_ice_candidate,
             on_message,
+            identity,
+            ephemeral,
             cipher,
-            local_peer_id: local_peer_id.to_string(),
             expected_remote_id,
             peer_authenticated,
         })
@@ -167,37 +182,30 @@ impl WebRtcConnection {
     // -----------------------------------------------------------------
     // Data-channel event wiring (shared by initiator & answerer)
     // -----------------------------------------------------------------
+    #[allow(clippy::too_many_arguments)]
     fn setup_data_channel_handlers(
         channel: &RtcDataChannel,
         state: Rc<RefCell<WebRtcState>>,
         on_message: MessageCallback,
-        cipher: Rc<DataChannelCipher>,
-        local_peer_id: String,
+        identity: Rc<Identity>,
+        ephemeral: Rc<EphemeralKeypair>,
+        cipher: ChannelCipher,
         expected_remote_id: Rc<RefCell<String>>,
         peer_authenticated: Rc<RefCell<bool>>,
     ) {
-        // ── onopen: send handshake ──────────────────────────────────────
+        // ── onopen: send our (plaintext, signed) handshake ──────────────
         let state_open = state.clone();
-        let cipher_open = cipher.clone();
-        let local_id_open = local_peer_id.clone();
-        // We need a handle to the channel inside the closure to send the
-        // handshake.  Clone the JS reference via `.clone()`.
+        let identity_open = identity.clone();
+        let ephemeral_open = ephemeral.clone();
         let channel_for_open = channel.clone();
 
         let onopen = Closure::wrap(Box::new(move |_: web_sys::Event| {
             *state_open.borrow_mut() = WebRtcState::Connected;
-            tracing::info!("DataChannel opened – sending encrypted handshake");
+            tracing::info!("DataChannel opened – sending authenticated handshake");
 
-            // Build and send the handshake frame.
-            match build_handshake(&cipher_open, &local_id_open) {
-                Ok(hs_frame) => {
-                    if let Err(e) = channel_for_open.send_with_u8_array(&hs_frame) {
-                        tracing::error!("Failed to send handshake: {:?}", e);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to build handshake: {}", e);
-                }
+            let hs_frame = build_handshake(&identity_open, &ephemeral_open);
+            if let Err(e) = channel_for_open.send_with_u8_array(&hs_frame) {
+                tracing::error!("Failed to send handshake: {:?}", e);
             }
         }) as Box<dyn FnMut(_)>);
         channel.set_onopen(Some(onopen.as_ref().unchecked_ref()));
@@ -221,12 +229,12 @@ impl WebRtcConnection {
         channel.set_onerror(Some(onerror.as_ref().unchecked_ref()));
         onerror.forget();
 
-        // ── onmessage: decrypt & demux ──────────────────────────────────
+        // ── onmessage: handshake, then decrypt & demux ──────────────────
+        let ephemeral_msg = ephemeral.clone();
         let cipher_msg = cipher.clone();
         let expected_msg = expected_remote_id.clone();
         let auth_msg = peer_authenticated.clone();
         let state_msg = state.clone();
-        // Need a handle to close the channel on auth failure.
         let channel_for_msg = channel.clone();
 
         let onmessage = Closure::wrap(Box::new(move |e: web_sys::MessageEvent| {
@@ -237,25 +245,30 @@ impl WebRtcConnection {
                 return;
             };
 
-            // If the peer is not yet authenticated, the first message MUST
-            // be a valid handshake frame.
+            // Until the peer is authenticated, the first message MUST be a
+            // valid, correctly-signed handshake frame from the expected peer.
             if !*auth_msg.borrow() {
-                match verify_handshake(&cipher_msg, &raw) {
-                    Ok(remote_id) => {
+                match verify_handshake(&raw) {
+                    Ok(peer) => {
                         let expected = expected_msg.borrow();
-                        if remote_id != *expected {
+                        if peer.peer_id != *expected {
                             tracing::error!(
                                 "Peer authentication failed: expected '{}', got '{}'",
                                 *expected,
-                                remote_id
+                                peer.peer_id
                             );
                             channel_for_msg.close();
                             *state_msg.borrow_mut() = WebRtcState::Failed;
                             return;
                         }
+
+                        // Derive the channel key from the ephemeral ECDH.
+                        let key = derive_channel_key(&ephemeral_msg, &peer.ephemeral_public);
+                        *cipher_msg.borrow_mut() = Some(DataChannelCipher::new(&key));
+
                         tracing::info!(
-                            "Peer '{}' authenticated via encrypted handshake",
-                            remote_id
+                            "Peer '{}' authenticated; channel key established via ECDH",
+                            peer.peer_id
                         );
                         *auth_msg.borrow_mut() = true;
                         *state_msg.borrow_mut() = WebRtcState::Authenticated;
@@ -269,8 +282,13 @@ impl WebRtcConnection {
                 return;
             }
 
-            // Normal data frame – decrypt and deliver to application.
-            match decrypt_data(&cipher_msg, &raw) {
+            // Normal data frame – decrypt with the derived key and deliver.
+            let cipher_ref = cipher_msg.borrow();
+            let Some(active_cipher) = cipher_ref.as_ref() else {
+                tracing::warn!("Data frame received before channel key was established");
+                return;
+            };
+            match decrypt_data(active_cipher, &raw) {
                 Ok(plaintext) => {
                     if let Some(ref callback) = *on_message.borrow() {
                         callback(plaintext);
@@ -315,8 +333,9 @@ impl WebRtcConnection {
             &channel,
             self.state.clone(),
             self.on_message.clone(),
+            self.identity.clone(),
+            self.ephemeral.clone(),
             self.cipher.clone(),
-            self.local_peer_id.clone(),
             self.expected_remote_id.clone(),
             self.peer_authenticated.clone(),
         );
@@ -446,8 +465,9 @@ impl WebRtcConnection {
 
     /// Send application data over the encrypted DataChannel.
     ///
-    /// The payload is wrapped in a `DATA_TAG` frame and encrypted with
-    /// ChaCha20-Poly1305 before transmission.
+    /// The payload is wrapped in a `DATA_TAG` frame and encrypted with the
+    /// ECDH-derived ChaCha20-Poly1305 key. Fails if the authenticated handshake
+    /// has not yet completed (no channel key established).
     pub fn send(&self, data: &[u8]) -> Result<(), SdkError> {
         let channel = self.data_channel.borrow();
         let channel = channel
@@ -458,12 +478,20 @@ impl WebRtcConnection {
             return Err(SdkError::new(codes::NOT_CONNECTED, "Data channel not open"));
         }
 
-        // Encrypt the application payload.
-        let encrypted = encrypt_data(&self.cipher, data)?;
-
-        channel.send_with_u8_array(&encrypted).map_err(|e| {
-            SdkError::new(codes::WEBRTC_ERROR, &format!("Send failed: {:?}", e))
+        // The channel key is only available after the authenticated handshake.
+        let cipher_ref = self.cipher.borrow();
+        let cipher = cipher_ref.as_ref().ok_or_else(|| {
+            SdkError::new(
+                codes::NOT_CONNECTED,
+                "Cannot send: authenticated handshake not yet complete",
+            )
         })?;
+
+        let encrypted = encrypt_data(cipher, data)?;
+
+        channel
+            .send_with_u8_array(&encrypted)
+            .map_err(|e| SdkError::new(codes::WEBRTC_ERROR, &format!("Send failed: {:?}", e)))?;
 
         Ok(())
     }
@@ -479,7 +507,7 @@ impl WebRtcConnection {
         s == WebRtcState::Connected || s == WebRtcState::Authenticated
     }
 
-    /// Check if the remote peer has been authenticated via handshake.
+    /// Check if the remote peer has been authenticated via the handshake.
     pub fn is_authenticated(&self) -> bool {
         *self.peer_authenticated.borrow()
     }

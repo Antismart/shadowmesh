@@ -26,6 +26,23 @@ async fn load_or_generate_keypair(
     }
 }
 
+/// Returns true if binding the dashboard to `host` requires a `NODE_API_KEY`.
+///
+/// Loopback binds (`127.0.0.1`, `::1`, `localhost`) are reachable only from the
+/// local machine and are safe to run key-less for development. Any other host —
+/// including the wildcard `0.0.0.0` / `::` — exposes the destructive API to the
+/// network and therefore mandates an API key.
+fn dashboard_requires_api_key(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return false;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => !ip.is_loopback(),
+        // Unrecognised host string — fail safe and require a key.
+        Err(_) => true,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize structured logging
@@ -59,6 +76,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("   - {}", err);
         }
         return Err("Invalid configuration".into());
+    }
+
+    // Fail fast: never expose the destructive API to the network without a key.
+    // The axum HTTP server (and its destructive /api routes) is started
+    // unconditionally, regardless of `config.dashboard.enabled`, so this guard
+    // must fire whenever the bind host is non-loopback and NODE_API_KEY is unset.
+    if dashboard_requires_api_key(&config.dashboard.host)
+        && std::env::var("NODE_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .is_none()
+    {
+        eprintln!(
+            "❌ Refusing to start: dashboard is bound to non-loopback host '{}' but NODE_API_KEY is not set.",
+            config.dashboard.host
+        );
+        eprintln!(
+            "   Set NODE_API_KEY to a strong secret, or bind the dashboard to 127.0.0.1 for local development."
+        );
+        return Err("NODE_API_KEY required for non-loopback dashboard bind".into());
     }
 
     config.print_summary();

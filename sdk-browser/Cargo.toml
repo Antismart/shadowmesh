@@ -74,6 +74,15 @@ blake3 = "1.8"
 # Authenticated encryption for DataChannel messages
 chacha20poly1305 = "0.10"
 
+# Authenticated key agreement for the DataChannel handshake.
+# Ed25519 long-term identity keys sign ephemeral X25519 public keys; the
+# channel key is derived from an ephemeral ECDH shared secret via HKDF, so it
+# is NOT derivable from the public peer/session IDs seen on the signaling path.
+ed25519-dalek = "2"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+sha2 = "0.10"
+
 # Secure random — the `js` feature delegates to crypto.getRandomValues()
 # in browser and Web Worker contexts (no insecure fallback)
 getrandom = { version = "0.2", features = ["js"] }

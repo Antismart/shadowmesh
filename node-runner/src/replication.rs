@@ -86,6 +86,22 @@ impl std::fmt::Display for ReplicationError {
 
 impl std::error::Error for ReplicationError {}
 
+/// Maximum total size of content accepted from a remote peer, mirroring the
+/// local upload cap. Prevents a malicious peer from exhausting memory.
+const MAX_INBOUND_CONTENT_SIZE: u64 = 100 * 1024 * 1024;
+
+/// Maximum size of a single fragment accepted from a remote peer. Legitimate
+/// fragments are 256 KB chunks; this leaves generous headroom while bounding
+/// per-fragment memory.
+const MAX_INBOUND_FRAGMENT_SIZE: usize = 4 * 1024 * 1024;
+
+/// Returns true if `cid` is a bare-hex BLAKE3 digest (64 lowercase hex chars),
+/// which is what the fragment protocol produces for uploaded content. Only for
+/// these CIDs can we recompute the content hash locally and verify integrity.
+fn is_blake3_hex_cid(cid: &str) -> bool {
+    cid.len() == 64 && cid.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 // ── Background loop ──────────────────────────────────────────────
 
 /// Run the background replication loop until shutdown.
@@ -461,13 +477,56 @@ async fn replicate_content(
         ReplicationError::FetchFailed("All providers failed for manifest".to_string())
     })?;
 
-    // 3. Fetch each fragment — try providers in order
+    // 2b. Bind the manifest to the requested CID. For the hex-BLAKE3 fragment
+    // protocol (what uploads produce) the manifest's content_hash must equal the
+    // requested CID, otherwise the peer served a manifest for other content.
+    let verify_hash = is_blake3_hex_cid(cid);
+    if verify_hash && manifest.content_hash != cid {
+        tracing::warn!(
+            requested = %cid,
+            got = %manifest.content_hash,
+            "Manifest content_hash does not match requested CID — rejecting"
+        );
+        return Err(ReplicationError::FetchFailed(
+            "Manifest content hash does not match requested CID".to_string(),
+        ));
+    }
+
+    // 2c. Enforce an inbound size cap on the declared total to bound memory.
+    if manifest.total_size > MAX_INBOUND_CONTENT_SIZE {
+        return Err(ReplicationError::FetchFailed(format!(
+            "Remote content exceeds {} MB limit",
+            MAX_INBOUND_CONTENT_SIZE / (1024 * 1024)
+        )));
+    }
+
+    // 3. Fetch each fragment — try providers in order. Accumulate a running
+    // BLAKE3 hasher over the ordered fragments so we can verify the reassembled
+    // whole against the requested CID before returning it for storage.
     let mut fragments = Vec::new();
+    let mut hasher = blake3::Hasher::new();
+    let mut total_bytes: u64 = 0;
     for frag_hash in &manifest.fragment_hashes {
         let mut fetched = false;
         for provider in &providers {
             match fetch_fragment(p2p_tx, *provider, frag_hash).await {
                 Ok(data) => {
+                    // Per-fragment and cumulative size caps bound memory usage.
+                    if data.len() > MAX_INBOUND_FRAGMENT_SIZE {
+                        return Err(ReplicationError::FetchFailed(format!(
+                            "Remote fragment {} exceeds {} MB limit",
+                            frag_hash,
+                            MAX_INBOUND_FRAGMENT_SIZE / (1024 * 1024)
+                        )));
+                    }
+                    total_bytes = total_bytes.saturating_add(data.len() as u64);
+                    if total_bytes > MAX_INBOUND_CONTENT_SIZE {
+                        return Err(ReplicationError::FetchFailed(format!(
+                            "Remote content exceeds {} MB limit",
+                            MAX_INBOUND_CONTENT_SIZE / (1024 * 1024)
+                        )));
+                    }
+                    hasher.update(&data);
                     fragments.push((frag_hash.clone(), data));
                     fetched = true;
                     break;
@@ -483,6 +542,27 @@ async fn replicate_content(
                 frag_hash
             )));
         }
+    }
+
+    // 3b. Verify the reassembled whole hashes to the requested CID before it is
+    // stored or re-announced. Reject on mismatch.
+    if verify_hash {
+        let computed = hasher.finalize().to_hex().to_string();
+        if computed != cid {
+            tracing::warn!(
+                requested = %cid,
+                computed = %computed,
+                "Reassembled content hash mismatch — rejecting, not storing or announcing"
+            );
+            return Err(ReplicationError::FetchFailed(
+                "Reassembled content does not hash to the requested CID".to_string(),
+            ));
+        }
+    } else {
+        tracing::warn!(
+            %cid,
+            "Requested CID is not a hex-BLAKE3 digest; cannot verify content integrity locally"
+        );
     }
 
     Ok((manifest, fragments))

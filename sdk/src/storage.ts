@@ -8,6 +8,17 @@ import type {
   FragmentInfo,
   StorageStats,
 } from './types.js';
+import { ErrorCode } from './types.js';
+import { verifyHash, isHexBlake3 } from './crypto.js';
+
+/**
+ * Build an Error carrying `ErrorCode.HASH_MISMATCH`.
+ */
+function hashMismatchError(message: string): Error {
+  const err = new Error(message) as Error & { code: ErrorCode };
+  err.code = ErrorCode.HASH_MISMATCH;
+  return err;
+}
 
 // ============================================================================
 // Storage Backends
@@ -518,12 +529,21 @@ export class ContentStorage {
 // ============================================================================
 
 /**
- * Reassemble content from fragments
+ * Reassemble content from fragments, verifying integrity.
+ *
+ * Every fragment is checked against its recorded BLAKE3 hash, and the fully
+ * reassembled content is checked against `manifest.contentHash`. Verification
+ * is enabled by default; pass `{ verify: false }` to skip it (e.g. when the
+ * caller has already verified the bytes). Throws `ErrorCode.HASH_MISMATCH` on
+ * any mismatch so corrupt or tampered bytes are never returned as valid.
  */
-export function reassembleContent(
+export async function reassembleContent(
   manifest: ContentManifest,
-  fragments: Map<string, Uint8Array>
-): Uint8Array {
+  fragments: Map<string, Uint8Array>,
+  options: { verify?: boolean } = {}
+): Promise<Uint8Array> {
+  const verify = options.verify !== false;
+
   // Sort fragments by index
   const sortedFragments = [...manifest.fragments].sort((a, b) => a.index - b.index);
 
@@ -537,14 +557,34 @@ export function reassembleContent(
     totalSize += data.byteLength;
   }
 
-  // Reassemble
+  // Reassemble, verifying each fragment as we go.
   const result = new Uint8Array(totalSize);
   let offset = 0;
 
   for (const fragment of sortedFragments) {
     const data = fragments.get(fragment.id)!;
+    if (verify && fragment.hash) {
+      const ok = await verifyHash(data, fragment.hash);
+      if (!ok) {
+        throw hashMismatchError(
+          `Fragment hash mismatch: fragment ${fragment.id} (index ${fragment.index}) ` +
+            `does not match expected hash ${fragment.hash}`
+        );
+      }
+    }
     result.set(data, offset);
     offset += data.byteLength;
+  }
+
+  // Verify the reassembled whole against the manifest's content hash.
+  if (verify && manifest.contentHash && isHexBlake3(manifest.contentHash)) {
+    const ok = await verifyHash(result, manifest.contentHash);
+    if (!ok) {
+      throw hashMismatchError(
+        `Content hash mismatch: reassembled content does not match ` +
+          `manifest content hash ${manifest.contentHash}`
+      );
+    }
   }
 
   return result;
@@ -597,9 +637,15 @@ export class IPFSClient {
   }
 
   /**
-   * Fetch content from IPFS gateway
+   * Fetch content from IPFS gateway.
+   *
+   * When `cid` is a bare hex BLAKE3 content hash (the fragment protocol's
+   * canonical identifier) the fetched bytes are verified against it unless
+   * `options.verify === false`. IPFS-style CIDs (`Qm...` / `bafy...`) are
+   * addressed by multihash rather than bare BLAKE3 and are not re-hashed here.
+   * Throws `ErrorCode.HASH_MISMATCH` on mismatch.
    */
-  async get(cid: string): Promise<Uint8Array> {
+  async get(cid: string, options: { verify?: boolean } = {}): Promise<Uint8Array> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
@@ -613,7 +659,19 @@ export class IPFSClient {
       }
 
       const buffer = await response.arrayBuffer();
-      return new Uint8Array(buffer);
+      const data = new Uint8Array(buffer);
+
+      const verify = options.verify !== false;
+      if (verify && isHexBlake3(cid)) {
+        const ok = await verifyHash(data, cid);
+        if (!ok) {
+          throw hashMismatchError(
+            `Content hash mismatch: fetched bytes do not match CID ${cid}`
+          );
+        }
+      }
+
+      return data;
     } finally {
       clearTimeout(timeoutId);
     }
