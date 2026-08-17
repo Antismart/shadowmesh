@@ -1,522 +1,266 @@
 # ShadowMesh
 
-**A privacy-first decentralized CDN powered by libp2p**
+**A deploy target for static content that can't be taken down.**
 
 [![CI](https://github.com/Antismart/shadowmesh/actions/workflows/ci.yml/badge.svg)](https://github.com/Antismart/shadowmesh/actions/workflows/ci.yml)
-[![CD](https://github.com/Antismart/shadowmesh/actions/workflows/cd.yml/badge.svg)](https://github.com/Antismart/shadowmesh/actions/workflows/cd.yml)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0+-blue.svg)](https://www.typescriptlang.org)
-[![WebRTC](https://img.shields.io/badge/webrtc-enabled-brightgreen.svg)](docs/webrtc-setup.md)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-ShadowMesh is a decentralized content delivery network that combines IPFS-style content addressing with onion routing for enhanced privacy. Content is fragmented, encrypted, and distributed across a peer-to-peer network, making it resilient and censorship-resistant.
+ShadowMesh is a content-addressed, peer-to-peer CDN built on libp2p. You deploy a
+static site, get back a [CID](https://docs.ipfs.tech/concepts/content-addressing/)
+— a hash of its exact bytes — and it is then served by a network of independent
+nodes. Because content is addressed by its hash, any node can serve it and the
+hash guarantees you got the right bytes. No single host is authoritative, so no
+single host can take the content down.
 
-## Live Dashboard
+> **What this is and isn't.** ShadowMesh resists *content takedown* and
+> *single-host censorship*. It is **not** an anonymity network and does **not**
+> yet resist a national firewall. Read the **[Threat Model](THREAT-MODEL.md)**
+> before relying on any privacy or censorship property — it states plainly what
+> is defended today and what is not.
 
-The public gateway and dashboard are running at **[http://62.171.189.140:8081/](http://62.171.189.140:8081/)**. The dashboard itself is also deployed as CID-served content on the ShadowMesh network, so it can be accessed through any connected node or resolved via `.shadow` naming.
+The repository also contains SSR hosting, WASM edge functions, and a state layer.
+Those are real but deliberately **not** the focus — they live in
+**[FUTURE.md](FUTURE.md)**. This README is about the one thing above.
 
-## Decentralized Access
+---
 
-Content deployed to ShadowMesh can be reached through multiple independent paths, so no single point of failure can take your site offline:
+## Why it can't be taken down
 
-| Access Method | URL / Path | Requires |
+Deploy content once and it is reachable through multiple independent paths. Losing
+or blocking any single one does not take your site offline, and the CID
+guarantees integrity no matter which path you use:
+
+| Access method | URL / path | Requires |
 |---|---|---|
-| **HTTP Gateway** | `http://62.171.189.140:8081/content/<cid>` | Nothing (public) |
-| **CID (any node)** | `http://<any-node>:8081/content/<cid>` | Any running gateway |
-| **.shadow name** | Resolve `myapp.shadow` via DHT | A connected node or SDK |
-| **ENS** | Set `contenthash` to `shadow://<cid>` on your `.eth` name, resolve via eth.limo | ENS name + eth.limo |
-| **Local node** | `http://127.0.0.1:3030` (node-runner dashboard) | Running `node-runner` locally |
-| **Browser SDK (WebRTC)** | P2P fetch from peers with HTTP gateway fallback | WASM SDK in browser |
+| **HTTP gateway** | `http://<gateway>:8081/content/<cid>` | Nothing (public) |
+| **Any node** | `http://<any-node>:8081/content/<cid>` | Any running gateway |
+| **`.shadow` name** | Resolve `myapp.shadow` via DHT | A connected node or SDK |
+| **ENS** | `contenthash = shadow://<cid>` on a `.eth` name, via eth.limo | ENS name + eth.limo |
+| **Local node** | `http://127.0.0.1:3030` | Running `node-runner` locally |
+| **Browser (WebRTC)** | P2P fetch from peers, HTTP fallback | WASM SDK in browser |
 
-Because content is addressed by CID, it does not matter which path you use -- the hash guarantees integrity.
+Content integrity is enforced end to end: nodes verify a fetched manifest against
+the requested CID and re-hash the reassembled bytes (BLAKE3) before storing or
+re-serving them, so a malicious peer cannot poison a CID. (This holds for the
+native hex-BLAKE3 content path; see the [Threat Model](THREAT-MODEL.md) for the
+IPFS-CID caveat.)
 
-## Features
+**Live gateway:** the public gateway currently runs at
+[http://62.171.189.140:8081/](http://62.171.189.140:8081/). It is one entry
+point, not the network — see [Bootstrap & centralization](#bootstrap--centralization).
 
-- **Privacy-First**: Onion routing ensures no single node knows both the requester and the content
-- **Static & Dynamic Hosting**: Deploy static sites, Next.js SSR, or WASM edge functions
-- **WASM Edge Functions**: Wasmtime-sandboxed serverless functions with fuel-based CPU limits
-- **KV Store & Secrets**: Per-deployment state with Redis persistence and ChaCha20Poly1305 encrypted secrets
-- **Content Fragmentation**: Large files are split into encrypted chunks for parallel delivery
-- **Decentralized**: No central servers — content is served by a network of peers
-- **High Performance**: BLAKE3 hashing, ChaCha20-Poly1305 encryption, and multi-path routing
-- **Framework Support**: Next.js, Nuxt, SvelteKit, Remix, Vite, Astro, Angular, Gatsby, Hugo
-- **WebRTC Support**: Browser-to-node P2P connections via WebRTC DataChannels
-- **Browser SDK**: WASM-based client for direct browser integration
+---
 
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                           ShadowMesh                                  │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐                │
-│  │   Browser   │   │   Gateway   │   │ Node Runner │                │
-│  │  (WASM SDK) │   │  (HTTP API) │   │  (P2P Node) │                │
-│  └──────┬──────┘   └──────┬──────┘   └──────┬──────┘                │
-│         │                 │                 │                        │
-│         │    WebRTC      ┌┴─────────────────┤                        │
-│         └───────────────►│   Signaling     │◄─── TCP/libp2p         │
-│                          └─────────────────┘                         │
-│                                  │                                   │
-│  ┌───────────────────────────────┴───────────────────────────────┐  │
-│  │                      Protocol Layer                            │  │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐             │  │
-│  │  │ Crypto  │ │   DHT   │ │ Routing │ │ WebRTC  │             │  │
-│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘             │  │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐             │  │
-│  │  │Fragment │ │Replicate│ │Bandwidth│ │Signaling│             │  │
-│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘             │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
 - Rust 1.70+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-- Node.js 18+ (for SDK)
-- IPFS daemon (optional, for storage backend)
+- Node.js 18+ (only for the TypeScript SDK)
+- An IPFS daemon (optional, for the storage backend)
 
-### Installation
+### Build
 
 ```bash
-# Clone the repository
 git clone https://github.com/Antismart/shadowmesh.git
 cd shadowmesh
-
-# Build all Rust components (gateway, node-runner, CLI)
-cargo build --release
-
-# (Optional) Build the TypeScript SDK
-cd sdk && npm install && npm run build && cd ..
+cargo build --release          # gateway, node-runner, CLI
 ```
 
-### Join the Network
+### Deploy a static site and fetch it
 
-Create a `node-config.toml` in the project root to connect to the live network:
+```bash
+# Build the CLI
+cargo build --release -p shadowmesh-cli
+alias smesh="./target/release/shadowmesh-cli"
+
+# Upload content — prints the CID
+smesh upload ./index.html
+
+# Fetch it back by CID, verified against the hash
+smesh download <cid> -o ./out.html
+
+# Or fetch over HTTP from any gateway
+curl http://62.171.189.140:8081/content/<cid>
+```
+
+### Join the network as a node
+
+Create `node-config.toml`:
 
 ```toml
 [identity]
-name = "Your-Node-Name"
+name = "your-node-name"
+
+[storage]
+data_dir = ".shadowmesh/data"
+max_storage_bytes = 10737418240   # 10 GB
 
 [network]
 listen_addresses = ["/ip4/0.0.0.0/tcp/4001"]
 bootstrap_nodes = [
   "/ip4/62.171.189.140/tcp/4001/p2p/12D3KooWCXDk6QR1zpAopogBPSFR977Az5gbrmcHjnFgY12UpBTb"
 ]
+enable_dht = true
 
 [dashboard]
+enabled = true
+host = "127.0.0.1"    # bind to loopback unless you set NODE_API_KEY
 port = 3030
 ```
-
-Then run:
 
 ```bash
 SHADOWMESH_CONFIG=node-config.toml cargo run -p node-runner
+# Verify: curl http://127.0.0.1:3030/api/status
 ```
 
-Your node will connect to the bootstrap relay, discover other peers, and start a dashboard at `http://127.0.0.1:3030`. Verify with `curl http://127.0.0.1:3030/api/status`.
+Your node dials the bootstrap peer, discovers others over the DHT, and starts
+serving and replicating content.
 
-### Running a Node (standalone)
-
-```bash
-# Start the gateway (HTTP API on port 8081 by default)
-cargo run -p gateway
-
-# Start a node runner (P2P node with dashboard on port 3030)
-cargo run -p node-runner
-```
-
-### Using the SDK
+### Use the SDK
 
 ```typescript
-import { ShadowMeshClient, ContentStorage } from '@shadowmesh/sdk';
+import { ShadowMeshClient } from '@shadowmesh/sdk';
 
-// Initialize client
-const client = new ShadowMeshClient({
-  gatewayUrl: 'http://localhost:3000',
-});
+const client = new ShadowMeshClient({ gatewayUrl: 'http://localhost:8081' });
 
-// Deploy content
-const content = new TextEncoder().encode('Hello, ShadowMesh!');
-const { cid } = await client.deploy(content);
-console.log(`Content deployed: ${cid}`);
-
-// Retrieve content
-const retrieved = await client.retrieve(cid);
-console.log(new TextDecoder().decode(retrieved));
+const { cid } = await client.deploy(new TextEncoder().encode('Hello, ShadowMesh!'));
+const bytes = await client.retrieve(cid);   // verified against the CID
 ```
 
-### Browser SDK (WebRTC)
+---
 
-```javascript
-import init, { ShadowMeshClient, ClientConfig } from '@shadowmesh/browser';
+## How it works
 
-// Initialize WASM
-await init();
-
-// Configure client
-const config = new ClientConfig('wss://gateway.example.com/ws/signaling');
-config.setGatewayUrl('https://gateway.example.com');
-config.setMaxPeers(5);
-
-// Create and connect
-const client = new ShadowMeshClient(config);
-await client.connect();
-
-// Fetch content via P2P (with HTTP fallback)
-const data = await client.fetch('bafybeigdyrzt5sfp7...');
-console.log('Content:', new TextDecoder().decode(data));
-
-// Disconnect
-client.disconnect();
+```
+   deploy                fetch (any path)
+     │                         │
+     ▼                         ▼
+┌──────────┐   CID     ┌───────────────┐      ┌─────────────┐
+│  client  │──────────▶│    gateway    │◀────▶│  P2P nodes  │
+│ (CLI/SDK)│           │  (HTTP + DHT) │ libp2p│ (node-runner)│
+└──────────┘           └───────────────┘ Noise└─────────────┘
+                              ▲                       │
+                       WebRTc │                 DHT / GossipSub
+                              │                 replication
+                        ┌───────────┐
+                        │  browser  │
+                        │ (WASM SDK)│
+                        └───────────┘
 ```
 
-See [WebRTC Setup Guide](docs/webrtc-setup.md) for detailed configuration.
+- **Content addressing** — files are chunked and hashed with BLAKE3; the CID *is*
+  the hash, so integrity is verifiable by anyone.
+- **P2P delivery** — nodes announce content to a Kademlia DHT and GossipSub, and
+  pull-replicate it from each other, so any node holding a CID can serve it.
+- **Encrypted transport** — peer connections are authenticated and encrypted with
+  libp2p Noise; browsers connect over WebRTC DataChannels.
 
-### Edge Functions (Rust)
+Core components:
 
-Write serverless functions that run on the ShadowMesh edge:
-
-```rust
-use shadowmesh_edge::{Request, Response};
-
-fn main() {
-    shadowmesh_edge::run(|req| match req.path() {
-        "/api/hello" => Response::ok().json(&serde_json::json!({
-            "message": "Hello from the edge!",
-            "path": req.url,
-        })),
-        _ => Response::not_found().text("Not found"),
-    });
-}
-```
-
-Compile and deploy:
-
-```bash
-# Build for WASM
-cargo build --target wasm32-wasip1 --release
-
-# Create route manifest
-cat > _shadowmesh/routes.json << 'EOF'
-{
-  "version": 1,
-  "routes": [
-    {"path": "/api/*", "handler": "api.wasm", "methods": ["GET", "POST"]}
-  ]
-}
-EOF
-
-# Copy WASM module
-cp target/wasm32-wasip1/release/my_function.wasm _shadowmesh/api.wasm
-
-# Deploy — gateway auto-detects the manifest and loads WASM modules
-```
-
-### CLI Usage
-
-The CLI is a Rust binary. Build it with `cargo build --release -p shadowmesh-cli`, then use the binary at `target/release/shadowmesh-cli` (or set up an alias):
-
-```bash
-# Build the CLI
-cargo build --release -p shadowmesh-cli
-
-# Alias for convenience (add to .bashrc / .zshrc)
-alias smesh="./target/release/shadowmesh-cli"
-
-# Upload content
-smesh upload ./myfile.txt
-
-# Check node status
-smesh status
-
-# Download content
-smesh download <cid> -o ./output.txt
-
-# List connected peers
-smesh peers
-```
-
-## Deployment Modes
-
-| Mode | Trigger | How it works |
-|------|---------|-------------|
-| **Static** | Default | Build to static HTML/CSS/JS, upload to IPFS, serve via gateway |
-| **Dynamic (SSR)** | `deploy_mode: "dynamic"` | Build in server mode, spawn Node.js process, reverse proxy requests |
-| **Edge Functions** | `_shadowmesh/routes.json` in build output | Load WASM modules into Wasmtime, execute on matching requests |
-
-## Components
-
-| Component | Description | Port |
-|-----------|-------------|------|
-| `protocol` | Core P2P protocol library | - |
-| `gateway` | HTTP API server with signaling, WASM runtime, process manager | 8081 |
+| Component | Role | Port |
+|---|---|---|
+| `protocol` | Core P2P protocol library (DHT, fragments, crypto, routing) | — |
+| `gateway` | HTTP API bridging browsers to the mesh | 8081 |
 | `node-runner` | Full P2P node with dashboard | 3030 |
-| `cli` | Node management CLI (`shadowmesh-cli`) | - |
-| `sdk` | TypeScript client library | - |
-| `sdk-browser` | WASM browser SDK with WebRTC | - |
-| `adapters/wasm-sdk` | Rust SDK for writing edge functions (`shadowmesh-edge`) | - |
-| `adapters/adapter-nextjs` | Next.js adapter with route scanning and manifest generation | - |
-| `adapters/shared` | Shared adapter utilities (ManifestBuilder, framework detection) | - |
-| `benchmarks` | Performance benchmarks | - |
+| `cli` | Node & content management (`shadowmesh-cli`) | — |
+| `sdk` | TypeScript client | — |
+| `sdk-browser` | WASM browser SDK with WebRTC | — |
 
-## Configuration
+(Server-side extras — SSR, WASM edge, state layer, framework adapters — are in
+[FUTURE.md](FUTURE.md).)
 
-### Gateway Configuration
+---
 
-Edit `gateway/config.toml`:
+## Bootstrap & centralization
 
-```toml
-[server]
-host = "0.0.0.0"
-port = 8081
-workers = 4
+**This is the honest limitation, stated up front.** Content *already in the mesh*
+is served peer-to-peer and survives the loss of any single node. But **joining**
+the mesh today depends on reaching a bootstrap peer, and the network currently
+publishes one well-known host. A censor who blocks that IP prevents *new* nodes in
+their region from finding peers; already-connected nodes keep working.
 
-[cache]
-max_size_mb = 500
-ttl_seconds = 3600
+The mechanisms to fix this exist in the code (DNS-seed discovery, multi-peer
+bootstrap, rendezvous, relay) and just need diverse infrastructure. Removing this
+single point is the top item on the [roadmap](THREAT-MODEL.md#8-roadmap-to-close-the-gaps).
 
-[rate_limit]
-enabled = true
-requests_per_second = 100
-burst_size = 200
-
-[security]
-cors_enabled = true
-allowed_origins = ["https://yourdomain.com"]  # no wildcards in production
-max_request_size_mb = 10
-
-[p2p]
-enabled = true
-tcp_port = 4001
-bootstrap_peers = []
-enable_mdns = true
-
-[dynamic]
-enabled = true         # Enable SSR deployments
-port_range_start = 9000
-port_range_end = 9999
-max_processes = 50
-memory_limit_mb = 512
-
-[wasm]
-enabled = true         # Enable WASM edge functions
-max_memory_mb = 128
-max_fuel = 10000000
-max_cached_modules = 100
-
-[state]
-kv_enabled = true      # KV store for edge functions
-secrets_enabled = true # Encrypted secrets per deployment
-blob_enabled = true    # IPFS-backed blob storage
-```
-
-### Node Runner Configuration
-
-Create `node-config.toml` (or copy `node-runner/node-config.example.toml`):
-
-```toml
-[identity]
-name = "my-node"
-
-[storage]
-data_dir = ".shadowmesh/data"
-max_storage_bytes = 10737418240  # 10 GB
-
-[network]
-listen_addresses = ["/ip4/0.0.0.0/tcp/4001"]
-bootstrap_nodes = []
-max_peers = 50
-enable_mdns = true
-enable_dht = true
-replication_factor = 3
-
-[dashboard]
-enabled = true
-host = "127.0.0.1"
-port = 3030
-```
-
-## Bootstrap Nodes
-
-| Name | Address |
-|------|---------|
-| Primary Relay | `/ip4/62.171.189.140/tcp/4001/p2p/12D3KooWCXDk6QR1zpAopogBPSFR977Az5gbrmcHjnFgY12UpBTb` |
-
-## Bootstrap Configuration
-
-Nodes need at least one reachable peer to join the network. There are three ways to configure bootstrap peers:
-
-### Config file (recommended)
-
-For the **node-runner**, add bootstrap addresses to `node-config.toml` under `[network]`:
-
-```toml
-[network]
-bootstrap_nodes = [
-    "/ip4/203.0.113.10/tcp/4001/p2p/12D3KooWGPAjDTsHkY39arQUSFKTdSRaKQFDhqiND5nZR2iLdtr7"
-]
-```
-
-For the **gateway**, add them to `gateway/config.toml` under `[p2p]`:
-
-```toml
-[p2p]
-enabled = true
-bootstrap_peers = [
-    "/ip4/203.0.113.10/tcp/4001/p2p/12D3KooWGPAjDTsHkY39arQUSFKTdSRaKQFDhqiND5nZR2iLdtr7"
-]
-```
-
-Note: the field name is `bootstrap_nodes` for node-runner and `bootstrap_peers` for gateway.
-
-### Environment variable
-
-Set `SHADOWMESH_BOOTSTRAP_NODES` with a comma-separated list of multiaddrs:
+Configure bootstrap peers three ways (highest priority first):
 
 ```bash
-export SHADOWMESH_BOOTSTRAP_NODES="/ip4/203.0.113.10/tcp/4001/p2p/12D3KooW...,/ip4/198.51.100.5/tcp/4001/p2p/12D3KooW..."
+# 1. Environment variable (comma-separated multiaddrs)
+export SHADOWMESH_BOOTSTRAP_NODES="/ip4/203.0.113.10/tcp/4001/p2p/12D3KooW..."
 ```
 
-This works for both node-runner and gateway and overrides the config file values.
+```toml
+# 2. Config file — node-config.toml [network] bootstrap_nodes = [...]
+#                  gateway config.toml [p2p]  bootstrap_peers = [...]
+```
 
-### LAN discovery (automatic)
+3. **LAN** — with `enable_mdns = true` (default), nodes on the same network find
+   each other automatically; no bootstrap needed.
 
-When `enable_mdns = true` (the default), nodes on the same local network discover each other automatically via mDNS. No bootstrap configuration is needed for LAN-only setups.
+---
 
-## Production Deployment Checklist
+## Running in production
 
-Before running ShadowMesh in production, verify these items:
+Before exposing a node or gateway to the internet:
 
-- **Set API keys for authentication.** Set the `SHADOWMESH_API_KEYS` environment variable to restrict who can upload and manage content. Without this, your node's API is open to anyone who can reach it.
-- **Configure bootstrap peers.** Add at least one stable bootstrap address to your config so nodes can rejoin the network after restarts. See the [Hosting Guide](docs/hosting-guide.md) for details.
-- **Set proper CORS origins.** Replace wildcard (`*`) origins with specific domains in the gateway's `[security]` section. Override at runtime with `SHADOWMESH_SECURITY_ALLOWED_ORIGINS`.
-- **Enable telemetry and monitoring.** Set `[telemetry] enabled = true` in the gateway config and point `otlp_endpoint` at your collector. Scrape Prometheus metrics from `/metrics/prometheus`.
-- **Pin Docker image tags.** Use a specific image digest or version tag in your `docker-compose.yml` and Dockerfiles instead of `latest`.
-- **Configure hot-reload (gateway).** The gateway watches its config file for changes and reloads automatically. You can also send `SIGHUP` or call `POST /api/admin/reload`. No restart required for rate-limit, cache, or CORS changes.
+- **Set an API key.** `SHADOWMESH_API_KEYS` (gateway) / `NODE_API_KEY` (node).
+  The node refuses to start if bound to a non-loopback interface without a key.
+- **Scope your keys.** Use the `key:namespace1|namespace2` grammar so a key can
+  only touch its own deployments; bare keys are admin-scoped.
+- **Set CORS origins** — replace `*` with your domains in the gateway `[security]`
+  section.
+- **Put the gateway behind TLS** (a reverse proxy) and a domain name.
 
-See the full [Hosting Guide](docs/hosting-guide.md) and [Node Runner Guide](docs/node-runner-guide.md) for detailed setup instructions.
+See the [Hosting Guide](docs/hosting-guide.md) and
+[Node Runner Guide](docs/node-runner-guide.md) for full setup.
 
-## Documentation
-
-- [Protocol Specification](docs/protocol-spec.md)
-- [Architecture Guide](docs/architecture.md)
-- [API Reference](docs/api-reference.md)
-- [SDK Guide](docs/sdk-guide.md)
-- [WebRTC Setup Guide](docs/webrtc-setup.md)
-- [Deployment Guide](docs/deployment.md)
-- [Monitoring Runbook](docs/runbooks/monitoring-alerting.md)
-- [Dynamic Deployment Plan](docs/dynamic-deployment-plan.md)
-- [Competitor Comparison](docs/comparison.md)
-- [Contributing](CONTRIBUTING.md)
+---
 
 ## Testing
 
 ```bash
-# Run all tests
 cargo test --workspace
-
-# Run specific component tests
-cargo test -p protocol
-cargo test -p gateway
-cargo test -p node-runner
-
-# Run with verbose output
-cargo test --workspace -- --nocapture
-
-# Run benchmarks
-cargo bench -p benchmarks
+cargo test -p protocol       # or gateway, node-runner
 ```
-
-## Benchmarks
-
-| Operation | Throughput | Latency (p99) |
-|-----------|------------|---------------|
-| Content Hash (1MB) | 2.5 GB/s | < 1ms |
-| Encrypt (1MB) | 1.2 GB/s | < 2ms |
-| Fragment (1MB) | 3.0 GB/s | < 1ms |
-| DHT Lookup | - | < 50ms |
-
-## Roadmap
-
-- [x] Core protocol implementation
-- [x] Content fragmentation & encryption
-- [x] DHT-based content discovery
-- [x] Peer discovery & scoring
-- [x] Bandwidth tracking & rate limiting
-- [x] HTTP Gateway API
-- [x] TypeScript SDK
-- [x] Integration tests
-- [x] WebRTC transport support
-- [x] ENS integration (eth.limo gateway + `shadow://` contenthash)
-- [x] Censorship detection & adaptive routing
-- [x] Dynamic (SSR) deployments — Node.js process manager with health checks, auto-restart, memory limits
-- [x] WASM Edge Functions — Wasmtime sandbox with fuel metering, route manifests, JSON-over-stdio bridge
-- [x] Framework adapters — Next.js, Nuxt, SvelteKit, Remix route scanners + manifest generators; Rust edge function SDK
-- [x] State layer — KV store (Redis-backed), encrypted secrets (ChaCha20Poly1305), blob storage (IPFS)
-- [ ] Mobile SDK (React Native)
-- [ ] Incentive layer with token rewards — [Tokenomics Spec](docs/tokenomics.md) (MESH token, Sepolia testnet, Phase 1 in progress)
-- [ ] Browser extension
-- [ ] IPFS pinning service integration
-
-### V2 Roadmap
-- [x] Nuxt / SvelteKit / Remix adapters — `@shadowmesh/adapter-{nuxt,sveltekit,remix}` (route scanner + manifest generator + CLI)
-- [ ] Per-deployment SQLite databases (WASM-compiled)
-- [ ] API rewrites/proxy — route `/api/*` to external backends via deployment config
-- [ ] Build pipelines — custom multi-step build workflows
-- [ ] Team management & RBAC
-
-## Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-```bash
-# Fork the repo
-# Create a feature branch
-git checkout -b feature/amazing-feature
-
-# Make your changes
-# Run tests
-cargo test --workspace
-
-# Commit with conventional commits
-git commit -m "feat: add amazing feature"
-
-# Push and create PR
-git push origin feature/amazing-feature
-```
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- [libp2p](https://libp2p.io/) - P2P networking stack (Kademlia DHT, GossipSub, Noise, Yamux, Relay, AutoNAT, DCUtR)
-- [IPFS / Kubo](https://ipfs.io/) - Content addressing and distributed storage
-- [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) - Fast cryptographic hashing
-- [ChaCha20-Poly1305](https://datatracker.ietf.org/doc/html/rfc8439) - AEAD encryption
-- [x25519-dalek](https://github.com/dalek-cryptography/x25519-dalek) - Elliptic curve Diffie-Hellman for per-hop onion routing
-- [Tokio](https://tokio.rs/) - Async runtime powering the gateway and node-runner
-- [Axum](https://github.com/tokio-rs/axum) - HTTP framework for the gateway API
-- [React](https://react.dev/) - Dashboard UI
-- [Tailwind CSS](https://tailwindcss.com/) - Dashboard styling
-- [Vite](https://vitejs.dev/) - Dashboard build tooling
-- [OpenTelemetry](https://opentelemetry.io/) - Distributed tracing and observability
-- [Prometheus](https://prometheus.io/) - Metrics collection
-- [Redis](https://redis.io/) - Optional persistent state and distributed rate limiting
-- [Wasmtime](https://wasmtime.dev/) - WASM runtime for edge functions with fuel metering
-- [ENS / eth.limo](https://ens.domains/) - Ethereum Name Service resolution
-- [Criterion](https://github.com/bheisler/criterion.rs) - Performance benchmarking
-- [OpenZeppelin](https://www.openzeppelin.com/) - Smart contract standards (upcoming MESH token)
-- [Foundry](https://book.getfoundry.sh/) - Solidity development toolchain (upcoming incentive layer)
 
 ---
 
-<p align="center">
-  Built for a more private and decentralized web
-</p>
+## Documentation
 
+- **[Threat Model](THREAT-MODEL.md)** — what is and isn't defended (read this first)
+- **[Future & experimental features](FUTURE.md)** — SSR, WASM edge, state layer, roadmap
+- [Protocol Specification](docs/protocol-spec.md)
+- [Architecture Guide](docs/architecture.md)
+- [API Reference](docs/api-reference.md)
+- [SDK Guide](docs/sdk-guide.md)
+- [Hosting Guide](docs/hosting-guide.md)
+- [Contributing](CONTRIBUTING.md)
+
+---
+
+## Contributing
+
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Please branch,
+run `cargo test --workspace`, and use conventional commits.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Acknowledgments
+
+Built on [libp2p](https://libp2p.io/) (Kademlia DHT, GossipSub, Noise, Yamux,
+Relay, AutoNAT, DCUtR), [IPFS/Kubo](https://ipfs.io/),
+[BLAKE3](https://github.com/BLAKE3-team/BLAKE3),
+[ChaCha20-Poly1305](https://datatracker.ietf.org/doc/html/rfc8439),
+[x25519-dalek](https://github.com/dalek-cryptography/x25519-dalek),
+[Tokio](https://tokio.rs/), [Axum](https://github.com/tokio-rs/axum), and
+[Wasmtime](https://wasmtime.dev/).
+
+---
+
+<p align="center">Built for a web that stays online.</p>
