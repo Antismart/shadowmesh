@@ -1,5 +1,6 @@
 //! ShadowMesh browser client
 
+use crate::crypto::Identity;
 use crate::error::{codes, SdkError};
 use crate::signaling::{PeerInfo, SignalingClient, SignalingMessage};
 use crate::utils::{console_log, generate_session_id};
@@ -126,6 +127,9 @@ struct PendingFetch {
 #[wasm_bindgen]
 pub struct ShadowMeshClient {
     config: ClientConfig,
+    /// Long-term Ed25519 identity. Its public key hex is our `peer_id`, and it
+    /// authenticates the ephemeral X25519 keys exchanged on each DataChannel.
+    identity: Rc<Identity>,
     peer_id: String,
     signaling: Rc<RefCell<Option<SignalingClient>>>,
     connections: Rc<RefCell<HashMap<String, WebRtcConnection>>>,
@@ -140,10 +144,14 @@ impl ShadowMeshClient {
     /// Create a new ShadowMesh client
     #[wasm_bindgen(constructor)]
     pub fn new(config: ClientConfig) -> Result<ShadowMeshClient, JsValue> {
-        let peer_id = generate_session_id();
+        // The peer ID IS the identity public key, so the identity learned from
+        // signaling can be authenticated during the DataChannel handshake.
+        let identity = Rc::new(Identity::generate());
+        let peer_id = identity.peer_id();
 
         Ok(Self {
             config,
+            identity,
             peer_id,
             signaling: Rc::new(RefCell::new(None)),
             connections: Rc::new(RefCell::new(HashMap::new())),
@@ -230,8 +238,9 @@ impl ShadowMeshClient {
             return Ok(());
         }
 
-        // Create WebRTC connection with encryption derived from peer IDs
-        let conn = WebRtcConnection::new(&self.peer_id, peer_id, &self.config.stun_servers)
+        // Create WebRTC connection; the channel key is established by an
+        // authenticated ephemeral ECDH handshake, not derived from peer IDs.
+        let conn = WebRtcConnection::new(self.identity.clone(), peer_id, &self.config.stun_servers)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         // Set up ICE candidate handler
@@ -647,7 +656,7 @@ impl ShadowMeshClient {
         let stun_servers = self.config.stun_servers.clone();
         let pending = self.pending_fetches.clone();
         let cache = self.content_cache.clone();
-        let local_peer_id = self.peer_id.clone();
+        let identity = self.identity.clone();
 
         // Take the message receiver from signaling (can only be called once)
         let rx = {
@@ -672,7 +681,7 @@ impl ShadowMeshClient {
                     }
                     SignalingMessage::Offer(offer) => {
                         tracing::info!("Received offer from peer {}", offer.from);
-                        let conn = match WebRtcConnection::new(&local_peer_id, &offer.from, &stun_servers) {
+                        let conn = match WebRtcConnection::new(identity.clone(), &offer.from, &stun_servers) {
                             Ok(c) => c,
                             Err(e) => {
                                 tracing::error!("Failed to create WebRTC connection: {}", e);
@@ -805,22 +814,43 @@ impl Drop for ShadowMeshClient {
     }
 }
 
-/// Simple hex encoding
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        result.push(HEX_CHARS[(byte >> 4) as usize] as char);
-        result.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
+/// Structural validation for IPFS-style CIDs (a separate identifier class from
+/// the bare-hex BLAKE3 fragment protocol). Mirrors the rules in the gateway /
+/// protocol `cid_validation` layer: CIDv0 (`Qm`, 46 chars, base58) and CIDv1
+/// (`bafy`, 59 chars, base32-lower).
+fn is_valid_ipfs_cid(cid: &str) -> bool {
+    // Base58 alphabet (Bitcoin), excludes 0 O I l.
+    const BASE58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    // Base32-lower multibase alphabet.
+    const BASE32_LOWER: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
+
+    if cid.starts_with("Qm") {
+        cid.len() == 46 && cid.bytes().all(|b| BASE58.contains(&b))
+    } else if cid.starts_with("bafy") {
+        cid.len() == 59 && cid.bytes().all(|b| BASE32_LOWER.contains(&b))
+    } else {
+        false
     }
-    result
 }
 
-/// BLAKE3 content verification (standalone for use in free functions)
+/// Verify fetched bytes against the network's canonical content identifier.
+///
+/// The ShadowMesh fragment protocol identifies content by **bare hex BLAKE3**
+/// (matches `blake3::hash(..).to_hex()` in `protocol/src/fragments.rs`), so the
+/// TypeScript SDK, the Rust protocol, and this WASM SDK all agree on the same
+/// format. IPFS-style CIDs (`Qm...` / `bafy...`) are a separate identifier
+/// class that cannot be recomputed from content with BLAKE3; those are validated
+/// structurally via [`is_valid_ipfs_cid`] instead of by content hash.
 fn verify_cid(data: &[u8], expected_cid: &str) -> bool {
-    let hash = blake3::hash(data);
-    let computed_cid = format!("baf{}", hex_encode(&hash.as_bytes()[..32]));
-    computed_cid == expected_cid
+    // IPFS CIDs: multihash-addressed, not bare BLAKE3 — accept only if the CID
+    // is structurally well-formed (integrity is enforced by the IPFS layer).
+    if expected_cid.starts_with("Qm") || expected_cid.starts_with("bafy") {
+        return is_valid_ipfs_cid(expected_cid);
+    }
+
+    // Canonical fragment-protocol identifier: bare lowercase hex BLAKE3.
+    let computed = blake3::hash(data).to_hex().to_string();
+    computed.eq_ignore_ascii_case(expected_cid)
 }
 
 /// Handle an incoming content response from a peer.

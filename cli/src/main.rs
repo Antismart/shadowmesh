@@ -23,6 +23,10 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// API key for the node's authenticated endpoints (falls back to NODE_API_KEY)
+    #[arg(long, global = true)]
+    api_key: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -170,7 +174,7 @@ enum Command {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let client = NodeClient::new(&cli.node_url);
+    let client = NodeClient::with_api_key(&cli.node_url, cli.api_key.clone());
     let gateway = GatewayClient::new(&cli.gateway_url);
     let json = cli.json;
 

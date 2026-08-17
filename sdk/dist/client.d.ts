@@ -3,7 +3,7 @@
  *
  * HTTP client for communicating with ShadowMesh gateway and nodes.
  */
-import type { ShadowMeshConfig, ContentManifest, DeploymentStatus, NetworkStats, NodeInfo, GatewayHealth, GatewayMetrics } from './types.js';
+import type { ShadowMeshConfig, ContentManifest, DeploymentStatus, NetworkStats, NodeInfo, GatewayHealth, GatewayMetrics, DownloadOptions } from './types.js';
 /**
  * API Client for ShadowMesh gateway communication
  */
@@ -48,9 +48,15 @@ export declare class GatewayClient {
      */
     metrics(): Promise<GatewayMetrics>;
     /**
-     * Get content by CID
+     * Get content by CID.
+     *
+     * By default the fetched bytes are verified against `cid` before being
+     * returned (`options.verify` defaults to `true`). Verification applies to
+     * bare hex BLAKE3 content hashes — the fragment protocol's canonical
+     * identifier. IPFS-style CIDs (`Qm...` / `bafy...`) are content-addressed by
+     * multihash rather than bare BLAKE3, so they are not re-hashed here.
      */
-    getContent(cid: string): Promise<ArrayBuffer>;
+    getContent(cid: string, options?: DownloadOptions): Promise<ArrayBuffer>;
     /**
      * Get content manifest
      */

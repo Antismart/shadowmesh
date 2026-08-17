@@ -2,9 +2,15 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Default cap on the number of distinct KV namespaces.
+pub const DEFAULT_MAX_NAMESPACES: usize = 10_000;
+
 pub struct KvConfig {
     pub max_keys_per_namespace: usize,
     pub max_value_size_bytes: usize,
+    /// Cap on the total number of distinct namespaces (bounds DashMap growth
+    /// so a single identity cannot exhaust memory by creating namespaces).
+    pub max_namespaces: usize,
 }
 
 struct KvEntry {
@@ -68,6 +74,18 @@ impl KvStore {
                 "Value too large: {} bytes (max {})",
                 value.len(),
                 self.config.max_value_size_bytes
+            ));
+        }
+
+        // Bound the number of distinct namespaces. Only reject when this call
+        // would create a brand-new namespace beyond the cap; existing
+        // namespaces are always writable.
+        if !self.namespaces.contains_key(namespace)
+            && self.namespaces.len() >= self.config.max_namespaces
+        {
+            return Err(format!(
+                "Namespace limit reached ({} namespaces)",
+                self.config.max_namespaces
             ));
         }
 
@@ -182,6 +200,7 @@ mod tests {
             KvConfig {
                 max_keys_per_namespace: 100,
                 max_value_size_bytes: 1024,
+                max_namespaces: 1000,
             },
             None,
         )
@@ -227,6 +246,7 @@ mod tests {
             KvConfig {
                 max_keys_per_namespace: 2,
                 max_value_size_bytes: 1024,
+                max_namespaces: 1000,
             },
             None,
         );
@@ -273,6 +293,7 @@ mod tests {
             KvConfig {
                 max_keys_per_namespace: 2,
                 max_value_size_bytes: 1024,
+                max_namespaces: 1000,
             },
             None,
         );
@@ -290,5 +311,23 @@ mod tests {
         store.put("ns2", "key", b"b".to_vec(), None).unwrap();
         assert_eq!(store.get("ns1", "key"), Some(b"a".to_vec()));
         assert_eq!(store.get("ns2", "key"), Some(b"b".to_vec()));
+    }
+
+    #[test]
+    fn namespace_limit_enforced() {
+        let store = KvStore::new(
+            KvConfig {
+                max_keys_per_namespace: 100,
+                max_value_size_bytes: 1024,
+                max_namespaces: 2,
+            },
+            None,
+        );
+        store.put("ns1", "k", b"1".to_vec(), None).unwrap();
+        store.put("ns2", "k", b"2".to_vec(), None).unwrap();
+        // Third distinct namespace should be rejected.
+        assert!(store.put("ns3", "k", b"3".to_vec(), None).is_err());
+        // Writing to an existing namespace still works.
+        store.put("ns1", "k2", b"x".to_vec(), None).unwrap();
     }
 }

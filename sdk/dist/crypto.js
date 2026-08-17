@@ -6,21 +6,37 @@
 // We'll use Web Crypto API for browser compatibility
 // and native crypto for Node.js
 /**
- * Hash content using Blake3
- * Falls back to SHA-256 if Blake3 is not available
+ * Hash content using BLAKE3, returning a bare lowercase hex string.
+ *
+ * This is the canonical content-hash format for the ShadowMesh fragment
+ * protocol (matches `blake3::hash(..).to_hex()` on the Rust side). There is
+ * intentionally NO SHA-256 fallback: silently substituting a different hash
+ * algorithm would produce identifiers that neither the network nor the WASM
+ * SDK could verify. If BLAKE3 is unavailable we fail loudly.
  */
 export async function hashContent(data) {
+    let blake3;
     try {
-        // Try to use blake3-wasm if available
-        const blake3 = await import('blake3-wasm');
-        const hash = blake3.hash(data);
-        return typeof hash === 'string' ? hash : Buffer.from(hash).toString('hex');
+        blake3 = await import('blake3-wasm');
     }
-    catch {
-        // Fallback to SHA-256
-        const hashBuffer = await crypto.subtle.digest('SHA-256', data.buffer);
-        return Buffer.from(hashBuffer).toString('hex');
+    catch (err) {
+        throw new Error('BLAKE3 hashing is unavailable: the "blake3-wasm" package could not be ' +
+            'loaded. It is required for content hashing — do not fall back to ' +
+            `another algorithm. Original error: ${err instanceof Error ? err.message : String(err)}`);
     }
+    const hash = blake3.hash(data);
+    return typeof hash === 'string' ? hash : Buffer.from(hash).toString('hex');
+}
+/**
+ * True when `id` is a bare hex BLAKE3 content hash (64 hex chars).
+ *
+ * The ShadowMesh fragment protocol identifies content by bare-hex BLAKE3.
+ * IPFS-style CIDs (`Qm...` / `bafy...`) are a separate identifier class that
+ * cannot be recomputed from bytes with BLAKE3 and are validated structurally
+ * (see the `cid_validation` layer) instead of by content hash.
+ */
+export function isHexBlake3(id) {
+    return /^[0-9a-fA-F]{64}$/.test(id);
 }
 /**
  * Hash a string
@@ -127,12 +143,10 @@ export function generateId(length = 16) {
  * Constant-time string comparison to prevent timing attacks
  */
 export function secureCompare(a, b) {
-    if (a.length !== b.length) {
-        return false;
-    }
-    let result = 0;
-    for (let i = 0; i < a.length; i++) {
-        result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    const maxLen = Math.max(a.length, b.length);
+    let result = a.length ^ b.length; // Non-zero if lengths differ
+    for (let i = 0; i < maxLen; i++) {
+        result |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
     }
     return result === 0;
 }

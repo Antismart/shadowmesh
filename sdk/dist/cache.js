@@ -2,6 +2,7 @@
  * ShadowMesh SDK - Cache Module
  * Client-side caching for content and metadata
  */
+import { verifyHash } from './crypto.js';
 // ============================================================================
 // LRU Cache Implementation
 // ============================================================================
@@ -380,6 +381,15 @@ export class ContentPreloader {
                     throw new Error(`Failed to fetch fragment ${fragment.id}: ${response.status}`);
                 }
                 const data = new Uint8Array(await response.arrayBuffer());
+                // Never cache unverified bytes: check the fragment against its
+                // recorded BLAKE3 hash before it enters the cache.
+                if (fragment.hash) {
+                    const ok = await verifyHash(data, fragment.hash);
+                    if (!ok) {
+                        throw new Error(`Fragment hash mismatch: fragment ${fragment.id} does not match ` +
+                            `expected hash ${fragment.hash}`);
+                    }
+                }
                 this.cache.setFragment(cid, fragment.id, data);
                 return { id: fragment.id, data };
             }));

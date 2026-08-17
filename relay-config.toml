@@ -1,0 +1,20 @@
+[identity]
+name = "Relay-Bootstrap"
+key_file = ".shadowmesh/relay-identity.key"
+
+[network]
+relay_mode = true
+listen_addresses = ["/ip4/0.0.0.0/tcp/4001"]
+
+[replication]
+enabled = true
+scan_interval_secs = 30
+
+[dashboard]
+# host = "0.0.0.0" exposes the destructive API (upload/delete/gc/shutdown/config)
+# to the network. The node REFUSES TO START on a non-loopback bind unless the
+# NODE_API_KEY environment variable is set to a strong secret. Provide the key
+# via the service environment (see deploy-relay.sh) — never commit it here.
+# For key-less local development, bind to 127.0.0.1 instead.
+host = "0.0.0.0"
+port = 3030

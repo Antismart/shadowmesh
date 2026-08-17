@@ -17,9 +17,11 @@ import type {
   GatewayHealth,
   GatewayMetrics,
   ShadowMeshError,
+  DownloadOptions,
 } from './types.js';
 
 import { NameResolver, FALLBACK_GATEWAY_URLS } from './resolver.js';
+import { verifyHash, isHexBlake3 } from './crypto.js';
 
 /**
  * Fallback network endpoints — used ONLY when naming resolution fails.
@@ -241,9 +243,15 @@ export class GatewayClient {
   // =========================================================================
 
   /**
-   * Get content by CID
+   * Get content by CID.
+   *
+   * By default the fetched bytes are verified against `cid` before being
+   * returned (`options.verify` defaults to `true`). Verification applies to
+   * bare hex BLAKE3 content hashes — the fragment protocol's canonical
+   * identifier. IPFS-style CIDs (`Qm...` / `bafy...`) are content-addressed by
+   * multihash rather than bare BLAKE3, so they are not re-hashed here.
    */
-  async getContent(cid: string): Promise<ArrayBuffer> {
+  async getContent(cid: string, options: DownloadOptions = {}): Promise<ArrayBuffer> {
     const response = await fetch(`${this.baseUrl}/ipfs/${cid}`, {
       headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {},
     });
@@ -258,7 +266,20 @@ export class GatewayClient {
       );
     }
 
-    return response.arrayBuffer();
+    const buffer = await response.arrayBuffer();
+
+    const verify = options.verify !== false;
+    if (verify && isHexBlake3(cid)) {
+      const ok = await verifyHash(new Uint8Array(buffer), cid);
+      if (!ok) {
+        throw createError(
+          ErrorCode.HASH_MISMATCH,
+          `Content hash mismatch: fetched bytes do not match CID ${cid}`
+        );
+      }
+    }
+
+    return buffer;
   }
 
   /**

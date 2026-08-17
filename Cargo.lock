@@ -5455,19 +5455,23 @@ dependencies = [
  "blake3",
  "chacha20poly1305",
  "console_error_panic_hook",
+ "ed25519-dalek",
  "futures",
  "getrandom 0.2.16",
  "gloo-timers",
+ "hkdf",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "sha2",
  "tracing",
  "tracing-wasm",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+ "x25519-dalek",
 ]
 
 [[package]]

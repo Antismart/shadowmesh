@@ -88,6 +88,15 @@ enum PendingReply {
         target_peer: PeerId,
         circuit_id: CircuitId,
     },
+    /// A relay cell we forwarded to the next hop on behalf of another peer's
+    /// circuit. When the downstream hop responds, the response cell must be
+    /// routed back toward `return_to_peer` (the hop we received the original
+    /// cell from), otherwise the response is silently dropped.
+    RelayForward {
+        target_peer: PeerId,
+        return_to_peer: PeerId,
+        circuit_id: CircuitId,
+    },
 }
 
 impl PendingReply {
@@ -97,6 +106,7 @@ impl PendingReply {
             PendingReply::Fragment { reply, .. } => reply.is_closed(),
             PendingReply::Manifest { reply, .. } => reply.is_closed(),
             PendingReply::RelayResponse { .. } => false, // relay responses are always valid
+            PendingReply::RelayForward { .. } => false, // relay forwards are always valid
         }
     }
 
@@ -106,6 +116,7 @@ impl PendingReply {
             PendingReply::Fragment { target_peer, .. } => *target_peer,
             PendingReply::Manifest { target_peer, .. } => *target_peer,
             PendingReply::RelayResponse { target_peer, .. } => *target_peer,
+            PendingReply::RelayForward { target_peer, .. } => *target_peer,
         }
     }
 }
@@ -154,7 +165,20 @@ pub async fn run_event_loop(
     let zk_relay_enabled = p2p_state.zk_relay_enabled;
     let zk_relay_hops = p2p_state.zk_relay_hops;
     let client_secret: [u8; 32] = rand::random();
-    let relay_secret: [u8; 32] = rand::random();
+    // Seed the relay's signing identity from this node's libp2p Ed25519 identity
+    // key so that CREATED handshakes it signs authenticate against our PeerId.
+    // Fall back to a random secret only for non-Ed25519 identities (not used in
+    // practice — nodes are always Ed25519).
+    let relay_secret: [u8; 32] = node
+        .keypair()
+        .clone()
+        .try_into_ed25519()
+        .map(|kp| {
+            let mut s = [0u8; 32];
+            s.copy_from_slice(kp.secret().as_ref());
+            s
+        })
+        .unwrap_or_else(|_| rand::random());
     let zk_config = ZkRelayConfig {
         default_hops: zk_relay_hops,
         ..ZkRelayConfig::default()
@@ -525,7 +549,7 @@ async fn handle_behaviour_event(
             } => {
                 handle_content_request(
                     peer, request, channel, node, cache,
-                    zk_relay_node, zk_relay_enabled,
+                    zk_relay_node, zk_relay_enabled, pending_requests,
                 );
             }
             request_response::Message::Response {
@@ -750,12 +774,13 @@ fn handle_content_request(
     cache: &ContentCache,
     zk_relay_node: &ZkRelayNode,
     zk_relay_enabled: bool,
+    pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
 ) {
     let response = match request {
         ContentRequest::RelayCell { cell_data } => {
             handle_relay_cell_request(
                 peer, &cell_data, node, cache,
-                zk_relay_node, zk_relay_enabled,
+                zk_relay_node, zk_relay_enabled, pending_requests,
             )
         }
 
@@ -836,6 +861,7 @@ fn handle_relay_cell_request(
     cache: &ContentCache,
     zk_relay_node: &ZkRelayNode,
     zk_relay_enabled: bool,
+    pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
 ) -> ContentResponse {
     if !zk_relay_enabled {
         tracing::debug!(%peer, "Received relay cell but ZK relay is disabled, ignoring");
@@ -880,15 +906,28 @@ fn handle_relay_cell_request(
                 circuit = %circuit_id_hex,
                 "Relay: forwarding cell to next hop"
             );
-            // Forward the cell to the next peer via content request
+            // Forward the cell to the next peer via content request.
             let forward_request = ContentRequest::RelayCell {
                 cell_data: fwd_cell.serialize(),
             };
-            let _req_id = node
+            let req_id = node
                 .swarm_mut()
                 .behaviour_mut()
                 .content_req_resp
                 .send_request(&to_peer, forward_request);
+
+            // Record the forward so the downstream hop's response can be routed
+            // back toward `peer` (the hop we received this cell from). Without
+            // this the response would arrive as an unknown request and be
+            // dropped, breaking the return path.
+            pending_requests.insert(
+                req_id,
+                PendingReply::RelayForward {
+                    target_peer: to_peer,
+                    return_to_peer: peer,
+                    circuit_id: fwd_cell.circuit_id,
+                },
+            );
 
             // Acknowledge receipt to sender with an empty relay cell response
             ContentResponse::RelayCell {
@@ -977,6 +1016,40 @@ fn handle_content_response(
     let target_peer = pending.target_peer();
 
     match (pending, response) {
+        // ── Relayed-forward response ────────────────────────────
+        // Response to a cell we forwarded on behalf of another peer's circuit.
+        // Route the downstream response one hop back toward the originating
+        // peer so it is not dropped. (An empty payload is just a downstream
+        // ack — nothing to route.)
+        (
+            PendingReply::RelayForward { return_to_peer, circuit_id, .. },
+            ContentResponse::RelayCell { cell_data },
+        ) => {
+            if !cell_data.is_empty() {
+                tracing::debug!(
+                    circuit = %hex::encode(&circuit_id[..8]),
+                    %return_to_peer,
+                    "Relay: routing downstream response back toward previous hop"
+                );
+                let request = ContentRequest::RelayCell { cell_data };
+                let req_id = node
+                    .swarm_mut()
+                    .behaviour_mut()
+                    .content_req_resp
+                    .send_request(&return_to_peer, request);
+                // Track so the (ack) response is not logged as unknown; empty
+                // acks terminate the chain.
+                pending_requests.insert(
+                    req_id,
+                    PendingReply::RelayForward {
+                        target_peer: return_to_peer,
+                        return_to_peer,
+                        circuit_id,
+                    },
+                );
+            }
+        }
+
         // ── ZK Relay cell response ──────────────────────────────
         // This handles responses to relay cells we sent (circuit building and data)
         (
@@ -1279,6 +1352,11 @@ fn resolve_pending(pending: PendingReply, err: Result<(), FetchError>) {
             // Relay responses don't have a direct reply channel — errors are
             // handled through the circuit build or relay fetch tracking maps.
             tracing::debug!("Relay response error: {}", e);
+        }
+        PendingReply::RelayForward { .. } => {
+            // Forwarded-on-behalf responses have no local waiter; a downstream
+            // error simply ends the backward routing for this cell.
+            tracing::debug!("Relay forward error: {}", e);
         }
     }
 }

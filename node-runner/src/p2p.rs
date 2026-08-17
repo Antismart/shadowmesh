@@ -78,6 +78,15 @@ enum PendingReply {
         target_peer: PeerId,
         circuit_id: CircuitId,
     },
+    /// A relay cell we forwarded to the next hop on behalf of another peer's
+    /// circuit. When the downstream hop responds, the response cell must be
+    /// routed back toward `return_to_peer` (the hop we received the original
+    /// cell from), otherwise the response is silently dropped.
+    RelayForward {
+        target_peer: PeerId,
+        return_to_peer: PeerId,
+        circuit_id: CircuitId,
+    },
 }
 
 /// Tracks a pending circuit build (awaiting CREATED handshakes for each hop).
@@ -108,6 +117,7 @@ impl PendingReply {
             PendingReply::Manifest { reply, .. } => reply.is_closed(),
             PendingReply::ContentList { reply, .. } => reply.is_closed(),
             PendingReply::RelayResponse { .. } => false, // relay responses are always valid
+            PendingReply::RelayForward { .. } => false, // relay forwards are always valid
         }
     }
 
@@ -118,6 +128,7 @@ impl PendingReply {
             PendingReply::Manifest { target_peer, .. } => *target_peer,
             PendingReply::ContentList { target_peer, .. } => *target_peer,
             PendingReply::RelayResponse { target_peer, .. } => *target_peer,
+            PendingReply::RelayForward { target_peer, .. } => *target_peer,
         }
     }
 }
@@ -146,17 +157,28 @@ pub async fn run_event_loop(
     let local_peer_id = *node.peer_id();
 
     // ── ZK Relay state ───────────────────────────────────────────
-    // Derive a deterministic relay secret from the local peer ID so it
-    // survives restarts but is unique per node.
-    let relay_secret: [u8; KEY_SIZE] = {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"shadowmesh-zk-relay-secret-v1");
-        hasher.update(local_peer_id.to_bytes().as_slice());
-        let hash = hasher.finalize();
-        let mut key = [0u8; KEY_SIZE];
-        key.copy_from_slice(&hash.as_bytes()[..KEY_SIZE]);
-        key
-    };
+    // Seed the relay's signing identity from this node's libp2p Ed25519
+    // identity key so the CREATED handshakes it signs authenticate against our
+    // PeerId. Fall back to a peer-id-derived secret only for non-Ed25519
+    // identities (not used in practice — nodes are always Ed25519).
+    let relay_secret: [u8; KEY_SIZE] = node
+        .keypair()
+        .clone()
+        .try_into_ed25519()
+        .map(|kp| {
+            let mut s = [0u8; KEY_SIZE];
+            s.copy_from_slice(kp.secret().as_ref());
+            s
+        })
+        .unwrap_or_else(|_| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"shadowmesh-zk-relay-secret-v1");
+            hasher.update(local_peer_id.to_bytes().as_slice());
+            let hash = hasher.finalize();
+            let mut key = [0u8; KEY_SIZE];
+            key.copy_from_slice(&hash.as_bytes()[..KEY_SIZE]);
+            key
+        });
 
     // ZkRelayClient — used to build circuits and wrap/unwrap relay cells.
     // Only used when enable_zk_relay is true, but always instantiated so the
@@ -528,7 +550,10 @@ async fn handle_behaviour_event(
             request_response::Message::Request {
                 request, channel, ..
             } => {
-                handle_content_request(peer, request, channel, node, storage, zk_node).await;
+                handle_content_request(
+                    peer, request, channel, node, storage, zk_node, pending_requests,
+                )
+                .await;
             }
             request_response::Message::Response {
                 request_id,
@@ -760,6 +785,7 @@ async fn handle_content_request(
     node: &mut ShadowNode,
     storage: &StorageManager,
     zk_node: &ZkRelayNode,
+    pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
 ) {
     let response = match request {
         ContentRequest::GetFragment { fragment_hash } => {
@@ -814,7 +840,8 @@ async fn handle_content_request(
 
         // ── ZK Relay cell handling ─────────────────────────────
         ContentRequest::RelayCell { cell_data } => {
-            handle_inbound_relay_cell(peer, &cell_data, node, storage, zk_node).await
+            handle_inbound_relay_cell(peer, &cell_data, node, storage, zk_node, pending_requests)
+                .await
         }
     };
 
@@ -843,6 +870,7 @@ async fn handle_inbound_relay_cell(
     node: &mut ShadowNode,
     storage: &StorageManager,
     zk_node: &ZkRelayNode,
+    pending_requests: &mut HashMap<OutboundRequestId, PendingReply>,
 ) -> ContentResponse {
     // Deserialize the relay cell
     let cell = match RelayCell::deserialize(cell_data) {
@@ -884,10 +912,23 @@ async fn handle_inbound_relay_cell(
             let request = ContentRequest::RelayCell {
                 cell_data: forward_cell.serialize(),
             };
-            node.swarm_mut()
+            let req_id = node
+                .swarm_mut()
                 .behaviour_mut()
                 .content_req_resp
                 .send_request(&to_peer, request);
+            // Record the forward so the downstream hop's response can be routed
+            // back toward `from_peer` (the hop we received this cell from).
+            // Without this the response arrives as an unknown request and is
+            // dropped, breaking the return path.
+            pending_requests.insert(
+                req_id,
+                PendingReply::RelayForward {
+                    target_peer: to_peer,
+                    return_to_peer: from_peer,
+                    circuit_id,
+                },
+            );
             // Return an ack to the sender (the actual response goes back
             // via the reverse path when the downstream hop responds)
             ContentResponse::RelayCell {
@@ -1005,6 +1046,43 @@ fn handle_content_response(
     let target_peer = pending.target_peer();
 
     match (pending, response) {
+        // ── Relayed-forward response ────────────────────────────
+        // Response to a cell we forwarded on behalf of another peer's circuit.
+        // Route the downstream response one hop back toward the originating
+        // peer so it is not dropped. (A padding/empty payload is just a
+        // downstream ack — nothing to route.)
+        (
+            PendingReply::RelayForward { return_to_peer, circuit_id, .. },
+            ContentResponse::RelayCell { cell_data },
+        ) => {
+            let is_ack = RelayCell::deserialize(&cell_data)
+                .map(|c| c.cell_type == CellType::Padding)
+                .unwrap_or(true);
+            if !is_ack {
+                tracing::debug!(
+                    circuit = %hex::encode(&circuit_id[..8]),
+                    %return_to_peer,
+                    "Relay: routing downstream response back toward previous hop"
+                );
+                let request = ContentRequest::RelayCell { cell_data };
+                let req_id = node
+                    .swarm_mut()
+                    .behaviour_mut()
+                    .content_req_resp
+                    .send_request(&return_to_peer, request);
+                // Track so the ack response is not logged as unknown; acks
+                // terminate the chain.
+                pending_requests.insert(
+                    req_id,
+                    PendingReply::RelayForward {
+                        target_peer: return_to_peer,
+                        return_to_peer,
+                        circuit_id,
+                    },
+                );
+            }
+        }
+
         // ── ZK Relay cell response ──────────────────────────────
         // This handles responses to relay cells we sent (circuit building and data)
         (
@@ -1323,6 +1401,11 @@ fn resolve_pending(pending: PendingReply, err: Result<(), FetchError>) {
             // Relay responses don't have a direct reply channel — errors are
             // handled through the circuit build or relay fetch tracking maps.
             tracing::debug!("Relay response error: {}", e);
+        }
+        PendingReply::RelayForward { .. } => {
+            // Forwarded-on-behalf responses have no local waiter; a downstream
+            // error simply ends the backward routing for this cell.
+            tracing::debug!("Relay forward error: {}", e);
         }
     }
 }

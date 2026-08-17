@@ -82,6 +82,11 @@ export interface FragmentInfo {
   index: number;
   /** Fragment size in bytes */
   size: number;
+  /**
+   * Bare hex BLAKE3 hash of the fragment's bytes.
+   * Used to verify each fetched fragment before it is trusted or cached.
+   */
+  hash: string;
   /** Optional node locations */
   nodes?: string[];
 }

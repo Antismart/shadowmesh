@@ -5,6 +5,11 @@
 //! `Authorization: Bearer <key>` header. Read-only endpoints (status, health,
 //! metrics, download, list) are always open so the gateway and monitoring
 //! tools can query them without credentials.
+//!
+//! Leaving `NODE_API_KEY` unset allows all requests, which is acceptable ONLY
+//! for a loopback (`127.0.0.1`) bind used in development. Startup in `main.rs`
+//! refuses to boot when the dashboard is bound to a non-loopback host without a
+//! key, so this middleware never leaves a network-exposed API unauthenticated.
 
 use axum::{
     extract::Request,
